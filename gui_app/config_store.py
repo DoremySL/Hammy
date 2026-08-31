@@ -22,7 +22,7 @@ def _default_config() -> Dict[str, Any]:
             "model": "model",
             "base_url": "http://localhost:8080/v1",
             "api_key": "not-needed",
-            "max_tokens": 500,
+            "max_tokens": 3000,
             "temperature": 0.6,
             "top_p": 0.8,
             "retry_times": 2,
