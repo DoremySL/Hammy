@@ -128,7 +128,7 @@ const CFG_FIELDS_BASIC = [
 ];
 const CFG_FIELDS_AI_ADVANCED = [
   { group: 'AI 服务（进阶）', noTitle: true, cols: 3, fields: [
-    { sec: 'ai', key: 'max_tokens', label: '最大生成长度', type: 'number', min: 1, help: '单次 AI 输出的 Token 上限，改动提示词或开启思考时可按需加大', default: 500 },
+    { sec: 'ai', key: 'max_tokens', label: '最大生成长度', type: 'number', min: 1, help: '单次 AI 输出的 Token 上限，改动提示词或开启思考时可按需加大', default: 3000 },
     { sec: 'ai', key: 'temperature', label: '温度', type: 'number', min: 0, max: 2, step: 0.1, help: '采样随机性，越高越有创意但可能偏离主题，越低越稳定', default: 0.6 },
     { sec: 'ai', key: 'top_p', label: 'Top-p', type: 'number', min: 0, max: 1, step: 0.05, help: '核采样阈值，与温度共同控制输出多样性', default: 0.8 },
     { sec: 'ai', key: 'retry_times', label: '重试次数', type: 'number', min: 0, help: '请求失败后的重试次数，重试之间会自动等待', default: 2 },
