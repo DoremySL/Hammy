@@ -961,18 +961,6 @@ function _hfRenderSearch(box) {
     </div>`;
   }).join('');
 
-  const bindResults = () => {
-    $('#hfResults').querySelectorAll('.hf-result').forEach(el => {
-      el.addEventListener('click', () => _hfOpenFiles(box, el.dataset.repo));
-    });
-    $('#hfResults').querySelectorAll('.hf-open-btn').forEach(btn => {
-      btn.addEventListener('click', e => {
-        e.stopPropagation();
-        apiCall('hf_open_repo', btn.closest('.hf-result').dataset.repo).catch(() => {});
-      });
-    });
-  };
-
   const cacheSearch = () => {
     _hfData.search = { kw: page.kw, sort: page.sort, html: $('#hfResults').innerHTML,
                        cursor: page.cursor, exhausted: page.exhausted };
@@ -1009,7 +997,6 @@ function _hfRenderSearch(box) {
     page.cursor = r.next_cursor || '';
     page.exhausted = !r.has_more;
     res.innerHTML = renderModels(list);
-    bindResults();
     cacheSearch();
     maybeFill();
   };
@@ -1035,7 +1022,6 @@ function _hfRenderSearch(box) {
     page.exhausted = !r.has_more;
     if (list.length) res.insertAdjacentHTML('beforeend', renderModels(list));
     if (page.exhausted) res.insertAdjacentHTML('beforeend', '<div class="hf-hint">没有更多了</div>');
-    if (list.length) bindResults();
     cacheSearch();
     maybeFill();
   };
@@ -1048,6 +1034,16 @@ function _hfRenderSearch(box) {
     const el = $('#hfResults');
     if (el.scrollTop + el.clientHeight >= el.scrollHeight - 60) loadMore();
   });
+  $('#hfResults').addEventListener('click', e => {
+    const btn = e.target.closest('.hf-open-btn');
+    if (btn) {
+      e.stopPropagation();
+      apiCall('hf_open_repo', btn.closest('.hf-result').dataset.repo).catch(() => {});
+      return;
+    }
+    const row = e.target.closest('.hf-result');
+    if (row) _hfOpenFiles(box, row.dataset.repo);
+  });
 
   if (_hfData.search) {
     $('#hfSearchInput').value = _hfData.search.kw;
@@ -1056,7 +1052,6 @@ function _hfRenderSearch(box) {
     page.cursor = _hfData.search.cursor || '';
     page.exhausted = !!_hfData.search.exhausted;
     $('#hfResults').innerHTML = _hfData.search.html;
-    bindResults();
     maybeFill();
   }
 }
