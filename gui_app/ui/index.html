@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="force-anim">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hammy</title>
+<style>
+<!--INJECT_CSS-->
+</style>
+</head>
+<body>
+<div id="app-loading"><div class="spinner"></div><span class="load-hint" id="load-hint">正在加载…</span></div>
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+<symbol id="ic-close" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></symbol>
+<symbol id="ic-clapper" viewBox="0 0 24 24"><path d="M20.2 6 3 11l-.9-2.4c-.3-1.1.3-2.2 1.3-2.5l13.5-4c1.1-.3 2.2.3 2.5 1.3Z"/><path d="m6.2 5.3 3.1 3.9"/><path d="m12.4 3.4 3.1 4"/><path d="M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></symbol>
+<symbol id="ic-folder" viewBox="0 0 24 24"><path d="M5.5 5h3.8l1.7 2.3a1.5 1.5 0 0 0 1.2.7h6.3a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z"/></symbol>
+<symbol id="ic-folder-open" viewBox="0 0 24 24"><path d="m6 14 1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.93a2 2 0 0 1 1.66.9l.82 1.2a2 2 0 0 0 1.66.9H18a2 2 0 0 1 2 2v2"/></symbol>
+<symbol id="ic-file" viewBox="0 0 24 24"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></symbol>
+<symbol id="ic-play" viewBox="0 0 24 24"><path d="M8 5.6v12.8a.9.9 0 0 0 1.4.8l9.7-6.4a.9.9 0 0 0 0-1.6L9.4 4.8A.9.9 0 0 0 8 5.6Z"/></symbol>
+<symbol id="ic-stop" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/></symbol>
+<symbol id="ic-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+<symbol id="ic-refresh" viewBox="0 0 24 24"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.5 4.2v4h-4"/></symbol>
+<symbol id="ic-dedup" viewBox="0 0 24 24"><path d="M9 2.5h10a2.5 2.5 0 0 1 2.5 2.5v10"/><rect x="2.5" y="9" width="12.5" height="12.5" rx="2.5"/><path d="M7.7 12.9v4.7l4-2.35z" fill="currentColor" stroke="none"/><line x1="14.5" y1="4.5" x2="19.5" y2="9.5"/><line x1="19.5" y1="4.5" x2="14.5" y2="9.5"/></symbol>
+<symbol id="ic-paperclip" viewBox="0 0 24 24"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></symbol>
+<symbol id="ic-upload" viewBox="0 0 24 24"><path d="M12 15.5V5L8 9m4-4 4 4"/><path d="M4.5 14.5v4a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-4"/></symbol>
+<symbol id="ic-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></symbol>
+<symbol id="ic-check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></symbol>
+<symbol id="ic-undo" viewBox="0 0 24 24"><path d="M4.5 5v4.5H9"/><path d="M4.8 13.8a8 8 0 1 0 1.9-6.3L4.5 9.5"/></symbol>
+<symbol id="ic-warning" viewBox="0 0 24 24"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></symbol>
+<symbol id="ic-save" viewBox="0 0 24 24"><path d="M13.5 4H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5L13.5 4Z"/><path d="M13.5 4v4.5H19"/><path d="M12 11.8v4.7"/><path d="m9.9 14.4 2.1 2.1 2.1-2.1"/></symbol>
+<symbol id="ic-chevron-down" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></symbol>
+<symbol id="ic-trash" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></symbol>
+<symbol id="ic-eye" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></symbol>
+<symbol id="ic-eye-off" viewBox="0 0 24 24"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></symbol>
+<symbol id="ic-select-all" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="4.5"/><path d="m9.2 12.3 2 2 3.8-4.6"/></symbol>
+<symbol id="ic-deselect-all" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="4.5"/><path d="m9.7 9.7 4.6 4.6m0-4.6-4.6 4.6"/></symbol>
+<symbol id="ic-external" viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></symbol>
+</svg>
+
+<header>
+  <div class="hdr-icons">
+    <button class="btn ghost icon-only" id="btn-settings" data-tip="配置"><svg class="ic"><use href="#ic-gear"></use></svg></button>
+    <div class="theme-toggle" id="themeToggle" data-tip="切换暗色/明亮模式">
+      <span class="knob">
+        <svg class="t-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+        <svg class="t-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </span>
+    </div>
+  </div>
+  <div class="stats">
+    <span class="pill clickable" id="conn-pill" data-tip="点击配置 AI 服务">
+      <span class="conn-dot yellow" id="conn-dot"></span><span id="conn-label">检测中</span>
+    </span>
+    <span class="pill-sep"></span>
+    <span class="pill clickable" data-view="pending">
+      <b id="stat-pending">0</b> 待处理
+    </span>
+    <span class="pill clickable" data-view="processed">
+      <b id="stat-processed">0</b> 已处理
+    </span>
+    <span class="pill clickable" data-view="failed">
+      <b id="stat-failed">0</b> 失败
+    </span>
+  </div>
+  <div class="mini-prog-box" id="miniProgBox">
+    <svg class="mini-prog" id="miniProg" viewBox="0 0 24 24">
+      <rect class="mp-bg" x="1.5" y="1.5" width="21" height="21" rx="7"/>
+      <rect class="mp-fg" id="miniProgArc" x="1.5" y="1.5" width="21" height="21" rx="7"/>
+      <text class="mp-txt" id="miniProgPct" x="12" y="12" dominant-baseline="central">0</text>
+    </svg>
+  </div>
+  <div class="spacer"></div>
+  <div class="btn-group">
+    <button class="btn" id="btn-add-folder">添加文件夹</button>
+    <button class="btn" id="btn-add-files">添加文件</button>
+  </div>
+  <div class="btn-group">
+    <button class="btn primary" id="btn-start" disabled>开始处理</button>
+  </div>
+</header>
+
+<main>
+  <section class="pane top">
+    <div class="pane-head">
+      <div class="search-widget" id="searchWidget">
+        <div class="dd search-mode" id="searchMode">
+          <button class="dd-btn"><span class="dd-label">全部</span></button>
+          <div class="dd-panel">
+            <div class="dd-opt active" data-value="all">全部</div>
+            <div class="dd-opt" data-value="filename">文件名</div>
+            <div class="dd-opt" data-value="tags">标签</div>
+            <div class="dd-opt" data-value="title">标题</div>
+            <div class="dd-opt" data-value="plot">简介</div>
+          </div>
+        </div>
+        <span class="search-sep"></span>
+        <input type="text" id="searchInput" placeholder="搜索…" />
+        <button id="btn-clear-search" data-tip="清除"><svg class="ic"><use href="#ic-close"></use></svg></button>
+      </div>
+      <div class="sel-toolbar" id="selToolbar">
+        <button class="tb-btn" id="tb-select-all" data-tb-tip="全选 (Ctrl+A)"><svg class="ic"><use href="#ic-select-all"></use></svg></button>
+        <span class="tb-sep"></span>
+        <button class="tb-btn" id="tb-export" data-tb-tip="导出到…"><svg class="ic"><use href="#ic-folder"></use></svg></button>
+        <button class="tb-btn" id="tb-process" data-tb-tip="处理选中视频"><svg class="ic"><use href="#ic-play"></use></svg></button>
+        <button class="tb-btn" id="tb-export-nfo" data-tb-tip="导出 NFO 到视频目录"><svg class="ic"><use href="#ic-save"></use></svg></button>
+        <button class="tb-btn" id="tb-restore" data-tb-tip="还原初始文件名"><svg class="ic"><use href="#ic-undo"></use></svg></button>
+        <button class="tb-btn" id="tb-move-out" data-tb-tip="移出错误目录至上级目录"><svg class="ic"><use href="#ic-upload"></use></svg></button>
+      </div>
+      <span class="sel-count" id="selCount"></span>
+      <div class="right">
+        <span class="src-pill" id="folderPath" style="display:none"></span>
+        <button class="src-pill" id="btn-dedup" style="display:none">
+          <svg class="ic"><use href="#ic-dedup"></use></svg> 移除重复视频
+        </button>
+        <div class="dd sort-dd" id="sortSel">
+          <button class="dd-btn" type="button"><span class="dd-label">默认顺序</span></button>
+          <div class="dd-panel">
+            <div class="dd-opt active" data-value="default">默认顺序</div>
+            <div class="dd-opt" data-value="dir">目录分组</div>
+            <div class="dd-opt" data-value="name">文件名</div>
+            <div class="dd-opt" data-value="mtime">修改时间</div>
+            <div class="dd-opt" data-value="size">文件大小</div>
+            <div class="dd-opt" data-value="type">类型</div>
+            <div class="dd-opt" data-value="duration">视频时长</div>
+            <div class="dd-opt" data-value="processed">处理时间</div>
+          </div>
+        </div>
+        <button class="btn sm" id="btn-refresh" data-tip="刷新"><svg class="ic"><use href="#ic-refresh"></use></svg></button>
+      </div>
+    </div>
+    <div class="source-bar" id="sourceBar" style="display:none">
+      <span class="drop-hint">点击右上方「添加文件夹 / 添加文件」按钮添加源</span>
+    </div>
+    <div class="grid-wrap" id="gridWrap" style="display:none">
+      <div id="gridInner">
+        <div class="grid" id="grid"></div>
+      </div>
+    </div>
+    <div class="empty-state" id="emptyState">
+      <div class="empty-inner">
+        <div class="icon"><svg class="ic" style="width:1em;height:1em"><use href="#ic-folder"></use></svg></div>
+        <p>请添加视频文件夹或文件开始</p>
+        <p class="hint">支持同时添加多个文件夹 + 多个零散文件</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="pane bottom collapsed" id="pane-bottom">
+    <div class="pane-head">
+      <div class="tabs">
+        <button class="tab active" data-tab="progress" id="tab-progress">日志</button>
+        <button class="tab" data-tab="detail" id="tab-detail">详情</button>
+      </div>
+      <span class="selected-info" id="selectedInfo" style="display:none"></span>
+      <button class="btn icon-only sm" id="btn-collapse" data-tip="收起/展开" style="margin-left:auto">
+        <svg width="16" height="16"><use href="#ic-chevron-down"></use></svg>
+      </button>
+    </div>
+    <div class="tabbody active" id="body-progress">
+      <div class="progress-head">
+        <div class="bar"><i id="prog-bar"></i></div>
+        <div class="progress-num" id="prog-num"></div>
+        <button class="stop-inline" id="btn-stop" data-tip="停止"><svg class="ic"><use href="#ic-stop"></use></svg></button>
+      </div>
+      <div class="log" id="log"><div class="log-empty" id="logEmpty">请添加文件夹或文件开始处理</div></div>
+    </div>
+    <div class="tabbody" id="body-detail">
+      <div class="detail" id="detail"><div class="empty">点击「已处理」中的视频查看详情</div></div>
+    </div>
+  </section>
+</main>
+
+<div id="toast-wrap"></div>
+
+<div id="ctxmenu"></div>
+
+<!-- 手动重命名 Modal -->
+<div class="modal-bg" id="renameModal">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="tabs" id="rename-tabs">
+        <div class="rename-case" id="rename-case">
+          <label class="rp-opt"><input type="radio" name="rename-case" value="" checked> 不变</label>
+          <label class="rp-opt"><input type="radio" name="rename-case" value="upper" title="全部大写"> 大写</label>
+          <label class="rp-opt"><input type="radio" name="rename-case" value="lower" title="全部小写"> 小写</label>
+          <label class="rp-opt"><input type="radio" name="rename-case" value="title" title="每词首字母大写，其余小写"> 标题</label>
+          <label class="rp-opt"><input type="radio" name="rename-case" value="capitalized" title="每词首字母大写，其余不变"> 首字母</label>
+        </div>
+        <span class="pill-sep"></span>
+        <button id="btn-matchtoggle" data-tip="切换匹配范围">匹配全部</button>
+        <button id="btn-subtoggle" data-tip="匹配同目录字幕" style="display:none">匹配字幕</button>
+        <button id="btn-closerename" data-tip="关闭"><svg class="ic"><use href="#ic-close"></use></svg></button>
+      </div>
+    </div>
+    <div class="modal-body">
+      <div class="rename-row">
+        <input type="text" class="prompt-input rename-input" id="rename-find"
+               placeholder="查找" spellcheck="false" />
+        <div class="dd rename-dd" id="dd-rename-find">
+          <button class="dd-btn rename-menu-btn" type="button" data-tip="切换模式"><svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><rect x="2" y="3.5" width="12" height="1.7" rx="0.85"/><rect x="2" y="7.15" width="12" height="1.7" rx="0.85"/><rect x="2" y="10.8" width="12" height="1.7" rx="0.85"/></svg></button>
+          <div class="dd-panel">
+            <div class="dd-opt" data-mode="literal">不使用正则</div>
+            <div class="dd-opt" data-mode="regex">正则表达式</div>
+            <div class="dd-sep"></div>
+            <div class="dd-opt" data-value="^.*$">全选 ^.*$</div>
+            <div class="dd-opt" data-value="^">文件名开头 ^</div>
+            <div class="dd-opt" data-value="$">文件名结尾 $</div>
+            <div class="dd-opt" data-value=".">匹配任何字符 .</div>
+            <div class="dd-opt" data-value="\d+">数字 \d+</div>
+            <div class="dd-opt" data-value="\s+">空白 \s+</div>
+          </div>
+        </div>
+      </div>
+      <div class="rename-row">
+        <input type="text" class="prompt-input rename-input" id="rename-repl"
+               placeholder="替换为" spellcheck="false" />
+        <div class="dd rename-dd" id="dd-rename-repl">
+          <button class="dd-btn rename-menu-btn" type="button" data-tip="切换模式"><svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><rect x="2" y="3.5" width="12" height="1.7" rx="0.85"/><rect x="2" y="7.15" width="12" height="1.7" rx="0.85"/><rect x="2" y="10.8" width="12" height="1.7" rx="0.85"/></svg></button>
+          <div class="dd-panel">
+            <div class="dd-opt" data-mode="literal">不使用正则</div>
+            <div class="dd-opt" data-mode="regex">正则表达式</div>
+            <div class="dd-sep"></div>
+            <div class="dd-opt" data-value="E${padding=2;start=1} ">集数标记 E01…</div>
+            <div class="dd-opt" data-value="EP${padding=2;start=1} ">EP 风格 EP01…</div>
+            <div class="dd-opt" data-value="第${padding=2;start=1}话 ">中文风格 第01话…</div>
+            <div class="dd-opt" data-value="${padding=3;start=1} ">三位填充 001…</div>
+            <div class="dd-opt" data-value="[${padding=2;start=1}] ">括号风格 [01]…</div>
+          </div>
+        </div>
+      </div>
+      <div class="rename-preview" id="rename-preview"></div>
+    </div>
+    <div class="modal-foot">
+      <span class="scrim-note" id="rename-foot-note"></span>
+      <button class="btn" id="btn-cancelrename">关闭</button>
+      <button class="btn primary" id="btn-confirmrename" disabled>重命名</button>
+    </div>
+  </div>
+</div>
+
+<!-- 配置 Modal -->
+<div class="modal-bg" id="modal">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="tabs" id="settings-tabs">
+        <button class="tab active" data-settings-tab="config">基础配置</button>
+        <button class="tab" data-settings-tab="llama" style="display:none">本地推理</button>
+        <button class="tab" data-settings-tab="prompts">提示预设</button>
+        <button class="tab" data-settings-tab="tags">优先标签</button>
+        <button class="tab" data-settings-tab="experimental">扩展功能</button>
+        <button class="tab" data-settings-tab="workspace">缓存清理</button>
+        <span class="pill-sep"></span>
+        <button id="btn-closemodal" data-tip="关闭"><svg class="ic"><use href="#ic-close"></use></svg></button>
+      </div>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-foot">
+      <span class="scrim-note" id="modal-foot-note"></span>
+      <button class="btn" id="btn-cancelcfg">关闭</button>
+      <button class="btn primary" id="btn-savecfg">应用</button>
+    </div>
+  </div>
+</div>
+
+<!-- 确认弹层 -->
+<div class="confirm-bg" id="confirmBg">
+  <div class="confirm-box">
+    <button class="hf-dlg-close" id="hfDlgClose" type="button" data-tip="关闭">
+      <svg class="ic"><use href="#ic-close"></use></svg>
+    </button>
+    <div class="confirm-title" id="confirmTitle">确认</div>
+    <div class="confirm-msg" id="confirmMsg"></div>
+    <div class="confirm-foot">
+      <button class="btn" id="confirmCancel">取消</button>
+      <button class="btn primary" id="confirmOk">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 输入弹层 -->
+<div class="confirm-bg" id="promptBg">
+  <div class="confirm-box">
+    <div class="confirm-title" id="promptTitle">输入</div>
+    <div class="confirm-msg" id="promptMsg"></div>
+    <input type="text" id="promptInput" class="prompt-input" spellcheck="false"/>
+    <div class="confirm-foot">
+      <button class="btn" id="promptCancel">取消</button>
+      <button class="btn primary" id="promptOk">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 去重确认面板 -->
+<div class="confirm-bg" id="dedupBg">
+  <div class="dedup-box">
+    <div class="dedup-head">
+      <div class="dedup-title">视频去重</div>
+      <div class="dedup-sub" id="dedupSub"></div>
+      <button class="btn ghost icon-only" id="btn-closededup" data-tip="关闭"><svg class="ic"><use href="#ic-close"></use></svg></button>
+    </div>
+    <div class="dedup-body" id="dedupBody"></div>
+    <div class="dedup-foot">
+      <span class="dedup-note">移除项移入所在目录的 <b>_duplicates/</b></span>
+      <button class="btn" id="dedupCancel">关闭</button>
+      <button class="btn primary" id="dedupOk">确认</button>
+    </div>
+  </div>
+</div>
+
+<script>
+<!--INJECT_JS-->
+</script>
+</body>
+</html>
