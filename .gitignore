@@ -1,0 +1,22 @@
+# ===== 便携依赖=====
+python/
+ffmpeg/
+
+# ===== 试验功能自动创建=====
+llama.cpp/
+models/
+pixai-tagger/
+faster-whisper/
+UV-Tool/
+
+# ===== 运行时=====
+_workspace/
+
+# ===== Python 缓存 =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
