@@ -104,6 +104,7 @@ const state = {
   thumbCache: new Map(),
   pixaiTaggerEnabled: false,
   whisperEnabled: false,
+  thumbOptimize: false,
   gpuBusy: false,
   installing: false,
   pixaiTaggedIds: new Set(),
@@ -223,7 +224,7 @@ function ddArrow(cls) {
   return '<svg class="' + (cls || 'dd-arrow') + '" viewBox="0 0 10 6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M1 1l4 4 4-4"/></svg>';
 }
 
-function toast(msg, kind, replace) {
+function toast(msg, kind, replace, dur) {
   const wrap = $('#toast-wrap');
   if (replace && wrap.lastChild) wrap.lastChild.remove();
   if (wrap.lastChild && wrap.lastChild.textContent === msg) wrap.lastChild.remove();
@@ -233,26 +234,29 @@ function toast(msg, kind, replace) {
   wrap.appendChild(el);
   while (wrap.children.length > 4) wrap.firstChild.remove();
   requestAnimationFrame(() => el.classList.add('show'));
-  const dur = kind === 'err' ? 4000 : 2600;
-  setTimeout(() => {
+  const ms = dur !== undefined ? dur : (kind === 'err' ? 4000 : 2600);
+  if (ms > 0) setTimeout(() => {
     el.classList.remove('show');
     el.classList.add('hide');
     el.addEventListener('transitionend', () => el.remove(), { once: true });
     setTimeout(() => el.remove(), 400);
-  }, dur);
+  }, ms);
 }
 function showConfirm(msg, opts) {
   opts = opts || {};
   const bg = $('#confirmBg');
+  const okBtn = $('#confirmOk');
   $('#confirmTitle').textContent = opts.title || '确认';
   $('#confirmMsg').textContent = msg;
-  $('#confirmOk').textContent = opts.okText || '确定';
+  okBtn.textContent = opts.okText || '确定';
+  okBtn.classList.toggle('danger', !!opts.danger);
   bg.classList.add('show');
-  $('#confirmOk').focus();
+  okBtn.focus();
   return new Promise(resolve => {
     function close(val) {
       bg.classList.remove('show');
-      $('#confirmOk').removeEventListener('click', onOk);
+      okBtn.classList.remove('danger');
+      okBtn.removeEventListener('click', onOk);
       $('#confirmCancel').removeEventListener('click', onCancel);
       document.removeEventListener('keydown', onKey);
       resolve(val);
@@ -373,7 +377,7 @@ async function callApi(method, ...args) {
   try {
     return await apiCall(method, ...args);
   } catch (e) {
-    toast('操作失败: ' + ((e && e.message) || e), 'err');
+    toast('操作失败: ' + ((e && e.message) || e), 'err', true);
     return undefined;
   }
 }
@@ -469,6 +473,7 @@ window.__ui = {
     if (typeof window.__onWhisperModelDone === 'function') window.__onWhisperModelDone(ev);
   },
   onFileDone(entry) {
+    if (entry.thumb_refresh) state.thumbCache.delete(entry.id);
     const idx = state.pending.findIndex(v => v.path === entry.original_path);
     const src = idx >= 0 ? state.pending[idx] : null;
     if (idx >= 0) state.pending.splice(idx, 1);

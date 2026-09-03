@@ -4,6 +4,8 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
+import shutil
 import subprocess
 import threading
 import time
@@ -12,7 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .workspace_paths import PROBE_CACHE_FILE, stable_id, thumb_path
-from .workspace_store import load_history, load_manifest, read_json, write_json
+from .workspace_store import get_history_by_id, load_history, load_manifest, read_json, write_json
 from .constants import (
     PROBE_POOL_WORKERS,
     PROBE_TIMEOUT,
@@ -50,23 +52,43 @@ def collect_all() -> List[str]:
     return videos
 
 
-def collect_failed() -> List[str]:
-    """递归扫描所有根文件夹下的 _failed 子目录。"""
+def collect_excluded() -> List[Tuple[str, str]]:
+    """递归扫描所有根文件夹下的 _failed/_duplicates，返回 (路径, status) 列表，失败在前。"""
     m = load_manifest()
-    result: List[str] = []
+    failed: List[Tuple[str, str]] = []
+    dup: List[Tuple[str, str]] = []
     for root in m.get("roots", []):
         if not os.path.isdir(root):
             continue
         for dirpath, dirnames, filenames in os.walk(root):
-            # 剪掉 _duplicates 目录，避免无谓遍历（去重移走的视频不算失败）
-            dirnames[:] = [d for d in dirnames if d.lower() != DUPLICATES_DIR]
-            if os.path.basename(dirpath).lower() == "_failed":
-                for f in filenames:
-                    full = os.path.join(dirpath, f)
-                    if is_video_file(full):
-                        result.append(full)
-                dirnames[:] = []  # 不深入 _failed 的子目录
-    return result
+            base = os.path.basename(dirpath).lower()
+            if base == "_failed":
+                status = "failed"
+            elif base == DUPLICATES_DIR:
+                status = "duplicate"
+            else:
+                continue
+            for f in filenames:
+                full = os.path.join(dirpath, f)
+                if is_video_file(full):
+                    (failed if status == "failed" else dup).append((full, status))
+            dirnames[:] = []  # 不深入排除目录的子目录
+    return failed + dup
+
+
+def prune_excluded_dirs(dirs: List[str]) -> None:
+    """排除目录（_failed/_duplicates）中已无任何视频时整目录删除。"""
+    for d in dirs:
+        try:
+            p = Path(d)
+            if not p.is_dir() or os.path.basename(d).lower() not in ("_failed", DUPLICATES_DIR):
+                continue
+            has_video = any(is_video_file(os.path.join(dp, f))
+                            for dp, _, fs in os.walk(d) for f in fs)
+            if not has_video:
+                shutil.rmtree(p, ignore_errors=True)
+        except Exception:
+            pass
 
 
 # ── 已处理识别 ──
@@ -231,6 +253,70 @@ def _ffprobe_video(path: str) -> Dict[str, Any]:
             return {}
 
 
+_THUMB_TIME_RE = re.compile(r"\d{1,3}:\d{2}:\d{2}")
+
+
+def _history_thumb_seconds(vid: str) -> Optional[float]:
+    """history 中 AI 给出的 thumb_time（HH:MM:SS）→ 秒；无效返回 None。"""
+    raw = (get_history_by_id(vid) or {}).get("thumb_time")
+    if isinstance(raw, str) and _THUMB_TIME_RE.fullmatch(raw.strip()):
+        h, m, s = (int(x) for x in raw.strip().split(":"))
+        return h * 3600 + m * 60 + s
+    return None
+
+
+def invalidate_thumbnail(vid: str) -> None:
+    """清除某视频的缩略图内存与磁盘缓存。"""
+    with _thumb_lru_lock:
+        _thumb_lru.pop(vid, None)
+    try:
+        thumb_path(vid).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _run_frame_extract(path: str, ss: str, quality: int,
+                       vf: Optional[str] = None) -> "subprocess.CompletedProcess":
+    """按 seek 策略抽一帧（JPEG bytes）：mpegts 输入 seek 不准，改输出 seek。"""
+    seek_args = ["-i", path, "-ss", ss] if is_mpeg_ts(path) else ["-ss", ss, "-noaccurate_seek", "-i", path]
+    vf_args = ["-vf", vf] if vf else []
+    cmd = [
+        FFMPEG_EXE, "-y", "-nostats", *seek_args,
+        "-vframes", "1", "-q:v", str(quality), *vf_args,
+        "-f", "image2pipe", "-vcodec", "mjpeg", "-",
+    ]
+    return subprocess.run(cmd, capture_output=True, timeout=THUMB_TIMEOUT, **SUBPROCESS_KWARGS)
+
+
+def _thumb_seek_attempts(path: str, vid: str) -> List[str]:
+    """取帧点位：history 的 thumb_time 优先，其余取时长 10% 处逐级回退。"""
+    try:
+        duration = int(probe_video(path).get("duration") or 0)
+    except Exception:
+        duration = 0
+    if is_mpeg_ts(path) or duration < 2:
+        attempts = ["1", "0"]
+    else:
+        attempts = [str(duration // 10), "1", "0"]
+    thumb_ss = _history_thumb_seconds(vid)
+    if thumb_ss is not None:
+        attempts = [f"{thumb_ss:.3f}", *attempts]
+    return attempts
+
+
+def generate_poster(path: str, vid: str) -> Optional[bytes]:
+    """按 history thumb_time 抽全分辨率海报帧（JPEG bytes），失败回退默认取帧链。"""
+    try:
+        with _ffmpeg_semaphore:
+            for ss in _thumb_seek_attempts(path, vid):
+                result = _run_frame_extract(path, ss, 2)
+                if result.returncode == 0 and result.stdout and result.stdout[:2] == b'\xff\xd8':
+                    return result.stdout
+    except Exception:
+        pass
+    return None
+
+
 def generate_thumbnail(path: str, vid: str, max_side: int = THUMB_MAX_SIDE) -> Optional[str]:
     """生成缩略图：优先读内存 LRU → 磁盘缓存 → ffmpeg 抽帧。"""
     # 第 1 级：内存 LRU
@@ -261,31 +347,9 @@ def generate_thumbnail(path: str, vid: str, max_side: int = THUMB_MAX_SIDE) -> O
 
     # 第 3 级：ffmpeg 抽帧
     try:
-        def _extract(ss: str):
-            # mpegts 输入 seek 不准，改输出 seek
-            seek_args = ["-i", path, "-ss", ss] if is_mpeg_ts(path) else ["-ss", ss, "-noaccurate_seek", "-i", path]
-            cmd = [
-                FFMPEG_EXE, "-y", "-nostats", *seek_args,
-                "-vframes", "1", "-q:v", "5",
-                "-vf", f"scale={max_side}:-1",
-                "-f", "image2pipe", "-vcodec", "mjpeg", "-",
-            ]
-            return subprocess.run(
-                cmd, capture_output=True, timeout=THUMB_TIMEOUT, **SUBPROCESS_KWARGS,
-            )
-
-        try:
-            duration = int(probe_video(path).get("duration") or 0)
-        except Exception:
-            duration = 0
-        if is_mpeg_ts(path) or duration < 2:
-            attempts = ["1", "0"]
-        else:
-            attempts = [str(duration // 2), "1", "0"]
-
         with _ffmpeg_semaphore:
-            for ss in attempts:
-                result = _extract(ss)
+            for ss in _thumb_seek_attempts(path, vid):
+                result = _run_frame_extract(path, ss, 5, f"scale={max_side}:-1")
                 if result.returncode == 0 and result.stdout and result.stdout[:2] == b'\xff\xd8':
                     break
         if result.returncode == 0 and result.stdout and result.stdout[:2] == b'\xff\xd8':
@@ -381,12 +445,11 @@ def scan_all() -> Dict[str, Any]:
         else:
             pending.append(make_entry(vp, info, "pending"))
 
-    failed_videos = collect_failed()
-    for vp in failed_videos:
+    for vp, status in collect_excluded():
         norm = _norm(vp)
         if norm in failed_norm:
             continue
-        failed.append(make_entry(vp, {}, "failed"))
+        failed.append(make_entry(vp, {}, status))
         failed_norm.add(norm)
 
     m = load_manifest()

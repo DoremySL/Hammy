@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .. import discovery, runner
+from batch_rename.dedup import DUPLICATES_DIR
 from ..workspace_paths import (
     PIXAI_TAGS_FILE,
     THUMB_DIR,
@@ -25,6 +26,44 @@ from ..workspace_store import (
     write_json,
 )
 from ..workspace_service import find_cached_nfo, restore_video, restore_videos
+
+
+def _recycle_files(paths: List[str]) -> Tuple[List[str], List[str]]:
+    """移入系统回收站（SHFileOperationW，支持批量），返回 (成功路径, 错误列表)。"""
+    errors: List[str] = []
+    targets: List[str] = []
+    for p in paths:
+        if Path(p).is_file():
+            targets.append(p)
+        else:
+            errors.append(f"{Path(p).name}: 文件不存在")
+    if not targets:
+        return [], errors
+    if os.name != "nt":
+        return [], errors + [f"{Path(p).name}: 仅 Windows 支持回收站" for p in targets]
+
+    import ctypes
+    from ctypes import wintypes
+
+    class SHFILEOPSTRUCTW(ctypes.Structure):
+        _fields_ = [
+            ("hwnd", wintypes.HWND), ("wFunc", ctypes.c_uint),
+            ("pFrom", ctypes.c_wchar_p), ("pTo", ctypes.c_wchar_p),
+            ("fFlags", ctypes.c_ushort), ("fAnyOperationsAborted", wintypes.BOOL),
+            ("hNameMappings", ctypes.c_void_p), ("lpszProgressTitle", ctypes.c_wchar_p),
+        ]
+
+    # pFrom 为 \0 分隔、双 \0 结尾的路径列表；c_wchar_p 会截断，需用缓冲区
+    buf = ctypes.create_unicode_buffer("\u0000".join(targets) + "\u0000\u0000")
+    op = SHFILEOPSTRUCTW()
+    op.wFunc = 3  # FO_DELETE
+    op.pFrom = ctypes.cast(buf, ctypes.c_wchar_p)
+    op.fFlags = 0x40 | 0x10 | 0x4 | 0x400  # ALLOWUNDO | NOCONFIRMATION | SILENT | NOERRORUI
+    res = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+    moved = [p for p in targets if not Path(p).exists()]
+    if res != 0 or op.fAnyOperationsAborted:
+        errors += [f"{Path(p).name}: 移入回收站失败" for p in targets if Path(p).exists()]
+    return moved, errors
 
 
 class MediaMixin:
@@ -86,6 +125,29 @@ class MediaMixin:
     def export_nfo_batch(self, vids: List[str]) -> Dict[str, Any]:
         return runner.export_nfo_batch(vids)
 
+    def generate_posters(self, vids: List[str]) -> Dict[str, Any]:
+        """按 history thumb_time 生成 <视频名>-poster.jpg 全分辨率海报（媒体服务器用）。"""
+        ok_count, errors = 0, []
+        for vid in vids:
+            try:
+                p = (get_history_by_id(vid) or {}).get("new_path", "")
+                if not p or not Path(p).is_file():
+                    errors.append(f"{Path(p).name if p else vid}: 视频不存在")
+                    continue
+                data = discovery.generate_poster(p, vid)
+                if not data:
+                    errors.append(f"{Path(p).name}: 抽帧失败")
+                    continue
+                target = Path(p).with_name(f"{Path(p).stem}-poster.jpg")
+                tmp = target.with_suffix(".jpg.tmp")
+                with open(tmp, "wb") as f:
+                    f.write(data)
+                os.replace(tmp, target)
+                ok_count += 1
+            except Exception as e:
+                errors.append(f"{vid}: {e}")
+        return {"ok": True, "ok_count": ok_count, "failed_count": len(errors), "errors": errors}
+
     # ── 还原 ──
 
     def restore(self, vid: str) -> Dict[str, Any]:
@@ -96,18 +158,18 @@ class MediaMixin:
         return restore_videos(vids)
 
     def move_failed_out(self, paths: List[str]) -> Dict[str, Any]:
-        """把失败视频移出 _failed 目录回到上级目录（重新作为待处理）。"""
+        """把排除视频移出 _failed/_duplicates 目录回到上级目录（重新作为待处理）。"""
         from batch_rename.utils import to_long_path
         from batch_rename.naming import resolve_collision
-        moved, errors = 0, []
+        moved, errors, old_dirs = 0, [], []
         for fp in paths:
             try:
                 p = Path(fp)
                 if not p.is_file():
                     errors.append(f"{p.name}: 文件不存在")
                     continue
-                if p.parent.name.lower() != "_failed":
-                    errors.append(f"{p.name}: 不在 _failed 目录中")
+                if p.parent.name.lower() not in ("_failed", DUPLICATES_DIR):
+                    errors.append(f"{p.name}: 不在排除目录中")
                     continue
                 dest_dir = p.parent.parent
                 src_long = to_long_path(str(p))
@@ -119,13 +181,26 @@ class MediaMixin:
                     continue
                 os.replace(src_long, to_long_path(str(dest)))
                 moved += 1
+                old_dirs.append(str(p.parent))
             except Exception as e:
                 errors.append(f"{Path(fp).name}: {e}")
+        discovery.prune_excluded_dirs(old_dirs)
         try:
             scan = discovery.scan_all()
         except Exception as e:
             scan = {"error": str(e)}
         return {"ok": True, "moved": moved, "errors": errors, "scan": scan}
+
+    def move_to_recycle(self, paths: List[str]) -> Dict[str, Any]:
+        """把排除视频移入系统回收站。"""
+        moved, errors = _recycle_files(paths)
+        old_dirs = [str(Path(fp).parent) for fp in moved]
+        discovery.prune_excluded_dirs(old_dirs)
+        try:
+            scan = discovery.scan_all()
+        except Exception as e:
+            scan = {"error": str(e)}
+        return {"ok": True, "moved": len(moved), "errors": errors, "scan": scan}
 
     # ── 播放 / 导出到文件夹 ──
 
@@ -155,7 +230,7 @@ class MediaMixin:
         from ..config_store import load_whisper_config
         whisper_on = load_whisper_config().get("enabled", False)
 
-        moved, nfo_count, sub_count, errors = 0, 0, 0, []
+        moved, nfo_count, sub_count, poster_count, errors = 0, 0, 0, 0, []
         exported_paths: List[str] = []
 
         for item in items:
@@ -214,6 +289,17 @@ class MediaMixin:
                             except Exception:
                                 pass
 
+                # 海报（<stem>-poster.jpg）随附件一起移动
+                if with_nfo:
+                    poster = p.with_name(f"{p.stem}-poster.jpg")
+                    if poster.is_file():
+                        try:
+                            os.replace(to_long_path(str(poster)),
+                                       to_long_path(str(target.with_name(f"{target.stem}-poster.jpg"))))
+                            poster_count += 1
+                        except Exception:
+                            pass
+
             except Exception as e:
                 errors.append(f"{Path(fp).name}: {e}")
 
@@ -229,7 +315,8 @@ class MediaMixin:
             scan = {"error": str(e)}
 
         return {"ok": True, "moved": moved, "nfo_count": nfo_count,
-                "sub_count": sub_count, "errors": errors, "scan": scan}
+                "sub_count": sub_count, "poster_count": poster_count,
+                "errors": errors, "scan": scan}
 
     # ── 手动重命名 ──
 

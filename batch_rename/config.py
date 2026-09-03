@@ -17,7 +17,7 @@ class Config:
     sampling_points: int = 5
     frames_per_point: int = 3
     frame_max_side: int = 640
-    frame_time_tags: bool = False
+    frame_time_tags: int = 0  # 0=不添加 1=添加时间标签 2=添加并用于优化缩略图
     ai_workers: int = 4
     retry_times: int = 2
     ai_timeout: int = 60

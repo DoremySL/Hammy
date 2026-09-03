@@ -144,7 +144,7 @@ def rename_video(video_path: str, new_stem: str, config: "Config",
         return str(target), "ok"
 
 
-_COMPANION_SUFFIXES = (".nfo", ".srt", ".zh.srt")
+_COMPANION_SUFFIXES = (".nfo", ".srt", ".zh.srt", "-poster.jpg")
 
 
 def _rename_companion_files(old_video: Path, new_video: Path,

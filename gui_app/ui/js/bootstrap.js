@@ -34,6 +34,7 @@ pywebviewReady(30000).then(async () => {
     if (cfg && cfg.theme) applyTheme(cfg.theme);
     if (cfg) applyForceAnimation(cfg.force_animation !== false);
     const exp = (cfg && cfg.experimental) || {};
+    state.thumbOptimize = Number(((cfg || {}).video || {}).frame_time_tags) === 2;
     // 各 id 集合互相独立，并行拉取避免逐个串行等待
     const idFetches = [];
     if (exp.pixai_tagger_enabled) {

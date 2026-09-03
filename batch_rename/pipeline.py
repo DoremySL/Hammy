@@ -254,6 +254,8 @@ class AIWorker:
                 extra_meta=self.extra_meta_map.get(vp, ""),
             )
             if result.title:
+                if result.thumb_time:
+                    info["thumb_time"] = result.thumb_time
                 display_msg = self._handle_success(vp, info, result.title, result.plot,
                                                   result.tags, result.retries)
             else:

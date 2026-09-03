@@ -59,7 +59,7 @@
       <b id="stat-processed">0</b> 已处理
     </span>
     <span class="pill clickable" data-view="failed">
-      <b id="stat-failed">0</b> 失败
+      <b id="stat-failed">0</b> 已排除
     </span>
   </div>
   <div class="mini-prog-box" id="miniProgBox">
@@ -104,7 +104,7 @@
         <button class="tb-btn" id="tb-process" data-tb-tip="处理选中视频"><svg class="ic"><use href="#ic-play"></use></svg></button>
         <button class="tb-btn" id="tb-export-nfo" data-tb-tip="导出 NFO 到视频目录"><svg class="ic"><use href="#ic-save"></use></svg></button>
         <button class="tb-btn" id="tb-restore" data-tb-tip="还原初始文件名"><svg class="ic"><use href="#ic-undo"></use></svg></button>
-        <button class="tb-btn" id="tb-move-out" data-tb-tip="移出错误目录至上级目录"><svg class="ic"><use href="#ic-upload"></use></svg></button>
+        <button class="tb-btn" id="tb-move-out" data-tb-tip="移回上级目录"><svg class="ic"><use href="#ic-upload"></use></svg></button>
       </div>
       <span class="sel-count" id="selCount"></span>
       <div class="right">
@@ -245,7 +245,7 @@
       <div class="tabs" id="settings-tabs">
         <button class="tab active" data-settings-tab="config">基础配置</button>
         <button class="tab" data-settings-tab="llama" style="display:none">本地推理</button>
-        <button class="tab" data-settings-tab="prompts">提示预设</button>
+        <button class="tab" data-settings-tab="prompts">提示模板</button>
         <button class="tab" data-settings-tab="tags">优先标签</button>
         <button class="tab" data-settings-tab="experimental">扩展功能</button>
         <button class="tab" data-settings-tab="workspace">缓存清理</button>

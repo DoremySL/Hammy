@@ -110,21 +110,37 @@ async function processSelected() {
   await startProcessing(paths, `开始处理 ${pendingSel.length} 个视频…`);
 }
 
-async function moveFailedOut() {
-  const failedSel = [...state.selected]
+async function moveOut() {
+  const sel = [...state.selected]
     .map(id => findVideoById(id))
-    .filter(v => v && v.status === 'failed');
-  if (!failedSel.length) { toast('未选中失败视频', 'err'); return; }
-  toast(`正在移出 ${failedSel.length} 个视频…`);
-  const paths = failedSel.map(v => v.path);
+    .filter(v => v && (v.status === 'failed' || v.status === 'duplicate'));
+  if (!sel.length) { toast('未选中排除视频', 'err'); return; }
+  toast(`正在移回 ${sel.length} 个视频…`);
+  const paths = sel.map(v => v.path);
   const r = await callApi('move_failed_out', paths);
   if (!r) return;
   if (r.ok) {
     if (r.scan && !r.scan.error) loadFromResult(r.scan);
     const errN = (r.errors || []).length;
-    toast(errN ? `移出完成，${errN} 个失败` : `已将 ${r.moved} 个视频移回上级目录`, errN ? 'err' : 'ok', true);
+    toast(errN ? `移回完成，${errN} 个失败` : `已将 ${r.moved} 个视频移回上级目录`, errN ? 'err' : 'ok', true);
   } else {
-    toast(r && r.error ? r.error : '移出失败', 'err', true);
+    toast(r && r.error ? r.error : '移回失败', 'err', true);
+  }
+}
+async function recycleExcluded(ids) {
+  const n = ids.length;
+  if (!n) return;
+  if (!await showConfirm(`确定把 ${n} 个视频移入回收站吗？\n\n之后如需恢复，可从系统回收站还原。`, { okText: '移入回收站', danger: true })) return;
+  toast(`正在移入回收站 ${n} 个视频…`);
+  const paths = ids.map(id => findVideoById(id)).filter(Boolean).map(v => v.path);
+  const r = await callApi('move_to_recycle', paths);
+  if (!r) return;
+  if (r.ok) {
+    if (r.scan && !r.scan.error) loadFromResult(r.scan);
+    const errN = (r.errors || []).length;
+    toast(errN ? `移入完成，${errN} 个失败` : `已将 ${r.moved} 个视频移入回收站`, errN ? 'err' : 'ok', true);
+  } else {
+    toast(r && r.error ? r.error : '移入回收站失败', 'err', true);
   }
 }
 
@@ -143,6 +159,12 @@ async function exportNfoBatch(vids) {
   const r = await callApi('export_nfo_batch', vids);
   if (!r) return;
   toast(`导出成功 ${r.ok_count} 个${r.failed_count ? '，失败 ' + r.failed_count + ' 个' : ''}`, r.failed_count ? 'err' : 'ok', true);
+}
+async function generatePosters(ids) {
+  toast(`正在生成 ${ids.length} 张缩略图…`);
+  const r = await callApi('generate_posters', ids);
+  if (!r) return;
+  toast(`已生成 ${r.ok_count} 个${r.failed_count ? '，失败 ' + r.failed_count + ' 个' : ''}`, r.failed_count ? 'err' : 'ok', true);
 }
 async function restoreVideo(vid) {
   if (!await showConfirm('确定还原该视频的初始文件名吗？\n\n还原后：\n• 视频会恢复为初始文件名\n• 视频目录里已导出的 NFO 会被删除\n• 已处理记录会被清除', { okText: '还原' })) return;
@@ -192,8 +214,8 @@ async function exportToFolder(withNfo) {
     const errN = (r.errors || []).length;
     let msg = `已导出 ${r.moved} 个视频`;
     if (withNfo && r.nfo_count) {
-      const total = r.nfo_count + (r.sub_count || 0);
-      msg += state.whisperEnabled ? ` + ${total} 个附属文件` : ` + ${r.nfo_count} 个 NFO`;
+      const total = r.nfo_count + (r.sub_count || 0) + (r.poster_count || 0);
+      msg += ` + ${total} 个附属文件`;
     }
     if (errN) msg += `，${errN} 个失败`;
     toast(msg, errN ? 'err' : 'ok', true);
@@ -362,8 +384,6 @@ function showContextMenu(e, v) {
   const groups = [];
   const gBasic = [
     { label: '在资源管理器中打开', fn: () => openInExplorer(v.path) },
-  ];
-  const gPlay = [
     { label: '使用默认播放器播放', fn: () => callApi('play_video', v.path) },
   ];
   const gRename = [];
@@ -375,10 +395,9 @@ function showContextMenu(e, v) {
     { label: `导出到…（${selIds.length} 个）`, fn: () => exportToFolder(false) },
   ];
   if (state.view === 'processed') {
-    const subLabel = state.whisperEnabled ? '含附属文件' : '含 NFO';
-    gExport.push({ label: `导出到…（${subLabel}，${selIds.length} 个）`, fn: () => exportToFolder(true) });
+    gExport.push({ label: `导出到…（含附属文件，${selIds.length} 个）`, fn: () => exportToFolder(true) });
   }
-  groups.push(gBasic, gPlay, gExport);
+  groups.push(gBasic, gExport);
 
   const gView = [];
   if (state.view === 'pending') {
@@ -417,12 +436,13 @@ function showContextMenu(e, v) {
   }
   if (gWhisper.length) groups.push(gWhisper);
   if (state.view === 'failed') {
-    const failedIds = selIds.filter(id => {
+    const exIds = selIds.filter(id => {
       const vv = findVideoById(id);
-      return vv && vv.status === 'failed';
+      return vv && (vv.status === 'failed' || vv.status === 'duplicate');
     });
-    if (failedIds.length) {
-      gView.push({ label: `移出错误目录至上级目录（${failedIds.length} 个）`, fn: () => moveFailedOut() });
+    if (exIds.length) {
+      gView.push({ label: `移回上级目录（${exIds.length} 个）`, fn: () => moveOut() });
+      gView.push({ label: `移入回收站（${exIds.length} 个）`, fn: () => recycleExcluded(exIds), danger: true });
     }
   }
   if (gView.length) groups.push(gView);
@@ -434,11 +454,17 @@ function showContextMenu(e, v) {
       return vv && vv.status === 'processed';
     });
     if (processedIds.length) {
-      gNfo.push({ label: `批量导出 NFO（${processedIds.length} 个）`, fn: () => exportNfoBatch(processedIds) });
-      gNfo.push({ label: `批量还原初始文件名（${processedIds.length} 个）`, fn: () => restoreBatch(processedIds) });
+      gNfo.push({ label: `导出 NFO（${processedIds.length} 个）`, fn: () => exportNfoBatch(processedIds) });
+      if (state.thumbOptimize) {
+        gNfo.push({ label: `生成缩略图（${processedIds.length} 个）`, fn: () => generatePosters(processedIds) });
+      }
+      gNfo.push({ label: `还原初始文件名（${processedIds.length} 个）`, fn: () => restoreBatch(processedIds) });
     }
   } else if (v.status === 'processed') {
     gNfo.push({ label: '导出 NFO 到视频目录', fn: () => exportNfo(v.id) });
+    if (state.thumbOptimize) {
+      gNfo.push({ label: '生成缩略图', fn: () => generatePosters([v.id]) });
+    }
     gNfo.push({ label: '还原初始文件名', fn: () => restoreVideo(v.id) });
   }
   if (gNfo.length) groups.push(gNfo);

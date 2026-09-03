@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from . import prompts
+from . import discovery, prompts
 from .workspace_paths import NFO_DIR, stable_id
 from .workspace_store import (
     append_history_entry,
@@ -110,13 +110,13 @@ def build_engine_config(cfg_dict: Dict[str, Any]) -> Config:
     cfg.sampling_points = _safe_int(video, "sampling_points", cfg.sampling_points)
     cfg.frames_per_point = _safe_int(video, "frames_per_point", cfg.frames_per_point)
     cfg.frame_max_side = _safe_int(video, "frame_max_side", cfg.frame_max_side)
-    cfg.frame_time_tags = bool(video.get("frame_time_tags", cfg.frame_time_tags))
+    cfg.frame_time_tags = _safe_int(video, "frame_time_tags", cfg.frame_time_tags)
 
     naming = _section("naming")
     cfg.include_date = bool(naming.get("include_date", cfg.include_date))
     cfg.include_original = bool(naming.get("include_original", cfg.include_original))
 
-    active = prompts.get_active()
+    active = prompts.get_active(with_thumb_time=(cfg.frame_time_tags == 2))
     cfg.prompt = active["prompt"]
     cfg.system_prompt = active["system_prompt"]
 
@@ -295,9 +295,20 @@ class PipelineRunner:
                 },
                 "processed_at": time.time(),
             }
+            thumb_time = (info or {}).get("thumb_time") or ""
+            if thumb_time:
+                entry["thumb_time"] = thumb_time
             # 写 history（status=ok/skipped 才算"done"）
             if status in ("ok", "skipped"):
                 append_history_entry(entry)
+                if engine_cfg.frame_time_tags == 2:
+                    # 先于前端推送用 thumb_time 重生成缩略图（append 后 history 内存缓存立即可读）
+                    discovery.invalidate_thumbnail(vid)
+                    try:
+                        discovery.generate_thumbnail(new_path or orig, vid)
+                    except Exception:
+                        pass
+                    entry["thumb_refresh"] = True
             # 停止检查点：stop 后每完成一个文件即落盘一次，避免 daemon 线程退出时整批记录丢失。
             if self._stop.is_set():
                 try:

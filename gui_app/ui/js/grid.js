@@ -2,7 +2,7 @@
    列表加载
    ════════════════════════════════════════════════════════════ */
 function loadFromResult(result, preserveScroll) {
-  if (result.error) { toast('扫描出错: ' + result.error, 'err'); return; }
+  if (result.error) { toast('扫描出错: ' + result.error, 'err', true); return; }
   state.pending = result.pending || [];
   state.processed = result.processed || [];
   state.failed = result.failed || [];
@@ -481,8 +481,10 @@ class ThumbLoader {
     if (!thumb || thumb.querySelector('img')) return;
     const img = document.createElement('img');
     img.alt = '';
+    const onReady = () => applyPortraitThumb(thumb, img, url);
     if (instant) {
       img.classList.add('loaded');
+      img.onload = onReady;
       img.src = url;
       thumb.classList.remove('loading');
       const ph = thumb.querySelector('.ph');
@@ -493,11 +495,25 @@ class ThumbLoader {
         thumb.classList.remove('loading');
         const ph = thumb.querySelector('.ph');
         if (ph) ph.remove();
+        onReady();
       };
       img.src = url;
     }
     thumb.insertBefore(img, thumb.firstChild);
   }
+}
+
+function applyPortraitThumb(thumb, img, url) {
+  if (!img.naturalWidth || thumb.querySelector('.thumb-bg')) return;
+  const r = img.naturalWidth / img.naturalHeight;
+  if (r >= 1) return;
+  thumb.classList.add('portrait');
+  img.style.setProperty('--pw', (r >= 8 / 9 ? r * 56.25 : 70).toFixed(2) + '%');
+  const bg = document.createElement('img');
+  bg.className = 'thumb-bg';
+  bg.alt = '';
+  bg.src = url;
+  thumb.insertBefore(bg, img);
 }
 
 /* ════════════════════════════════════════════════════════════
@@ -514,7 +530,7 @@ function makeCard(v) {
   card.dataset.path = v.path;
   card._video = v;
   const dotIdx = v.name.lastIndexOf('.');
-  const displayName = dotIdx > 0 ? v.name.slice(0, dotIdx) : v.name;
+  const displayName = v.title || (dotIdx > 0 ? v.name.slice(0, dotIdx) : v.name);
   const ext = dotIdx > 0 ? v.name.slice(dotIdx + 1).toUpperCase() : '';
   v._ext = ext;
   const meta = _cardMeta(v);
@@ -528,7 +544,9 @@ function makeCard(v) {
   if (isUnc) pixaiBadge += '<span class="tag-badge unc" data-tip="分类不确定（二次元/非二次元无法判定）">UNC</span>';
   if (state.pixaiTaggedIds.has(v.id)) pixaiBadge += '<span class="tag-badge pixai" data-tip="已获取角色/IP标签">IP</span>';
   const whisperBadge = state.whisperTranscribedIds.has(v.id) ? '<span class="tag-badge whisper" data-tip="已获取语音转录">CC</span>' : '';
-  const badges = (pixaiBadge || whisperBadge) ? `<div class="badges">${pixaiBadge}${whisperBadge}</div>` : '';
+  const stBadge = v.status === 'failed' ? '<span class="tag-badge failed" data-tip="处理失败，位于 _failed 目录">FAIL</span>'
+    : v.status === 'duplicate' ? '<span class="tag-badge dup" data-tip="去重移除，位于 _duplicates 目录">DUP</span>' : '';
+  const badges = (pixaiBadge || whisperBadge || stBadge) ? `<div class="badges">${pixaiBadge}${whisperBadge}${stBadge}</div>` : '';
   card.innerHTML = `
     <div class="thumb"><div class="ph">${icon('clapper','26px')}</div>${badges}</div>
     <div class="meta">
@@ -740,7 +758,7 @@ $('#tb-restore').onclick = () => {
   });
   if (ids.length) restoreBatch(ids);
 };
-$('#tb-move-out').onclick = () => moveFailedOut();
+$('#tb-move-out').onclick = () => moveOut();
 
 initDropdown($('#sortSel'), dim => {
   const cur = state.sortBy || 'default';
@@ -758,6 +776,7 @@ initDropdown($('#sortSel'), dim => {
    视图切换
    ════════════════════════════════════════════════════════════ */
 function switchView(view) {
+  const prev = state.view;
   state.view = view;
   state.selected = new Set();
   state.selAnchor = null;
@@ -779,6 +798,11 @@ function switchView(view) {
   updateSelectedInfo();
   updateSelToolbar();
   $('#detail').innerHTML = _EMPTY_DETAIL;
+  if (prev === 'processed' && view === 'pending'
+      && !$('#pane-bottom').classList.contains('collapsed')
+      && $('#tab-detail').classList.contains('active')) {
+    gotoLog();
+  }
 }
 function switchTab(tab) {
   $$('.tab[data-tab]').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));

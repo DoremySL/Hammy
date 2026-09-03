@@ -85,7 +85,7 @@ async function removeSource(path, isAdhoc) {
 async function addFolder() {
   const r = await callApi('pick_folders');
   if (!r || !r.length) return;
-  toast('正在扫描…');
+  toast('正在扫描…', null, false, 0);
   const result = await callApi('add_sources', r);
   if (!result) return;
   if (result.error) { loadFromResult(result); return; }
@@ -101,7 +101,7 @@ async function addFolder() {
 async function addFiles() {
   const r = await callApi('pick_files');
   if (!r || !r.length) return;
-  toast('正在扫描…');
+  toast('正在扫描…', null, false, 0);
   const result = await callApi('add_sources', r);
   if (!result) return;
   if (result.error) { loadFromResult(result); return; }
@@ -264,7 +264,7 @@ function dedupMetaHtml(it) {
   else if (it.has_audio === false || v.has_audio === false) tail.push('无音频');
   const durLine = tail.join(' · ') || '—';
   const mtLine = parts.join(' · ') || '—';
-  return `<div class="stem dur-line">${esc(durLine)}</div>` +
+  return `<div class="stem dur-line" data-tip="${esc(it.path)}">${esc(durLine)}</div>` +
     `<div class="stem mt-line" data-tip="${esc(it.path)}">${esc(mtLine)}</div>`;
 }
 
@@ -363,7 +363,11 @@ function setDedupThumbImg(thumb, url) {
   if (thumb.querySelector('img')) return;
   const img = document.createElement('img');
   img.alt = '';
-  img.onload = () => { const ph = thumb.querySelector('.ph'); if (ph) ph.remove(); };
+  img.onload = () => {
+    const ph = thumb.querySelector('.ph');
+    if (ph) ph.remove();
+    applyPortraitThumb(thumb, img, url);
+  };
   img.src = url;
   thumb.insertBefore(img, thumb.firstChild);
 }

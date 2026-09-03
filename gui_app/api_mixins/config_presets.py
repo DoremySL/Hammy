@@ -41,7 +41,10 @@ class ConfigPresetMixin:
         return prompts.set_active(pid)
 
     def preview_prompt(self, fields: Dict[str, Any]) -> Dict[str, Any]:
-        return {"prompt": prompts.preview_prompt(fields)}
+        # 预览跟随当前设置：时间标签=添加并用于优化缩略图时，展示注入的 thumb_time 字段
+        video = config_store.load_config().get("video") or {}
+        with_thumb = int(video.get("frame_time_tags") or 0) == 2
+        return {"prompt": prompts.preview_prompt(fields, with_thumb_time=with_thumb)}
 
     # ── 优先标签 ──
 

@@ -81,6 +81,22 @@ class TestDedup(unittest.TestCase):
         self.assertEqual(groups[0]["keep"], shallow)
         self.assertEqual(groups[0]["remove"], [deep])
 
+    def test_find_duplicates_same_dir_keeps_original(self):
+        # 同目录：无副本标记的原版优先（" (1)" 在纯字典序里反而排前面）
+        orig = self._write("video.mp4", b"dup content" * 50)
+        copy1 = self._write("video (1).mp4", b"dup content" * 50)
+        groups = find_duplicates([copy1, orig])
+        self.assertEqual(groups[0]["keep"], orig)
+        self.assertEqual(groups[0]["remove"], [copy1])
+
+    def test_find_duplicates_marker_beats_length(self):
+        # 副本标记数量优先于文件名长短
+        long_orig = self._write("a very long original name.mp4", b"dup content" * 50)
+        copy1 = self._write("x (1).mp4", b"dup content" * 50)
+        groups = find_duplicates([copy1, long_orig])
+        self.assertEqual(groups[0]["keep"], long_orig)
+        self.assertEqual(groups[0]["remove"], [copy1])
+
     def test_find_duplicates_multiple_groups(self):
         a1 = self._write("a1.mp4", b"group one content" * 40)
         a2 = self._write("a2.mp4", b"group one content" * 40)

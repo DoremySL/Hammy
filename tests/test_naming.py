@@ -9,6 +9,7 @@ from pathlib import Path
 from batch_rename.naming import (
     sanitize_filename, resolve_collision, extract_date_str, build_new_stem,
     apply_manual_transform, strip_sub_lang, match_subtitle_files,
+    _rename_companion_files, _COMPANION_SUFFIXES,
 )
 from batch_rename.utils import to_long_path
 from batch_rename.config import Config
@@ -369,3 +370,30 @@ class TestMatchSubtitleFiles(unittest.TestCase):
         pairs = match_subtitle_files(vs, subs)
         self.assertEqual(self._names(pairs, 0), ["B.ass"])
         self.assertEqual(self._names(pairs, 1), ["A.ass"])
+
+
+class TestCompanionPosterRename(unittest.TestCase):
+    """海报 <stem>-poster.jpg 属于伴随后缀，视频改名时跟随。"""
+
+    def test_poster_suffix_registered(self):
+        self.assertIn("-poster.jpg", _COMPANION_SUFFIXES)
+
+    def test_poster_follows_rename(self):
+        with tempfile.TemporaryDirectory() as d:
+            poster = Path(d) / "旧名-poster.jpg"
+            poster.write_bytes(b"jpg")
+            _rename_companion_files(Path(d) / "旧名.mp4", Path(d) / "新名.mp4")
+            self.assertTrue((Path(d) / "新名-poster.jpg").is_file())
+            self.assertFalse(poster.exists())
+
+    def test_poster_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "旧名-poster.jpg").write_bytes(b"old")
+            Path(d, "新名-poster.jpg").write_bytes(b"new")
+            _rename_companion_files(Path(d) / "旧名.mp4", Path(d) / "新名.mp4")
+            self.assertEqual(Path(d, "新名-poster.jpg").read_bytes(), b"new")
+            self.assertTrue(Path(d, "旧名-poster.jpg").is_file())
+
+
+if __name__ == "__main__":
+    unittest.main()

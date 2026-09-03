@@ -1,4 +1,4 @@
-"""多套提示词预设 + 锁定 JSON 结构：结构层（只读）与内容层（可编辑）分离，避免误改导致解析失败。"""
+"""多套提示词模板 + 锁定 JSON 结构：结构层（只读）与内容层（可编辑）分离，避免误改导致解析失败。"""
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
@@ -22,7 +22,7 @@ _STRUCTURE_SKELETON = (
     '{{\n'
     '    "plot": "{plot_guidance}",\n'
     '    "tags": ["标签1", "标签2", ...]{tags_dim},\n'
-    '    "title": "{title_guidance}"\n'
+    '    "title": "{title_guidance}"{thumb_time_field}\n'
     '}}'
 )
 
@@ -33,33 +33,37 @@ _STRUCTURE_EXAMPLE = (
     '{{\n'
     '    "plot": "{plot_example}",\n'
     '    "tags": [{tags_example}],\n'
-    '    "title": "{title_example}"\n'
+    '    "title": "{title_example}"{thumb_time_example}\n'
     '}}'
 )
 
+# 「时间标签」选项2 追加项：thumb_time 字段，引导/示例文案来自模板内容层（界面可编辑）
 
-# ── 内置预设 ──
+
+# ── 内置模板 ──
 
 
 def _builtin_presets() -> List[Dict[str, Any]]:
-    """返回内置预设列表。每个预设包含完整的内容层字段。"""
+    """返回内置模板列表。每个模板包含完整的内容层字段。"""
     return [
         {
             "id": "default",
-            "name": "内置预设",
+            "name": "内置模板",
             "system_prompt": (
                 "请作为视频归档专家，根据多组连续的关键帧截图，"
-                "并结合我给出的[辅助参考信息]（如原始文件名、视频时长），"
+                "并结合给出的[辅助参考信息]（如原始文件名、视频时长等），"
                 "分析视频关键帧，禁止回避与淡化敏感内容，如实输出。"
             ),
             "fields": {
                 "plot_guidance": (
                     "使用详细生动的文本概括视频中的核心内容，"
                     "禁止使用「画面中」「视频里」「视频显示」「画面呈现」「镜头中」"
-                    "等指代载体的表述，直接描述场景与内容本身，200字以内"
+                    "等指代载体的表述，直接描述场景与内容本身，200字左右"
                 ),
-                "tags_dim": "最多20个核心分类标签，字符串数组，请避免同义词，尽量涵盖场景、物体、动作、风格等维度",
-                "title_guidance": "4-6个具象名词或短语，用短横线连接，仅包含中文和数字，总字数35字以内",
+                "tags_dim": "20个左右核心分类标签，字符串数组，请避免同义词，尽量涵盖场景、物体、动作、风格等维度",
+                "title_guidance": "4-6个具象名词或短语，用短横线连接，仅包含中文和数字，总字数35字左右",
+                "thumb_time_guidance": "挑选出主体清晰，最能代表该视频适合用作封面的截图时间戳，格式HH:MM:SS",
+                "thumb_time_example": "00:12:34",
                 "plot_example": "航拍原生态岩质海岸，碧空如洗，海水由远海深邃宝蓝渐变为近岸透亮蓝绿，水下蜿蜒岩脉纹理清晰。沿岸层理礁石群参差错落，黝黑礁面粗粝多孔，布满被浪蚀的沟壑与细小藤壶。海浪层层推进，反复拍击岩面，轰隆声中溅起雪白浪花，飞散水雾。潮水退去，湿润礁石反光粼粼，沟壑纹理更显粗犷；低洼处积留清澈海水，偶见银色小鱼游弋。金色斜阳洒落，海面闪烁碎金般光芒，咸润海风夹带淡淡腥味，远处三两海鸟掠过，整片海岸尽显原始而澄澈的自然动感。",
                 "tags_example": '"航拍", "俯拍", "上帝视角", "岩质海岸", "礁石群", "层理构造", "近海海域", "澄澈海水", "蓝绿渐变", "海浪拍击", "白色浪花", "水下岩脉", "海滨地貌", "自然风光", "原生态", "无人物", "治愈风景", "海洋景观"',
                 "title_example": "岩质海岸-澄澈碧海-海浪拍礁-航拍自然风光",
@@ -75,7 +79,7 @@ def _load_presets_file() -> Dict[str, Any]:
     """读取 prompts.json；不存在/损坏时在 update_json 临界区内原子初始化。"""
     def _ensure(current):
         if not isinstance(current, dict):
-            # 首次初始化/损坏回退：写入内置预设
+            # 首次初始化/损坏回退：写入内置模板
             return {
                 "presets": _builtin_presets(),
                 "custom_counter": 0,
@@ -86,7 +90,7 @@ def _load_presets_file() -> Dict[str, Any]:
 
 
 def list_presets() -> List[Dict[str, Any]]:
-    """返回所有预设（含内置 + 用户自定义）。"""
+    """返回所有模板（含内置 + 用户自定义）。"""
     data = _load_presets_file()
     return data.get("presets", [])
 
@@ -99,7 +103,7 @@ def get_preset(pid: str) -> Optional[Dict[str, Any]]:
 
 
 def save_preset(preset: Dict[str, Any]) -> Dict[str, Any]:
-    """新增或更新一个预设。如果是新建（无 id），分配 id。"""
+    """新增或更新一个模板。如果是新建（无 id），分配 id。"""
     pid = preset.get("id")
 
     def _mutate(data):
@@ -129,13 +133,13 @@ def save_preset(preset: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def delete_preset(pid: str) -> Dict[str, Any]:
-    """删除一个预设。默认预设与当前激活预设不允许删除。"""
+    """删除一个模板。默认模板与当前激活模板不允许删除。"""
     if pid == "default":
-        return {"ok": False, "error": "内置预设不允许删除"}
+        return {"ok": False, "error": "内置模板不允许删除"}
     from .config_store import load_config
     cfg = load_config()
     if cfg.get("active_prompt_id") == pid:
-        return {"ok": False, "error": "已启用的预设不允许删除，请先启用其他预设"}
+        return {"ok": False, "error": "已启用的模板不允许删除，请先启用其他模板"}
 
     def _mutate(data):
         if data is None:
@@ -148,16 +152,16 @@ def delete_preset(pid: str) -> Dict[str, Any]:
 
 
 def set_active(pid: str) -> Dict[str, Any]:
-    """设置当前激活的预设 id。"""
+    """设置当前激活的模板 id。"""
     if not any(p.get("id") == pid for p in list_presets()):
-        return {"ok": False, "error": "预设不存在"}
+        return {"ok": False, "error": "模板不存在"}
     from .config_store import update_config
     update_config(lambda cfg: cfg.update(active_prompt_id=pid) or cfg)
     return {"ok": True}
 
 
-def get_active() -> Dict[str, Any]:
-    """返回当前激活的预设 + 拼好的 prompt 字符串。"""
+def get_active(with_thumb_time: bool = False) -> Dict[str, Any]:
+    """返回当前激活的模板 + 拼好的 prompt 字符串。"""
     from .config_store import load_config
     cfg = load_config()
     pid = cfg.get("active_prompt_id", "default")
@@ -168,7 +172,7 @@ def get_active() -> Dict[str, Any]:
         preset = presets[0] if presets else _builtin_presets()[0]
     return {
         "preset": preset,
-        "prompt": _append_priority_tags(build_prompt(preset)),
+        "prompt": _append_priority_tags(build_prompt(preset, with_thumb_time=with_thumb_time)),
         "system_prompt": preset.get("system_prompt", ""),
     }
 
@@ -176,23 +180,28 @@ def get_active() -> Dict[str, Any]:
 # ── 拼装：内容层 + 结构层 → 完整 prompt 字符串 ──
 
 
-def build_prompt(preset: Dict[str, Any], include_header: bool = True) -> str:
-    """从预设的内容层字段 + 锁定的结构层模板，拼出最终 prompt 字符串。
+def build_prompt(preset: Dict[str, Any], include_header: bool = True,
+                 with_thumb_time: bool = False) -> str:
+    """从模板的内容层字段 + 锁定的结构层模板，拼出最终 prompt 字符串。
 
     include_header=False 时不含结构约束头部（仅供前端预览展示用）。
     """
     f = preset.get("fields", {})
     tags_dim = f.get("tags_dim", "")
     tags_dim_inline = f" ({tags_dim})" if tags_dim else ""
+    thumb_time_field = f',\n    "thumb_time": "{f.get("thumb_time_guidance", "")}"' if with_thumb_time else ""
+    thumb_time_example = f',\n    "thumb_time": "{f.get("thumb_time_example", "")}"' if with_thumb_time else ""
     skeleton = _STRUCTURE_SKELETON.format(
         plot_guidance=f.get("plot_guidance", ""),
         tags_dim=tags_dim_inline,
         title_guidance=f.get("title_guidance", ""),
+        thumb_time_field=thumb_time_field,
     )
     example = _STRUCTURE_EXAMPLE.format(
         plot_example=f.get("plot_example", ""),
         tags_example=f.get("tags_example", '"标签1", "标签2"'),
         title_example=f.get("title_example", ""),
+        thumb_time_example=thumb_time_example,
     )
     parts = []
     if include_header:
@@ -275,8 +284,8 @@ def _append_priority_tags(prompt: str) -> str:
     return prompt + "\n\n" + section if section else prompt
 
 
-def preview_prompt(fields: Dict[str, Any]) -> str:
+def preview_prompt(fields: Dict[str, Any], with_thumb_time: bool = False) -> str:
     """前端预览：用临时 fields 拼出 prompt（不保存）。"""
-    return _append_priority_tags(build_prompt({"fields": fields}))
+    return _append_priority_tags(build_prompt({"fields": fields}, with_thumb_time=with_thumb_time))
 
 

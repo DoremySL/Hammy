@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 from typing import Dict, List, Optional, Tuple
 
 from .env import logger
@@ -38,6 +39,16 @@ def partial_hash(path: str) -> Optional[str]:
 
 
 # ═══ 查找重复 ══════════════════════════════════════════════════
+# 副本标记："(1)" 一类计数后缀、"副本/copy" 字样
+_COPY_MARKERS = re.compile(r"[（(\[]\d{1,3}[)）\]]|副本|copy", re.IGNORECASE)
+
+
+def _dedup_sort_key(path: str) -> Tuple[str, int, int, str]:
+    p = os.path.normcase(os.path.normpath(path))
+    stem = os.path.splitext(os.path.basename(p))[0]
+    return (os.path.dirname(p), len(_COPY_MARKERS.findall(stem)), len(stem), p)
+
+
 def find_duplicates(paths: List[str]) -> List[Dict]:
     """在给定的视频路径列表中查找内容重复的分组。"""
     # 1) 按文件大小分组（大小不同必然不重复）
@@ -64,8 +75,8 @@ def find_duplicates(paths: List[str]) -> List[Dict]:
         for digest, dup in by_hash.items():
             if len(dup) < 2:
                 continue
-            # 字典序排序，保留第一个
-            dup_sorted = sorted(dup, key=lambda x: os.path.normcase(os.path.normpath(x)))
+            # 排序，保留最像原版的第一个
+            dup_sorted = sorted(dup, key=_dedup_sort_key)
             groups.append({
                 "keep": dup_sorted[0],
                 "remove": dup_sorted[1:],

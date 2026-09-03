@@ -87,6 +87,14 @@ def restore_video(vid: str) -> Dict[str, Any]:
             except OSError:
                 pass
 
+        # 删除已生成的媒体海报（若有）
+        exported_poster = Path(new_path).with_name(f"{Path(new_path).stem}-poster.jpg")
+        if path_exists(exported_poster):
+            try:
+                os.remove(to_long_path(str(exported_poster)))
+            except OSError:
+                pass
+
         remove_history_by_id(vid)
 
         return {

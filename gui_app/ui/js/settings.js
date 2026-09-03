@@ -142,7 +142,7 @@ const CFG_FIELDS_PROCESSING = [
     { sec: 'video', key: 'sampling_points', label: '采样点位', type: 'number', min: 1, help: '均匀分布的关键帧取样位置数；采样点位*每点帧数=抽取的关键帧数量', default: 5 },
     { sec: 'video', key: 'frames_per_point', label: '每点帧数', type: 'number', min: 1, help: '每个点位取连续关键帧数，增大此项可给AI提供连续的画面信息', default: 3 },
     { sec: 'video', key: 'frame_max_side', label: '长边像素', type: 'number', min: 64, help: '抽帧图片长边上限，仅缩小不放大', default: 640 },
-    { sec: 'video', key: 'frame_time_tags', label: '时间标签', type: 'select', options: [['1', '添加时间标签'], ['0', '不添加标签']], default: '0', help: '每张截图前添加 HH:MM:SS 时间标签，帮助模型理解画面时间顺序' },
+    { sec: 'video', key: 'frame_time_tags', label: '时间标签', type: 'select', options: [['1', '添加时间标签'], ['2', '添加并用于优化缩略图'], ['0', '不添加标签']], default: '0', help: '每张截图前添加时间戳，帮助模型理解画面时间顺序；开启用于优化缩略图将提示模型给出最符合视频主题的截图时间戳，对模型能力有要求' },
   ]},
   { group: '命名格式', noTitle: true, fields: [
     { sec: 'naming', key: 'include_date', label: '日期前缀', type: 'bool', help: '文件名前添加日期，降低重名几率' },
@@ -159,7 +159,7 @@ function collectConfigData() {
   $$('#modal-body [data-key]').forEach(el => {
     const sec = el.dataset.sec, key = el.dataset.key;
     let v;
-    if (el.classList && el.classList.contains('dd')) v = el.dataset.bool ? el.dataset.value === '1' : el.dataset.value;
+    if (el.classList && el.classList.contains('dd')) v = el.dataset.bool ? Number(el.dataset.value) : el.dataset.value;
     else if (el.type === 'checkbox') v = el.checked;
     else if (el.type === 'number') {
       if (el.value === '') return;
@@ -192,11 +192,13 @@ async function saveConfigAndTest() {
   const token = ++aiTestToken;
   btn.disabled = true; btn.textContent = '应用中…';
   try {
-    const res = await apiCall('save_config', collectConfigData());
+    const data = collectConfigData();
+    const res = await apiCall('save_config', data);
     if (!res || !res.ok) {
       toast('应用失败: ' + ((res && res.error) || ''), 'err');
       return;
     }
+    state.thumbOptimize = Number((data.video || {}).frame_time_tags) === 2;
     btn.textContent = '正在测试连接…';
     btn.disabled = false;
     btn.dataset.testing = '1';
@@ -396,6 +398,7 @@ $('#btn-savecfg').addEventListener('click', async () => {
       const data = collectConfigData();
       const res = await apiCall('save_config', data);
       if (res && res.ok) {
+        state.thumbOptimize = Number((data.video || {}).frame_time_tags) === 2;
         toast('配置已应用', 'ok');
         if ('force_animation' in data) applyForceAnimation(data.force_animation !== false);
         if (state.settings_tab === 'config') checkConnection();
@@ -404,13 +407,13 @@ $('#btn-savecfg').addEventListener('click', async () => {
     } else if (state.settings_tab === 'prompts') {
       const editingId = $('#preset-editing-id') ? $('#preset-editing-id').value : '';
       if (!editingId.startsWith('custom_')) {
-        toast('内置预设不可保存，请「保存为新预设」', 'err');
+        toast('内置模板不可保存，请「保存为新模板」', 'err');
         return;
       }
       const nameLabel = $('#preset-select .dd-label');
       const res = await apiCall('save_preset', collectPresetData(nameLabel ? nameLabel.textContent : ''));
       if (res && res.ok) {
-        toast('预设已保存', 'ok');
+        toast('模板已保存', 'ok');
         await apiCall('set_active_preset', res.id);
         state.active_preset_id = res.id;
         renderSettings();

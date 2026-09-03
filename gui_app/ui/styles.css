@@ -262,6 +262,14 @@
   .thumb img{width:100%;height:100%;object-fit:cover;display:block;opacity:0;
     filter:blur(6px);transform:scale(1.05);transition:opacity .35s,filter .4s,transform .4s}
   .thumb img.loaded{opacity:1;filter:none;transform:none}
+  /* 竖屏缩略图：主图按 --pw 居中盒显示（盒与图同比例不裁、下限 70% 裁细长），背景同图横向拉伸铺满 */
+  .thumb .thumb-bg,.dedup-thumb .thumb-bg{position:absolute;inset:-4%;width:108%;height:108%;
+    object-fit:fill;filter:blur(7px) brightness(.75);opacity:0;z-index:0}
+  .thumb.portrait .thumb-bg,.dedup-thumb.portrait .thumb-bg{opacity:1}
+  .thumb.portrait img:not(.thumb-bg),.dedup-thumb.portrait img:not(.thumb-bg){
+    width:var(--pw,100%);height:100%;object-fit:cover;margin:0 auto;position:relative;z-index:1;
+    -webkit-mask-image:linear-gradient(90deg,transparent 0,#000 2%,#000 98%,transparent 100%);
+    mask-image:linear-gradient(90deg,transparent 0,#000 2%,#000 98%,transparent 100%)}
   .thumb .ph{position:absolute;inset:0;display:grid;place-items:center;color:var(--faint);font-size:26px}
   .dur-badge{position:absolute;right:11px;bottom:9px;padding:0;margin:0;
     background:none;border:none;border-radius:0;
@@ -280,6 +288,8 @@
   .tag-badge.real{background:rgba(249,115,22,.75);color:#fff}
   .tag-badge.anime{background:rgba(59,130,246,.75);color:#fff}
   .tag-badge.unc{background:rgba(107,114,128,.75);color:#fff}
+  .tag-badge.failed{background:rgba(239,68,68,.75);color:#fff}
+  .tag-badge.dup{background:rgba(234,179,8,.75);color:#fff}
   .card .meta{padding:7px 11px}
   .card .name{font-size:12.5px;font-weight:600;line-height:1.35;white-space:nowrap;overflow:hidden;
     text-overflow:ellipsis}
@@ -578,7 +588,7 @@
   .preset-bar-actions{display:flex;gap:6px;margin-left:auto}
   .prompt-preview{background:var(--bg);color:var(--log-text);padding:12px 14px;border-radius:var(--r-md);
     font-family:var(--mono);font-size:11.5px;line-height:1.55;white-space:pre-wrap;
-    word-break:break-all;max-height:240px;overflow:auto;margin-top:10px;border:1px solid var(--border)}
+    word-break:break-all;margin-top:10px;border:1px solid var(--border)}
   .prompt-preview .readonly-tag{display:inline-block;background:var(--panel-2);color:var(--muted);
     padding:1px 7px;border-radius:var(--r-xs);font-size:10px;margin-bottom:6px}
 
@@ -600,6 +610,8 @@
     background:none;border:none;font-size:13px;color:var(--text);cursor:pointer;font-family:var(--font);
     text-align:left;white-space:nowrap}
   #ctxmenu button:hover{background:var(--accent-soft);color:var(--accent-text)}
+  #ctxmenu button.danger{color:var(--danger)}
+  #ctxmenu button.danger:hover{background:rgba(239,68,68,.12);color:var(--danger)}
   #ctxmenu button:disabled{color:var(--faint);cursor:not-allowed;opacity:.5}
   #ctxmenu button:disabled:hover{background:none;color:var(--faint)}
   #ctxmenu hr{margin:5px 10px;border:none;height:1px;
@@ -610,6 +622,9 @@
   ::-webkit-scrollbar-thumb{background:var(--scrollbar);border-radius:var(--r-full);border:2px solid transparent;background-clip:content-box}
   ::-webkit-scrollbar-thumb:hover{background:var(--scrollbar-hover);background-clip:content-box}
   ::-webkit-scrollbar-thumb:active{background:var(--scrollbar-hover);background-clip:content-box}
+  /* 恒定预留滚动条位置（两侧对称）：出现/消失不再挤压内容产生抖动 */
+  .grid-wrap,.modal-body,.log,.detail,.dedup-body,.pt-list,
+  .transcript-box,.xarg-list,.rename-preview,.dd-panel{scrollbar-gutter:stable both-edges}
 
   /* ── SVG 图标 ── */
   .ic{display:inline-block;width:1em;height:1em;stroke:currentColor;fill:none;
@@ -686,7 +701,7 @@
   .dedup-thumb img{width:100%;height:100%;object-fit:cover;display:block}
   .dedup-thumb .ph{position:absolute;inset:0;display:grid;place-items:center;color:var(--faint)}
   .dedup-thumb .badge{position:absolute;top:6px;left:6px;padding:2px 8px;border-radius:var(--r-full);
-    font-size:10.5px;font-weight:700;line-height:1.5}
+    font-size:10.5px;font-weight:700;line-height:1.5;z-index:2}
   .dedup-card.keep .badge{background:var(--ok-soft);color:var(--ok)}
   .dedup-card.rm .badge{background:var(--err-soft);color:var(--err)}
   .dedup-meta{padding:5px 8px;display:flex;flex-direction:column;gap:2px;min-width:0}
@@ -1099,3 +1114,15 @@ html:not(.light) .card.band,html:not(.light) .card.band:hover{border-color:var(-
 .card.band.selected{box-shadow:0 0 0 2px var(--accent-soft),0 8px 20px rgba(235,114,75,.10)}
 html.dark .card.band.selected,
 html:not(.light) .card.band.selected{box-shadow:0 0 0 2px var(--accent-soft),0 6px 20px rgba(0,0,0,.4)}
+
+/* 两侧 gutter 各 8px 的视觉补偿：左右 padding 减回，内容宽度与原布局一致 */
+.grid-wrap{padding-left:6px;padding-right:6px}
+.modal-body{padding-left:14px;padding-right:14px}
+.log{padding-left:6px;padding-right:6px}
+.detail{padding-left:10px;padding-right:10px}
+.dedup-body{padding-left:12px;padding-right:12px}
+.pt-list{padding-left:0;padding-right:0}
+.transcript-box{padding-left:2px;padding-right:2px}
+.xarg-list{padding-left:0;padding-right:0}
+.rename-preview{padding-left:0;padding-right:0}
+.dd-panel{padding-left:0;padding-right:0}

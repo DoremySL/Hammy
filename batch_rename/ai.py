@@ -138,6 +138,7 @@ class AnalyzeResult(NamedTuple):
     err_msg: str
     # error_kind: "" 成功 / format / empty / api / server / retryable / cancel / other
     error_kind: str = ""
+    thumb_time: str = ""
 
 
 def _fmt_hms(seconds: float) -> str:
@@ -146,6 +147,9 @@ def _fmt_hms(seconds: float) -> str:
     h, rem = divmod(total, 3600)
     m, s = divmod(rem, 60)
     return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+_THUMB_TIME_RE = re.compile(r"\d{1,3}:\d{2}:\d{2}")
 
 
 def _build_messages(frames: List[Frame], config: Config, video_path: str,
@@ -168,7 +172,7 @@ def _build_messages(frames: List[Frame], config: Config, video_path: str,
     user_content = []
     for frame in frames:
         if config.frame_time_tags:
-            user_content.append({"type": "text", "text": _fmt_hms(frame.ts)})
+            user_content.append({"type": "text", "text": f"\n{_fmt_hms(frame.ts)}:"})
         user_content.append({"type": "image_url",
                              "image_url": {"url": f"data:image/jpeg;base64,{frame.b64}"}})
     user_content.append({"type": "text", "text": meta_info})
@@ -260,9 +264,12 @@ def _call_and_parse(client: OpenAIClient, model: str, messages: list,
     title = str(data.get("title") or _get_ci(data, "title") or "").strip('"\'').strip()
     plot = str(data.get("plot") or _get_ci(data, "plot") or "").strip()
     tags = _clean_tags(data.get("tags") or _get_ci(data, "tags") or [])
+    thumb_time = str(data.get("thumb_time") or _get_ci(data, "thumb_time") or "").strip()
+    if not _THUMB_TIME_RE.fullmatch(thumb_time):
+        thumb_time = ""
     if not title:
         raise AITitleEmptyError("AI 返回的 title 为空")
-    return AnalyzeResult(title, plot, tags, 0, "")
+    return AnalyzeResult(title, plot, tags, 0, "", thumb_time=thumb_time)
 
 
 def _api_status_cls():
