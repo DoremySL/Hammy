@@ -26,7 +26,7 @@ from batch_rename.subprocess_registry import register_subprocess, unregister_sub
 UV_RUNTIME_DIR = APP_ROOT / "UV-Tool"      # UV 二进制 + 包缓存
 UV_CACHE_DIR = UV_RUNTIME_DIR / "cache"    # UV 下载缓存（UV_CACHE_DIR 指向这里）
 
-# ── 通用 PyPI 镜像（timm/Pillow/modelscope/faster-whisper 等）──
+# ── 通用 PyPI 镜像（timm/Pillow/faster-whisper 等）──
 PYPI_MIRRORS = {
     "nju": {"name": "南京大学", "url": "https://mirrors.nju.edu.cn/pypi/web/simple"},
     "tsinghua": {"name": "清华大学", "url": "https://pypi.tuna.tsinghua.edu.cn/simple"},

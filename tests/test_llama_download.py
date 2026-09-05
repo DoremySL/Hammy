@@ -3,7 +3,6 @@ import tempfile
 import threading
 import time
 import unittest
-import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -12,6 +11,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from gui_app import llama_cpp
+from gui_app import models_downloader as md
 
 
 def _resp(status=200, body=b"x" * 100, cl=None):
@@ -29,8 +29,8 @@ def _resp(status=200, body=b"x" * 100, cl=None):
     return r
 
 
-class TestDownloadResume(unittest.TestCase):
-    """_download：断点续传（Range / 206 / 200 / 416）+ 失败重试。"""
+class TestDownloadUrls(unittest.TestCase):
+    """download_urls（llama.cpp 安装入口）：直连下载 / 续传 / 取消 / label 展示。"""
 
     def setUp(self):
         self._td = tempfile.TemporaryDirectory()
@@ -38,72 +38,42 @@ class TestDownloadResume(unittest.TestCase):
         self.dest = Path(self._td.name) / "pkg.zip"
         self.logs = []
 
-    def _run(self, urlopen_side_effect, prefill=0):
+    def _run(self, urlopen_side_effect, prefill=0, cancel=None):
         if prefill:
             self.dest.write_bytes(b"A" * prefill)
         with mock.patch("urllib.request.urlopen",
                         side_effect=urlopen_side_effect) as m, \
              mock.patch("urllib.request.Request",
                         wraps=urllib.request.Request) as req, \
-             mock.patch("gui_app.llama_cpp.time.sleep"):
-            llama_cpp._download("http://x/pkg.zip", self.dest,
-                                self.logs.append, "包")
-        return m, req
+             mock.patch("gui_app.models_downloader.time.sleep"):
+            r = md.download_urls(
+                [{"url": "http://x/pkg.zip", "filename": self.dest.name,
+                  "size": 100, "label": "预编译"}],
+                str(self.dest.parent), log_fn=self.logs.append,
+                cancel_event=cancel)
+        return m, req, r
 
     def test_fresh_download(self):
-        m, req = self._run([_resp(200)])
+        m, req, r = self._run([_resp(200, b"x" * 100, cl=100)])
+        self.assertTrue(r["ok"])
         self.assertEqual(self.dest.read_bytes(), b"x" * 100)
-        self.assertEqual(req.call_args.args[0], "http://x/pkg.zip")
         self.assertNotIn("Range", req.call_args.kwargs["headers"])
-        self.assertTrue(any("开始下载" in s for s in self.logs))
-        self.assertTrue(any("[完成]" in s for s in self.logs))
+        self.assertTrue(any("开始下载: 预编译" in s for s in self.logs))
+        self.assertTrue(any("下载完成: 预编译" in s for s in self.logs))
 
     def test_resume_from_206(self):
-        m, req = self._run([_resp(206, b"y" * 50, cl=50)], prefill=100)
-        self.assertEqual(self.dest.read_bytes(), b"A" * 100 + b"y" * 50)
-        self.assertEqual(req.call_args.kwargs["headers"]["Range"], "bytes=100-")
+        m, req, r = self._run([_resp(206, b"y" * 50, cl=50)], prefill=50)
+        self.assertTrue(r["ok"])
+        self.assertEqual(self.dest.read_bytes(), b"A" * 50 + b"y" * 50)
+        self.assertEqual(req.call_args.kwargs["headers"]["Range"], "bytes=50-")
         self.assertTrue(any("继续下载" in s for s in self.logs))
-        self.assertTrue(any("（100%" in s for s in self.logs))  # 150/150 到 100%
 
-    def test_server_ignores_range_restarts(self):
-        m, req = self._run([_resp(200, b"z" * 30, cl=30)], prefill=100)
-        self.assertEqual(self.dest.read_bytes(), b"z" * 30)  # 从头覆盖旧内容
-        self.assertEqual(req.call_args.kwargs["headers"]["Range"], "bytes=100-")
-        self.assertTrue(any("开始下载" in s for s in self.logs))
-
-    def test_416_means_complete(self):
-        e = urllib.error.HTTPError("http://x/pkg.zip", 416,
-                                   "Range Not Satisfiable", {}, None)
-        m, req = self._run([e], prefill=100)
-        self.assertEqual(self.dest.read_bytes(), b"A" * 100)  # 原样保留
-        self.assertTrue(any("已下载完整" in s for s in self.logs))
-
-    def test_retry_then_success(self):
-        boom = OSError("connection reset")
-        m, req = self._run([boom, _resp(206, b"y" * 50, cl=50)], prefill=100)
-        self.assertEqual(self.dest.read_bytes(), b"A" * 100 + b"y" * 50)
-        self.assertTrue(any("重试" in s for s in self.logs))
-        self.assertEqual(m.call_count, 2)
-
-    def test_give_up_after_attempts(self):
-        with mock.patch("urllib.request.urlopen",
-                        side_effect=OSError("reset")), \
-             mock.patch("gui_app.llama_cpp.time.sleep"):
-            with self.assertRaises(OSError):
-                llama_cpp._download("http://x/pkg.zip", self.dest,
-                                    self.logs.append, "包")
-        retries = [s for s in self.logs if "重试" in s]
-        self.assertEqual(len(retries), 2)  # 3 次尝试 = 2 次重试日志
-
-
-class TestDownloadCancelImmediate(unittest.TestCase):
-    """取消监视线程：网络停滞（阻塞读取）时置位取消也能秒级中断。"""
-
-    def setUp(self):
-        self._td = tempfile.TemporaryDirectory()
-        self.addCleanup(self._td.cleanup)
-        self.dest = Path(self._td.name) / "pkg.zip"
-        self.logs = []
+    def test_cancelled_flag(self):
+        ev = threading.Event()
+        ev.set()
+        m, req, r = self._run([_resp(200, b"x" * 100, cl=100)], cancel=ev)
+        self.assertTrue(r["cancelled"])
+        self.assertFalse(self.dest.exists())  # 取消清理半成品
 
     def test_cancel_unblocks_stalled_read(self):
         ev = threading.Event()
@@ -130,21 +100,29 @@ class TestDownloadCancelImmediate(unittest.TestCase):
 
         def _run():
             try:
-                llama_cpp._download("http://x/pkg.zip", self.dest,
-                                    self.logs.append, "包", cancel_event=ev)
-                result["ok"] = True
+                r = md.download_urls(
+                    [{"url": "http://x/pkg.zip", "filename": self.dest.name,
+                      "size": 100, "label": "预编译"}],
+                    str(self.dest.parent), log_fn=self.logs.append,
+                    cancel_event=ev)
+                result["r"] = r
             except BaseException as e:
                 result["exc"] = e
 
         with mock.patch("urllib.request.urlopen", return_value=StalledResp()), \
-             mock.patch("gui_app.llama_cpp.time.sleep"):
+             mock.patch("gui_app.models_downloader.time.sleep"):
             t = threading.Thread(target=_run)
             t.start()
             time.sleep(0.3)  # 等监视线程就绪、read 进入阻塞
+            t0 = time.time()
             ev.set()         # 用户点击停止：watcher 立即关闭响应
             t.join(5)
+        elapsed = time.time() - t0
         self.assertFalse(t.is_alive())  # 秒级停止，未等满超时周期
-        self.assertIsInstance(result.get("exc"), llama_cpp.InstallCancelled)
+        self.assertLess(elapsed, 2.0)
+        self.assertNotIn("exc", result)
+        self.assertTrue(result["r"]["cancelled"])
+        self.assertFalse(self.dest.exists())
 
 
 class TestInstallPartialKeep(unittest.TestCase):
@@ -153,7 +131,9 @@ class TestInstallPartialKeep(unittest.TestCase):
     def _fake_build(self):
         return {"type": "cuda", "ver": "13", "key": "cuda-13",
                 "precompiled_url": "http://x/pre.zip",
-                "cudart_url": "http://x/cudart.zip"}
+                "precompiled_size": 100,
+                "cudart_url": "http://x/cudart.zip",
+                "cudart_size": 100}
 
     def _patch_env(self):
         td = tempfile.TemporaryDirectory()
@@ -168,38 +148,80 @@ class TestInstallPartialKeep(unittest.TestCase):
         self.addCleanup(p1.stop); self.addCleanup(p2.stop); self.addCleanup(p3.stop)
         return llama_dir
 
+    @staticmethod
+    def _fake_dl_result(items, dest_root, status="fail", cancel_event=None):
+        for it in items:
+            dest = Path(dest_root) / it["filename"]
+            if status == "zip":
+                with zipfile.ZipFile(dest, "w") as z:
+                    z.writestr("llama-server.exe", "MZ")
+            elif status == "readme_zip":
+                with zipfile.ZipFile(dest, "w") as z:
+                    z.writestr("readme.txt", "hi")
+            else:
+                dest.write_bytes(b"partial")
+        if status == "cancel":
+            if cancel_event is not None:
+                cancel_event.set()
+            return {"ok": False, "cancelled": True, "downloaded": 0,
+                    "failed": [], "dir": dest_root}
+        if status == "fail":
+            return {"ok": False, "cancelled": False, "downloaded": 0,
+                    "failed": [{"file": "预编译", "error": "connection reset"}],
+                    "dir": dest_root}
+        return {"ok": True, "cancelled": False, "downloaded": len(items),
+                "failed": [], "dir": dest_root}
+
     def test_failed_download_cleans_partial(self):
         llama_dir = self._patch_env()
         pre_zip = llama_dir / "_pre_cuda-13.zip"
 
-        def _boom(url, dest, log_fn, label, expected_size=0, threads=0, cancel_event=None):
-            dest.write_bytes(b"partial")
-            raise OSError("connection reset")
+        def _boom(items, dest_root, log_fn=None, progress_cb=None,
+                  cancel_event=None, cleanup_on_cancel=False):
+            return self._fake_dl_result(items, dest_root, status="fail")
 
-        with mock.patch("gui_app.llama_cpp._download", side_effect=_boom):
+        with mock.patch("gui_app.models_downloader.download_urls", side_effect=_boom):
             r = llama_cpp.install("cuda-13")
         self.assertFalse(r["ok"])  # 下载失败 → 安装失败
+        self.assertIn("下载失败", r["error"])
         self.assertFalse(pre_zip.exists())  # 半成品已清理，下次安装从头下载
 
+    def test_failed_download_logs_manual_hint(self):
+        llama_dir = self._patch_env()
+        logs = []
+
+        def _boom(items, dest_root, log_fn=None, progress_cb=None,
+                  cancel_event=None, cleanup_on_cancel=False):
+            log_fn("engine log")
+            return self._fake_dl_result(items, dest_root, status="fail")
+
+        with mock.patch("gui_app.models_downloader.download_urls", side_effect=_boom):
+            r = llama_cpp.install("cuda-13", log_fn=logs.append)
+        self.assertFalse(r["ok"])
+        # 网络失败时日志给出「稍后再试 / 手动下载解压」引导与 release 页地址
+        self.assertTrue(any("请稍后再试" in s for s in logs), logs)
+        self.assertTrue(any("手动下载解压" in s for s in logs), logs)
+        self.assertTrue(any("github.com/ggml-org/llama.cpp/releases" in s for s in logs), logs)
+        self.assertTrue(any("llama.cpp" in s and "文件夹" in s for s in logs), logs)
+
     def test_cancel_mid_download_cleans_zips(self):
-        """下载中点停止：返回 cancelled，半成品压缩包已清理，下次安装从头下载。"""
+        """下载中点停止：返回 cancelled，半成品压缩包已清理，stop_event 传入下载。"""
         llama_dir = self._patch_env()
         pre_zip = llama_dir / "_pre_cuda-13.zip"
         ev = threading.Event()
         seen = {}
 
-        def _cancel_dl(url, dest, log_fn, label, expected_size=0, threads=0, cancel_event=None):
+        def _cancel_dl(items, dest_root, log_fn=None, progress_cb=None,
+                       cancel_event=None, cleanup_on_cancel=False):
             seen["cancel_event"] = cancel_event
-            dest.write_bytes(b"partial")
-            if cancel_event is not None:
-                cancel_event.set()
-            raise llama_cpp.InstallCancelled()
+            return self._fake_dl_result(items, dest_root, status="cancel",
+                                        cancel_event=cancel_event)
 
-        with mock.patch("gui_app.llama_cpp._download", side_effect=_cancel_dl):
+        with mock.patch("gui_app.models_downloader.download_urls", side_effect=_cancel_dl):
             r = llama_cpp.install("cuda-13", stop_event=ev)
         self.assertFalse(r["ok"])
         self.assertTrue(r["cancelled"])
-        self.assertIs(seen["cancel_event"], ev)  # stop_event 一路传入下载
+        self.assertIs(seen["cancel_event"], ev)
         self.assertFalse(pre_zip.exists())  # 半成品已清理，下次安装从头下载
 
     def test_cancel_before_start_no_partial(self):
@@ -211,23 +233,6 @@ class TestInstallPartialKeep(unittest.TestCase):
         self.assertFalse(r["ok"])
         self.assertTrue(r["cancelled"])
         self.assertFalse((llama_dir / "_pre_cuda-13.zip").exists())
-
-    def test_failed_download_logs_manual_hint(self):
-        llama_dir = self._patch_env()
-        logs = []
-
-        def _boom(url, dest, log_fn, label, expected_size=0, threads=0, cancel_event=None):
-            dest.write_bytes(b"partial")
-            raise OSError("connection reset")
-
-        with mock.patch("gui_app.llama_cpp._download", side_effect=_boom):
-            r = llama_cpp.install("cuda-13", log_fn=logs.append)
-        self.assertFalse(r["ok"])
-        # 网络失败时日志给出「稍后再试 / 手动下载解压」引导与 release 页地址
-        self.assertTrue(any("请稍后再试" in s for s in logs), logs)
-        self.assertTrue(any("手动下载解压" in s for s in logs), logs)
-        self.assertTrue(any("github.com/ggml-org/llama.cpp/releases" in s for s in logs), logs)
-        self.assertTrue(any("llama.cpp" in s and "文件夹" in s for s in logs), logs)
 
     def test_release_fetch_failure_logs_manual_hint(self):
         td = tempfile.TemporaryDirectory()
@@ -248,11 +253,11 @@ class TestInstallPartialKeep(unittest.TestCase):
         llama_dir = self._patch_env()
         pre_zip = llama_dir / "_pre_cuda-13.zip"
 
-        def _write_zip(url, dest, log_fn, label, expected_size=0, threads=0, cancel_event=None):
-            with zipfile.ZipFile(dest, "w") as z:
-                z.writestr("readme.txt", "hi")
+        def _write_zip(items, dest_root, log_fn=None, progress_cb=None,
+                       cancel_event=None, cleanup_on_cancel=False):
+            return self._fake_dl_result(items, dest_root, status="readme_zip")
 
-        with mock.patch("gui_app.llama_cpp._download", side_effect=_write_zip):
+        with mock.patch("gui_app.models_downloader.download_urls", side_effect=_write_zip):
             r = llama_cpp.install("cuda-13")
         self.assertFalse(r["ok"])  # 解压后无 llama-server.exe → 布局异常
         self.assertFalse(pre_zip.exists())  # 下载已完成 → 清理 zip
@@ -274,11 +279,12 @@ class TestInstallPartialKeep(unittest.TestCase):
         llama_dir = self._patch_env()
         p, writes = self._capture_llama_config()
 
-        def _write_zip(url, dest, log_fn, label, expected_size=0, threads=0, cancel_event=None):
-            with zipfile.ZipFile(dest, "w") as z:
-                z.writestr("llama-server.exe", "MZ")
+        def _write_zip(items, dest_root, log_fn=None, progress_cb=None,
+                       cancel_event=None, cleanup_on_cancel=False):
+            return self._fake_dl_result(items, dest_root, status="zip")
 
-        with p, mock.patch("gui_app.llama_cpp._download", side_effect=_write_zip):
+        with p, mock.patch("gui_app.models_downloader.download_urls",
+                           side_effect=_write_zip):
             r = llama_cpp.install("cuda-13")
         self.assertTrue(r["ok"])
         self.assertEqual(writes[-1], {"enabled": True, "integrate": True})

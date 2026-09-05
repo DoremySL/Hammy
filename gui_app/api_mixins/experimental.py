@@ -74,11 +74,11 @@ class ExperimentalMixin:
         if _install_stop_event.is_set():
             return {"ok": True, "message": "已在停止中"}
         _install_stop_event.set()
-        # 联动 hf 下载取消：whisper 模型下载（管理弹窗）监听的是 hf 全局取消事件，
+        # 联动模型下载取消：模型管理弹窗的下载监听 downloader 全局取消事件，
         # 让主界面「停止」按钮对下载任务同样生效；无下载任务时置位无副作用
         try:
-            from .. import hf_downloader
-            hf_downloader.set_cancel()
+            from .. import models_downloader
+            models_downloader.set_cancel()
         except Exception:
             pass
         _push_log("正在停止安装…")

@@ -30,10 +30,11 @@ from .installer import (
 # ── 路径常量 ──
 PIXAI_TAGGER_DIR = APP_ROOT / "pixai-tagger"
 VENV_DIR = PIXAI_TAGGER_DIR / "venv"
-MODEL_DIR = PIXAI_TAGGER_DIR / "model"
+# 模型根目录，hf 布局 models/<author>/<repo>/（经 models_downloader 从魔搭下载）
+MODEL_DIR = PIXAI_TAGGER_DIR / "models"
 
-MODEL_ID = "pixai-labs/pixai-tagger-v0.9"
-CLS_MODEL_ID = "deepghs/anime_real_cls"  # 二次元/真实二分类预筛模型
+MAIN_REPO = "pixai-labs/pixai-tagger-v0.9"
+CLS_REPO = "deepghs/anime_real_cls"  # 二次元/真实二分类预筛模型
 
 CHARACTER_THRESHOLD = 0.9
 # 预筛三分层阈值：中位数 >= 高阈值 → anime；<= 低阈值 → real；
@@ -51,7 +52,6 @@ _CLS_MODEL_SUBDIR = "mobilenetv3_v1.4_dist"  # 模型子目录名（轻量版，
 
 # 子进程超时（推理含双模型加载，按视频数量线性放大）
 _INSTALL_TIMEOUT_SEC = 900.0    # torch 体积大，安装可能很慢
-_MODEL_TIMEOUT_SEC = 900.0
 _INFERENCE_BASE_SEC = 240.0     # 推理基础超时（双模型加载 + 少量帧）
 _INFERENCE_PER_VIDEO_SEC = 60.0  # 每增加一个视频放宽的余量（CPU 推理 ~1.4s/帧）
 
@@ -59,40 +59,31 @@ _INFERENCE_PER_VIDEO_SEC = 60.0  # 每增加一个视频放宽的余量（CPU �
 _log = make_logger("pixai_tagger")
 
 
+def _fmt_size(num: float) -> str:
+    """字节数 -> 人类可读（B/KB/MB/GB）。"""
+    for unit in ("B", "KB", "MB", "GB"):
+        if abs(num) < 1024.0:
+            return f"{num:.1f}{unit}"
+        num /= 1024.0
+    return f"{num:.1f}TB"
+
+
 def get_mirrors_info() -> Dict[str, Any]:
     """返回可选镜像站列表 + GPU 检测结果（供前端渲染选择弹窗）。"""
     return installer.get_mirror_groups(["pytorch", "pypi"])
 
 
-def _find_model_snapshot_dir() -> Optional[Path]:
-    """查找主模型快照目录（ModelScope 布局：models/<org>/snapshots/master）。"""
-    snapshots_base = MODEL_DIR / "models"
-    if snapshots_base.is_dir():
-        for org_dir in snapshots_base.iterdir():
-            snap_master = org_dir / "snapshots" / "master"
-            if snap_master.is_dir() and (snap_master / _WEIGHTS_FILE).exists():
-                return snap_master
-    if (MODEL_DIR / _WEIGHTS_FILE).exists():
-        return MODEL_DIR
-    return None
+def _main_model_dir() -> Optional[Path]:
+    """主模型目录（models/<author>/<repo>/，缺任一权重文件视为未安装）。"""
+    d = MODEL_DIR / MAIN_REPO
+    return d if all((d / f).is_file()
+                    for f in (_WEIGHTS_FILE, _TAGS_FILE, _MAPPING_FILE)) else None
 
 
 def _find_cls_model_path() -> Optional[Path]:
-    """查找 anime_real_cls 模型检查点路径。"""
-    # 优先：安装时统一放置的 model/anime_real_cls/mobilenetv3_v1.4_dist/model.ckpt
-    direct = MODEL_DIR / "anime_real_cls" / _CLS_MODEL_SUBDIR / _CLS_CKPT_FILE
-    if direct.exists():
-        return direct
-    # 兜底：ModelScope snapshot 结构
-    snapshots_base = MODEL_DIR / "models"
-    if snapshots_base.is_dir():
-        for org_dir in snapshots_base.iterdir():
-            snap_master = org_dir / "snapshots" / "master"
-            for candidate in (snap_master / _CLS_MODEL_SUBDIR / _CLS_CKPT_FILE,
-                              snap_master / _CLS_CKPT_FILE):
-                if candidate.exists():
-                    return candidate
-    return None
+    """anime_real_cls 预筛模型检查点路径。"""
+    p = MODEL_DIR / CLS_REPO / _CLS_MODEL_SUBDIR / _CLS_CKPT_FILE
+    return p if p.is_file() else None
 
 
 def cls_model_available() -> bool:
@@ -103,13 +94,7 @@ def cls_model_available() -> bool:
 def get_status() -> Dict[str, Any]:
     """获取 pixai-tagger 安装状态。"""
     venv_python = venv_python_path(VENV_DIR)
-    snap_dir = _find_model_snapshot_dir()
-    model_ready = (
-        snap_dir is not None
-        and (snap_dir / _WEIGHTS_FILE).exists()
-        and (snap_dir / _TAGS_FILE).exists()
-        and (snap_dir / _MAPPING_FILE).exists()
-    )
+    model_ready = _main_model_dir() is not None
     return {
         "dir_exists": PIXAI_TAGGER_DIR.is_dir(),
         "venv_exists": VENV_DIR.is_dir() and venv_python.exists(),
@@ -146,11 +131,6 @@ def install_dependencies(
             _log("安装已取消", log_fn)
             return {"ok": False, "cancelled": True, "error": "安装已取消"}
         return None
-
-    def _cleanup_model_download(*paths: Path) -> None:
-        """取消时清理未完成的模型下载目录，下次安装从头开始。"""
-        for p in paths:
-            shutil.rmtree(str(p), ignore_errors=True)
 
     # ── 步骤 1 ──
     _log("━━ 步骤 1/6：检测 UV ━━", log_fn)
@@ -192,7 +172,7 @@ def install_dependencies(
         return {"ok": False, "error": f"安装 torch 失败: {out[-500:]}"}
 
     # ── 步骤 4 ──
-    _log("━━ 步骤 4/6：安装 torchvision + timm/Pillow/requests/modelscope ━━", log_fn)
+    _log("━━ 步骤 4/6：安装 torchvision + timm/Pillow/requests ━━", log_fn)
     if is_cpu:
         rc, out = _run_subprocess_streaming(
             [uv, "pip", "install", "--python", venv_py,
@@ -213,10 +193,10 @@ def install_dependencies(
         return r
     if rc != 0:
         return {"ok": False, "error": f"安装 torchvision 失败: {out[-500:]}"}
-    _log("→ timm, Pillow, requests, modelscope…", log_fn)
+    _log("→ timm, Pillow, requests…", log_fn)
     rc, out = _run_subprocess_streaming(
         [uv, "pip", "install", "--python", venv_py,
-         "timm", "Pillow", "requests", "modelscope",
+         "timm", "Pillow", "requests",
          "--index-url", pypi_url],
         _INSTALL_TIMEOUT_SEC, log_fn, stop_event,
     )
@@ -227,94 +207,59 @@ def install_dependencies(
         return {"ok": False, "error": f"安装依赖失败: {out[-500:]}"}
     _log("全部依赖安装完成", log_fn)
 
-    # ── 步骤 5 ──
-    _log("━━ 步骤 5/6：从魔搭下载 PixAI Tagger 模型 ━━", log_fn)
-    rc, out = _run_subprocess_streaming(
-        [venv_py, "-c", _build_model_download_script()],
-        _MODEL_TIMEOUT_SEC, log_fn, stop_event,
-    )
-    r = _cancelled()
-    if r:
-        _cleanup_model_download(PIXAI_TAGGER_DIR / "ms_cache", MODEL_DIR / "models")
-        return r
-    if rc != 0:
-        return {"ok": False, "error": f"模型下载失败: {out[-500:]}"}
-    _log("PixAI Tagger 模型下载完成", log_fn)
+    # ── 步骤 5 + 6：主模型与预筛模型（魔搭源，经 models_downloader 引擎） ──
+    from . import models_downloader
+    if not models_downloader.begin_download():
+        return {"ok": False, "busy": True, "error": "已有下载任务进行中，请稍后再试"}
+    try:
+        # 1.27GB 的 model_v0.9.pth 下载期间日志不能全程静默，按 5% 折算成日志行
+        last_pct = {"v": -1}
 
-    # ── 步骤 6 ──
-    _log("━━ 步骤 6/6：下载预筛模型（anime_real_cls，约 32MB）━━", log_fn)
-    rc, out = _run_subprocess_streaming(
-        [venv_py, "-c", _build_cls_model_download_script()],
-        _MODEL_TIMEOUT_SEC, log_fn, stop_event,
-    )
-    r = _cancelled()
-    if r:
-        # 预筛模型下载缓存独立于主模型，取消只清 cls_cache，
-        # 不动已装好的主模型（models/）与共享 blob 缓存（残留 blob 下次可续传）
-        _cleanup_model_download(MODEL_DIR / "cls_cache")
-        return r
-    if rc != 0:
-        # 预筛模型下载失败不阻断安装，只是标签获取时无法跳过非二次元视频
-        _log(f"预筛模型下载失败（不影响标签获取主功能）: {out[-200:]}", log_fn)
-    else:
-        _log("二次元预筛模型下载完成", log_fn)
+        def _dl_log(msg: str):
+            _log(msg, log_fn)
+
+        def _model_progress(ev: Dict[str, Any]):
+            if ev.get("type") == "progress" and ev.get("total") and ev.get("pct") is not None:
+                pct5 = int(ev["pct"] * 100 // 5)
+                if pct5 > last_pct["v"]:
+                    last_pct["v"] = pct5
+                    _log(f"  {Path(ev['file']).name} {int(ev['pct'] * 100)}%"
+                         f"（{_fmt_size(ev['done'])}/{_fmt_size(ev['total'])}）", log_fn)
+
+        _log("━━ 步骤 5/6：从魔搭下载 PixAI Tagger 模型 ━━", log_fn)
+        dl = models_downloader.download_files(
+            "ms", MAIN_REPO, [_WEIGHTS_FILE, _TAGS_FILE, _MAPPING_FILE],
+            str(MODEL_DIR), log_fn=_dl_log, progress_cb=_model_progress,
+            cancel_event=stop_event, cleanup_on_cancel=True)
+        if dl.get("cancelled"):
+            _log("模型下载已取消，未完成的文件已清理", log_fn)
+            return {"ok": False, "cancelled": True, "error": "模型下载已取消"}
+        if not dl.get("ok"):
+            err = dl.get("error")
+            if not err and dl.get("failed"):
+                err = str(dl["failed"][0].get("error", ""))[:200]
+            return {"ok": False, "error": f"模型下载失败: {err or '未知错误'}"}
+        _log("PixAI Tagger 模型下载完成", log_fn)
+
+        _log("━━ 步骤 6/6：下载预筛模型（anime_real_cls，约 32MB）━━", log_fn)
+        cls_dl = models_downloader.download_files(
+            "ms", CLS_REPO, [f"{_CLS_MODEL_SUBDIR}/{_CLS_CKPT_FILE}"],
+            str(MODEL_DIR), log_fn=_dl_log,
+            cancel_event=stop_event, cleanup_on_cancel=True)
+        if cls_dl.get("cancelled"):
+            # 取消只影响预筛模型目录，不动已装好的主模型
+            _log("安装已取消（预筛模型未完成）", log_fn)
+            return {"ok": False, "cancelled": True, "error": "安装已取消"}
+        if not cls_dl.get("ok"):
+            # 预筛模型下载失败不阻断安装，只是标签获取时无法跳过非二次元视频
+            _log("预筛模型下载失败（不影响标签获取主功能）", log_fn)
+        else:
+            _log("二次元预筛模型下载完成", log_fn)
+    finally:
+        models_downloader.end_download()
 
     _log("━━ 全部完成 ━━", log_fn)
     return {"ok": True, "error": None}
-
-
-def _build_model_download_script() -> str:
-    """构建主模型下载脚本（在 venv python 中执行）。"""
-    return f"""
-import os, sys
-os.environ['MODELSCOPE_CACHE'] = r'{str(PIXAI_TAGGER_DIR / "ms_cache")}'
-from modelscope.hub.snapshot_download import snapshot_download
-model_dir = snapshot_download('{MODEL_ID}', cache_dir=r'{str(MODEL_DIR)}')
-print(f'模型已下载到: {{model_dir}}')
-"""
-
-
-def _build_cls_model_download_script() -> str:
-    """构建 anime_real_cls 模型下载脚本。"""
-    target_dir = MODEL_DIR / "anime_real_cls" / _CLS_MODEL_SUBDIR
-    allow_file = f"{_CLS_MODEL_SUBDIR}/{_CLS_CKPT_FILE}"
-    return f"""
-import os, sys, shutil
-from pathlib import Path
-os.environ['MODELSCOPE_CACHE'] = r'{str(PIXAI_TAGGER_DIR / "ms_cache")}'
-from modelscope.hub.snapshot_download import snapshot_download
-print('正在下载预筛模型（仅 {allow_file}）…')
-model_dir = snapshot_download(
-    '{CLS_MODEL_ID}',
-    cache_dir=r'{str(MODEL_DIR / "cls_cache")}',
-    allow_patterns=['{allow_file}'],
-)
-print(f'下载完成: {{model_dir}}')
-# 将 ckpt 复制到统一目录（方便查找，不依赖 snapshot 布局）
-src = Path(model_dir) / '{_CLS_MODEL_SUBDIR}' / '{_CLS_CKPT_FILE}'
-if not src.exists():
-    src = Path(model_dir) / '{_CLS_CKPT_FILE}'
-if src.exists():
-    dest_dir = Path(r'{str(target_dir)}')
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / '{_CLS_CKPT_FILE}'
-    if not dest.exists():
-        shutil.copy2(str(src), str(dest))
-    print(f'模型已放置到: {{dest}}')
-else:
-    print(f'未找到 {_CLS_CKPT_FILE}，列出已下载文件:')
-    for p in Path(model_dir).rglob('*'):
-        if p.is_file():
-            print(f'  {{p}}')
-    sys.exit(1)
-# 复制完成即删下载缓存：ckpt 已放统一目录（_find_cls_model_path 只查那里），
-# cls_cache 留着只会让模型双份占盘
-try:
-    shutil.rmtree(r'{str(MODEL_DIR / "cls_cache")}', ignore_errors=True)
-    print('已清理下载缓存 cls_cache')
-except Exception as e:
-    print(f'清理 cls_cache 失败（可手动删除）: {{e}}')
-"""
 
 
 def remove_pixai_tagger() -> Dict[str, Any]:
@@ -558,7 +503,7 @@ def start_analyze_stream(
     status = get_status()
     if not status["ready"]:
         return None
-    snap_dir = _find_model_snapshot_dir()
+    snap_dir = _main_model_dir()
     if not snap_dir:
         return None
     cls_path = _find_cls_model_path()

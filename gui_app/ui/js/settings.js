@@ -422,7 +422,7 @@ $('#btn-savecfg').addEventListener('click', async () => {
       const d = collectTagsData();
       const res2 = await apiCall('save_priority_tags', d.enabled, d.items);
       if (res2 && res2.ok) {
-        toast('优先标签已保存', 'ok');
+        toast('标签增强已保存', 'ok');
         renderSettings();
       } else toast('保存失败: ' + ((res2 && res2.error) || ''), 'err');
     } else if (state.settings_tab === 'experimental') {

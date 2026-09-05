@@ -13,6 +13,7 @@ from .workspace_store import (
     save_history,
     save_manifest,
     get_history_by_id,
+    update_adhoc_path,
 )
 from batch_rename.utils import path_exists, to_long_path
 
@@ -94,6 +95,8 @@ def restore_video(vid: str) -> Dict[str, Any]:
                 os.remove(to_long_path(str(exported_poster)))
             except OSError:
                 pass
+
+        update_adhoc_path(new_path, original_path)
 
         remove_history_by_id(vid)
 

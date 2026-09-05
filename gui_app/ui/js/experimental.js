@@ -668,7 +668,7 @@ function _makeModelDownloader(cfg) {
       </div>`;
     $('#dlBackground').addEventListener('click', () => close(true));
     $('#dlCancel').addEventListener('click', () => {
-      apiCall('hf_cancel_download').catch(() => {});
+      apiCall('model_cancel_download').catch(() => {});
       toast('正在取消下载…', 'info');
     });
   }
@@ -881,6 +881,20 @@ function _wRefresh() {
   }).catch(() => {});
 }
 
+let _hfLastSrc = 'hf';
+const HF_SOURCES = {
+  hf: {
+    endpoint: 'hf-mirror.com',
+    ph: '请输入关键词搜索，如 Qwen3.5 9B GGUF',
+    sorts: [['trendingScore', '热门'], ['lastModified', '更新时间'], ['createdAt', '最新创建'], ['downloads', '下载量'], ['likes', '收藏数']],
+  },
+  ms: {
+    endpoint: 'modelscope.cn',
+    ph: '输入关键词，留空浏览热门模型',
+    sorts: [['trendingScore', '热门'], ['downloads', '下载量'], ['likes', '收藏数']],
+  },
+};
+
 let _hfData = null;
 const _hfDlApi = _makeModelDownloader({
   kind: 'llama', dialogCls: 'hf-dialog',
@@ -913,7 +927,7 @@ async function openHfDownloadDialog() {
     bg.classList.add('show');
     return;
   }
-  _hfData = { repoId: '', gguf: [], mmproj: [], search: null };
+  _hfData = { src: _hfLastSrc, repoId: '', gguf: [], mmproj: [], search: {} };
   _hfDlApi.dl.origHtml = box.innerHTML;
   box.classList.add('hf-dialog');
   _hfRenderSearch(box);
@@ -922,23 +936,30 @@ async function openHfDownloadDialog() {
 
 function _hfRenderSearch(box) {
   box.classList.add('hf-files-view');
+  const src = _hfData.src;
+  const meta = HF_SOURCES[src];
   box.innerHTML = `
     <button class="hf-dlg-close" id="hfDlgClose" type="button" data-tip="关闭"><svg class="ic"><use href="#ic-close"></use></svg></button>
-    <div class="confirm-title">搜索模型 <span style="font-weight:400;font-size:11.5px;color:var(--faint)">hf-mirror.com</span></div>
+    <div class="confirm-title hf-head-row">搜索模型
+      <div class="dd search-mode hf-src-dd" id="hfSrcSel" data-tip="模型源">
+        <button class="dd-btn" type="button"><span class="dd-label">${meta.endpoint}</span>${ddArrow()}</button>
+        <div class="dd-panel">
+          ${Object.entries(HF_SOURCES).map(([k, v]) =>
+            `<div class="dd-opt${k === src ? ' active' : ''}" data-value="${k}">${v.endpoint}</div>`).join('')}
+        </div>
+      </div>
+    </div>
     <div class="hf-search-row">
       <div class="search-widget hf-search-widget" id="hfSearchWidget">
         <div class="dd search-mode" id="hfSortSel" data-tip="排序方式">
           <button class="dd-btn" type="button"><span class="dd-label">热门</span>${ddArrow()}</button>
           <div class="dd-panel">
-            <div class="dd-opt active" data-value="trendingScore">热门</div>
-            <div class="dd-opt" data-value="lastModified">更新时间</div>
-            <div class="dd-opt" data-value="createdAt">最新创建</div>
-            <div class="dd-opt" data-value="downloads">下载量</div>
-            <div class="dd-opt" data-value="likes">收藏数</div>
+            ${meta.sorts.map(([v, t], i) =>
+              `<div class="dd-opt${i === 0 ? ' active' : ''}" data-value="${v}">${t}</div>`).join('')}
           </div>
         </div>
         <span class="search-sep"></span>
-        <input type="text" id="hfSearchInput" placeholder="请输入关键词搜索，如 Qwen3.5 9B GGUF"/>
+        <input type="text" id="hfSearchInput" placeholder="${esc(meta.ph)}"/>
       </div>
       <button class="btn primary" id="hfSearchBtn">搜索</button>
     </div>
@@ -947,6 +968,7 @@ function _hfRenderSearch(box) {
 
   $('#hfSearchInput').focus();
   const sortDD = $('#hfSortSel');
+  const srcDD = $('#hfSrcSel');
 
   const PAGE_SIZE = 20;
   const page = { kw: '', sort: '', cursor: '', exhausted: false, loading: false, seq: 0 };
@@ -962,8 +984,8 @@ function _hfRenderSearch(box) {
   }).join('');
 
   const cacheSearch = () => {
-    _hfData.search = { kw: page.kw, sort: page.sort, html: $('#hfResults').innerHTML,
-                       cursor: page.cursor, exhausted: page.exhausted };
+    _hfData.search[src] = { kw: page.kw, sort: page.sort, html: $('#hfResults').innerHTML,
+                            cursor: page.cursor, exhausted: page.exhausted };
   };
 
   const maybeFill = () => {
@@ -975,13 +997,13 @@ function _hfRenderSearch(box) {
     const kw = $('#hfSearchInput').value.trim();
     const sort = getDropdownValue($('#hfSortSel')) || 'trendingScore';
     const res = $('#hfResults');
-    if (!kw) { res.innerHTML = '<div class="hf-hint">请输入搜索关键词</div>'; return; }
+    if (!kw && src === 'hf') { res.innerHTML = '<div class="hf-hint">请输入搜索关键词</div>'; return; }
     page.kw = kw; page.sort = sort; page.cursor = ''; page.exhausted = false;
     const seq = ++page.seq;
     page.loading = true;
     res.innerHTML = '<div class="hf-hint">搜索中…</div>';
     let r;
-    try { r = await apiCall('hf_search_models', kw, sort, PAGE_SIZE, ''); }
+    try { r = await apiCall('model_search', src, kw, sort, PAGE_SIZE, ''); }
     catch (e) {
       if (seq === page.seq) { page.loading = false; res.innerHTML = '<div class="hf-hint">搜索失败，请检查网络后重试</div>'; }
       return;
@@ -1002,7 +1024,7 @@ function _hfRenderSearch(box) {
   };
 
   const loadMore = async () => {
-    if (page.loading || page.exhausted || !page.kw) return;
+    if (page.loading || page.exhausted) return;
     page.loading = true;
     const seq = ++page.seq;
     const res = $('#hfResults');
@@ -1011,7 +1033,7 @@ function _hfRenderSearch(box) {
     more.textContent = '加载中…';
     res.appendChild(more);
     let r = null;
-    try { r = await apiCall('hf_search_models', page.kw, page.sort, PAGE_SIZE, page.cursor); }
+    try { r = await apiCall('model_search', src, page.kw, page.sort, PAGE_SIZE, page.cursor); }
     catch (e) { }
     more.remove();
     if (seq !== page.seq) return;
@@ -1027,6 +1049,13 @@ function _hfRenderSearch(box) {
   };
 
   if (sortDD) initDropdown(sortDD, () => doSearch());
+  initDropdown(srcDD, (v) => {
+    if (v === _hfData.src) return;
+    cacheSearch();
+    _hfData.src = v;
+    _hfLastSrc = v;
+    _hfRenderSearch(box);
+  });
 
   $('#hfSearchBtn').addEventListener('click', doSearch);
   $('#hfSearchInput').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
@@ -1038,21 +1067,23 @@ function _hfRenderSearch(box) {
     const btn = e.target.closest('.hf-open-btn');
     if (btn) {
       e.stopPropagation();
-      apiCall('hf_open_repo', btn.closest('.hf-result').dataset.repo).catch(() => {});
+      apiCall('model_open_repo', _hfData.src, btn.closest('.hf-result').dataset.repo).catch(() => {});
       return;
     }
     const row = e.target.closest('.hf-result');
     if (row) _hfOpenFiles(box, row.dataset.repo);
   });
 
-  if (_hfData.search) {
-    $('#hfSearchInput').value = _hfData.search.kw;
-    setDropdownValue(sortDD, _hfData.search.sort);
-    page.kw = _hfData.search.kw; page.sort = _hfData.search.sort;
-    page.cursor = _hfData.search.cursor || '';
-    page.exhausted = !!_hfData.search.exhausted;
-    $('#hfResults').innerHTML = _hfData.search.html;
-    maybeFill();
+  const cached = _hfData.search[src];
+  if (cached) {
+    $('#hfSearchInput').value = cached.kw;
+    if (meta.sorts.some(([v]) => v === cached.sort)) setDropdownValue(sortDD, cached.sort);
+    page.kw = cached.kw; page.sort = cached.sort;
+    page.cursor = cached.cursor || '';
+    page.exhausted = !!cached.exhausted;
+    $('#hfResults').innerHTML = cached.html;
+  } else {
+    $('#hfResults').innerHTML = '';
   }
 }
 
@@ -1063,7 +1094,7 @@ async function _hfOpenFiles(box, repoId) {
     <div class="confirm-title">${esc(repoId)}</div>
     <div class="hf-hint">加载文件列表…</div>`;
   let r;
-  try { r = await apiCall('hf_repo_files', repoId); }
+  try { r = await apiCall('model_repo_files', _hfData.src, repoId); }
   catch (e) { r = null; }
   if (!r || !r.ok) {
     box.innerHTML = `
@@ -1132,7 +1163,7 @@ function _hfFindSize(name) {
 }
 
 function _hfStartDownload(box, sel) {
-  _hfDlApi.start(box, _hfData.repoId, apiCall('hf_download_models', _hfData.repoId, sel));
+  _hfDlApi.start(box, _hfData.repoId, apiCall('model_download', _hfData.src, _hfData.repoId, sel));
 }
 
 const LLAMA_DEFAULT_PROXY = 'https://gh-proxy.com/';
@@ -1603,7 +1634,7 @@ function renderLlamaTab(llamaStatus) {
         <div class="ws-actions" style="justify-content:flex-start;gap:8px;margin-top:0">
           ${modelSel}
           <button class="ws-btn" id="btn-llama-rescan" data-tip="重新扫描模型文件夹">${icon('refresh')}</button>
-          <button class="ws-btn${state.hfDownloading ? ' primary' : ''}" id="btn-llama-download" data-tip="${state.hfDownloading ? '正在后台下载模型，点击查看进度' : '从 hf-mirror.com 搜索并下载模型到模型文件夹'}">${icon('download')} ${state.hfDownloading ? '下载中…' : '下载模型'}</button>
+          <button class="ws-btn${state.hfDownloading ? ' primary' : ''}" id="btn-llama-download" data-tip="${state.hfDownloading ? '正在后台下载模型，点击查看进度' : '从 HF 镜像 / 魔搭搜索并下载模型到模型文件夹'}">${icon('download')} ${state.hfDownloading ? '下载中…' : '下载模型'}</button>
         </div>
       </div>
       <div class="llama-sliders" id="llama-sliders-wrap" style="margin-top:14px">

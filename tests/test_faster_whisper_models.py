@@ -149,7 +149,7 @@ class TestDownloadValidation(unittest.TestCase):
 
     def test_download_conflict_returns_error(self):
         # begin_download 已被占坑 -> 直接返回冲突错误，不触发网络
-        with mock.patch("gui_app.hf_downloader.begin_download", return_value=False) as bd:
+        with mock.patch("gui_app.models_downloader.begin_download", return_value=False) as bd:
             r = fw._download_model("v3-turbo")
             self.assertFalse(r["ok"])
             self.assertIn("进行中", r["error"])

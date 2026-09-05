@@ -1,5 +1,5 @@
 /* ════════════════════════════════════════════════════════════
-   设置 Modal - 优先标签页
+   设置 Modal - 标签增强页
    ════════════════════════════════════════════════════════════ */
 function renderTagsTab(pt) {
   state.ptItems = (pt.items || []).map(x => ({ keyword: x.keyword, description: x.description || '' }));
@@ -10,8 +10,8 @@ function renderTagsTab(pt) {
   body.innerHTML = `
     <div class="group">
       <div class="field" style="flex-direction:row;align-items:center;gap:12px">
-        <label class="switch"><input type="checkbox" id="pt-enabled" ${pt.enabled ? 'checked' : ''}/> 启用优先标签</label>
-        <span class="help" style="margin:0">开启后，标签列表会注入提示词，AI 生成 tags 时优先采用，实际效果取决于模型能力。</span>
+        <label class="switch"><input type="checkbox" id="pt-enabled" ${pt.enabled ? 'checked' : ''}/> 启用标签增强</label>
+        <span class="help" style="margin:0">占位功能，后续会大改，目前仅简单把全部关键词拼入 prompt，不宜过多否则模型容易产生幻觉。</span>
       </div>
     </div>
     <div class="group">

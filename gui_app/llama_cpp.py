@@ -716,110 +716,12 @@ def get_status() -> Dict[str, Any]:
 
 # ── 安装 / 卸载 ──
 
-_DOWNLOAD_TIMEOUT = 120
-_DL_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-          "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
-
 
 class InstallCancelled(Exception):
     """安装被用户取消（stop_install 置位停止事件后由检查点抛出）。
 
     与网络错误区分：外层据此返回「安装已取消」，并清理未完成的下载文件。
     """
-
-
-def _download(url: str, dest: Path, log_fn, label: str,
-              expected_size: int = 0,
-              cancel_event: Optional[threading.Event] = None) -> None:
-    """流式下载：单连接 + Range 续传，失败自动重试，按 expected_size 校验完整性。"""
-    if expected_size and dest.exists() and dest.stat().st_size == expected_size:
-        log_fn(f"  [{label}] 已下载完整，跳过")
-        return
-
-    attempts = 3  # 重试次数：失败靠原地重试
-    last_err: Optional[Exception] = None
-    for attempt in range(1, attempts + 1):
-        if cancel_event is not None and cancel_event.is_set():
-            raise InstallCancelled()
-        try:
-            _download_single(url, dest, log_fn, label, expected_size, cancel_event)
-            return
-        except Exception as e:
-            if isinstance(e, urllib.error.HTTPError) and e.code == 416:
-                # 请求的 Range 超出文件大小 = 服务器侧已完整
-                if not expected_size or (dest.exists() and dest.stat().st_size == expected_size):
-                    log_fn(f"  [{label}] 已下载完整，跳过")
-                    return
-                # 416 但大小不符：本地文件损坏，删除后从头重试
-                log_fn(f"  [{label}] 本地文件大小异常，删除重下")
-                dest.unlink(missing_ok=True)
-                continue
-            # 取消监视线程关闭响应触发的异常：按取消处理，不重试
-            if cancel_event is not None and cancel_event.is_set():
-                raise InstallCancelled()
-            last_err = e
-            if attempt < attempts:
-                if cancel_event is not None and cancel_event.is_set():
-                    raise InstallCancelled()
-                log_fn(f"  [{label}] 下载中断（{e}），第 {attempt}/{attempts} 次尝试失败，{attempt}s 后重试…")
-                time.sleep(attempt)
-    raise IOError(f"下载失败（已重试 {attempts} 次，最后错误: {last_err}）")
-
-
-def _download_single(url: str, dest: Path, log_fn, label: str,
-                     expected_size: int = 0,
-                     cancel_event: Optional[threading.Event] = None) -> None:
-    """单连接顺序下载（唯一下载路径）：206 续传 / 200 从头 / Range 被忽略时覆盖重下。"""
-    headers = {"User-Agent": _DL_UA}
-    resumed = dest.stat().st_size if dest.exists() else 0
-    if resumed > 0:
-        headers["Range"] = f"bytes={resumed}-"
-    req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=_DOWNLOAD_TIMEOUT) as resp:
-        status = getattr(resp, "status", 200)
-        if status == 206:
-            total = resumed + int(resp.headers.get("Content-Length", "0") or 0)
-            log_fn(f"  继续下载 [{label}]（已下载 {resumed // 1024 // 1024} MB，从断点继续）")
-        else:
-            resumed = 0  # 服务器忽略 Range：从头下载
-            total = int(resp.headers.get("Content-Length", "0") or 0)
-            log_fn(f"  开始下载 [{label}] → {dest.name}（共 {total // 1024 // 1024} MB）")
-        # 取消监视线程：置位时立即关闭响应，中断阻塞的 socket 读（网络停滞也能秒停）
-        stop_watch = None
-        if cancel_event is not None:
-            stop_watch = start_cancel_watcher(cancel_event, resp.close)
-        try:
-            downloaded = resumed
-            session_base = resumed      # 本次会话起点（速度只算本轮新下载）
-            last_pct = -1.0
-            t0 = time.time()
-            with open(dest, "ab" if status == 206 else "wb") as f:
-                while True:
-                    if cancel_event is not None and cancel_event.is_set():
-                        raise InstallCancelled()
-                    chunk = resp.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if total:
-                        pct = downloaded / total
-                        if pct - last_pct >= 0.1 or downloaded >= total:
-                            last_pct = pct
-                            elapsed = max(time.time() - t0, 0.001)
-                            speed = (downloaded - session_base) / 1024 / 1024 / elapsed
-                            log_fn(f"  [{label}] 进度 {downloaded // 1024 // 1024}/{total // 1024 // 1024} MB"
-                                   f"（{int(pct * 100)}%，{speed:.1f} MB/s）")
-                    else:
-                        log_fn(f"  [{label}] 已下载 {downloaded // 1024 // 1024} MB")
-        finally:
-            if stop_watch is not None:
-                stop_watch()
-    # 完整性校验（元数据大小来自 GitHub API）
-    final = dest.stat().st_size if dest.exists() else 0
-    if expected_size and final != expected_size:
-        raise IOError(f"文件不完整：本地 {final} 字节，预期 {expected_size} 字节")
-    log_fn(f"  [完成] [{label}] 下载完成（{final // 1024 // 1024} MB）")
 
 
 def _log_network_fallback(log_fn) -> None:
@@ -950,8 +852,6 @@ def install(build_sel: str, log_fn=None, proxy: str = "",
     key = build["key"]
     pre_zip = LLAMA_DIR / f"_pre_{key}.zip"
     cu_zip = LLAMA_DIR / f"_cudart_{key}.zip"
-    dl_errors: Dict[str, Exception] = {}
-    cancelled: List[InstallCancelled] = []
     try:
         tag = build["type"] + ((" " + build["ver"]) if build["ver"] else "")
         log_fn(f"开始安装 llama.cpp（{tag}）…")
@@ -963,44 +863,41 @@ def install(build_sel: str, log_fn=None, proxy: str = "",
         else:
             log_fn("将下载「预编译」压缩包（单个文件）…")
 
-        def _dl_safe(url, dest, label, slot, size):
-            try:
-                _download(_proxy_url(proxy, url), dest, log_fn, label,
-                          expected_size=size, cancel_event=stop_event)
-            except InstallCancelled as e:
-                # 用户取消：不按网络错误处理（压缩包随后由 finally 统一清理）
-                cancelled.append(e)
-            except Exception as e:  # 异常记入 dl_errors 回传主线程
-                dl_errors[slot] = e
-
-        t_cu = None
+        items = [{"url": _proxy_url(proxy, build["precompiled_url"]),
+                  "filename": pre_zip.name,
+                  "size": int(build.get("precompiled_size") or 0),
+                  "label": "预编译"}]
         if build.get("cudart_url"):
-            t_cu = threading.Thread(target=_dl_safe, args=(
-                build["cudart_url"], cu_zip, "cudart", "cu",
-                build.get("cudart_size", 0)))
-            t_cu.start()
-            if stop_event is not None:
-                stop_event.wait(5)
-            else:
-                time.sleep(5)
-        t_pre = threading.Thread(target=_dl_safe, args=(
-            build["precompiled_url"], pre_zip, "预编译", "pre",
-            build.get("precompiled_size", 0)))
-        t_pre.start()
-        if t_cu:
-            t_cu.join()
-        t_pre.join()
-        if cancelled:
-            raise cancelled[0]
-        if dl_errors:
-            errs = "；".join(dict.fromkeys(str(v) for v in dl_errors.values()))
+            items.append({"url": _proxy_url(proxy, build["cudart_url"]),
+                          "filename": cu_zip.name,
+                          "size": int(build.get("cudart_size") or 0),
+                          "label": "cudart"})
+        last_pct = {"v": -1}
+
+        def _dl_progress(ev: Dict[str, Any]):
+            if ev.get("type") == "progress" and ev.get("total") and ev.get("pct") is not None:
+                pct10 = int(ev["pct"] * 100 // 10)
+                if pct10 > last_pct["v"]:
+                    last_pct["v"] = pct10
+                    log_fn(f"  [{ev['file']}] {int(ev['pct'] * 100)}%"
+                           f"（{ev['done'] // (1024 * 1024)}"
+                           f"/{ev['total'] // (1024 * 1024)} MB）")
+
+        from . import models_downloader
+        r = models_downloader.download_urls(items, str(LLAMA_DIR), log_fn=log_fn,
+                                            progress_cb=_dl_progress,
+                                            cancel_event=stop_event)
+        if r.get("cancelled"):
+            raise InstallCancelled()
+        if not r.get("ok"):
+            errs = "；".join(dict.fromkeys(str(f["error"]) for f in r.get("failed") or []))
             _log_network_fallback(log_fn)
             if proxy:
                 # 代理只作用于下载：超时/失败时大概率是代理站本身失效
                 log_fn(f"提示：当前加速代理站 {proxy} 可能已失效或暂时不稳定（下载超时多为代理失效）。")
                 log_fn("可用浏览器/搜索引擎搜索「GitHub 加速代理」查找最新可用地址，")
                 log_fn("回到安装弹窗的「加速代理地址」中换一个再试；也可改用「GitHub 直连」或「手动安装」。")
-            return {"ok": False, "error": f"下载失败: {errs}"}
+            return {"ok": False, "error": f"下载失败: {errs or r.get('error') or '未知错误'}"}
 
         _check_cancel()
         log_fn(("两个压缩包下载完成，开始解压…" if build.get("cudart_url")

@@ -129,33 +129,33 @@ def _download_model(model_key: str,
     if not meta:
         return {"ok": False, "error": f"未知模型: {model_key}"}
 
-    from . import hf_downloader
-    if not hf_downloader.begin_download():
+    from . import models_downloader
+    if not models_downloader.begin_download():
         return {"ok": False, "busy": True, "error": "已有下载任务进行中，请稍后再试"}
     log_fn = log_fn or (lambda s: None)
-    cancel = cancel_event or hf_downloader.get_cancel_event()
+    cancel = cancel_event or models_downloader.get_cancel_event()
     try:
         # 全仓库文件列表：CTranslate2 格式需要 model.bin / config.json /
         # vocabulary / tokenizer 等全部文件，缺一不可加载
-        files = hf_downloader.api_list_files(meta["repo"], cancel_event=cancel)
+        files = models_downloader.api_list_files("hf", meta["repo"], cancel_event=cancel)
         names = [f["path"] for f in files
                  if f.get("type") != "directory" and f.get("path")]
         if not names:
             return {"ok": False, "error": f"仓库 {meta['repo']} 无可用文件"}
         log_fn(f"模型 {meta['title']}：共 {len(names)} 个文件，开始下载…")
-        return hf_downloader.download_files(
-            meta["repo"], names, str(MODEL_DIR),
+        return models_downloader.download_files(
+            "hf", meta["repo"], names, str(MODEL_DIR),
             log_fn=log_fn, progress_cb=progress_cb,
             cancel_event=cancel,
             cleanup_on_cancel=cleanup_on_cancel,
         )
-    except hf_downloader.DownloadCancelled:
+    except models_downloader.DownloadCancelled:
         # 文件列表拉取阶段取消（下载阶段的取消由 download_files 内部处理）
         return {"ok": False, "cancelled": True, "error": "已取消"}
     except Exception as e:
         return {"ok": False, "error": f"下载模型失败: {e}"}
     finally:
-        hf_downloader.end_download()
+        models_downloader.end_download()
 
 
 def install_dependencies(pypi_mirror: str = DEFAULT_PYPI_MIRROR,
@@ -231,7 +231,7 @@ def install_dependencies(pypi_mirror: str = DEFAULT_PYPI_MIRROR,
         _log("→ 未检测到 NVIDIA GPU，跳过 CUDA 运行时（转录将使用 CPU 模式）", log_fn)
     _log("依赖安装完成", log_fn)
 
-    # ── 步骤 4：从 hf-mirror 下载所选模型（复用 hf_downloader）──
+    # ── 步骤 4：从 hf-mirror 下载所选模型（复用 models_downloader）──
     _log(f"━━ 步骤 4/4：下载模型（{WHISPER_MODELS[model_key]['title']}，hf-mirror）━━", log_fn)
     # 安装时把块级进度折算成日志（每 5% 一行）：1.6GB+ 的 model.bin 下载期间
     # 日志面板不能全程静默，否则用户误以为卡住
@@ -435,7 +435,7 @@ if use_batch:
         model = BatchedInferencePipeline(model=model)
 
 vad_params = dict(
-    threshold=0.5,
+    threshold=0.35,
     min_speech_duration_ms=250,
     min_silence_duration_ms=500,
     speech_pad_ms=200,
