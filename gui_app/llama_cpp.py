@@ -1290,6 +1290,13 @@ def launch(model_path: str, params: Dict[str, Any], log_fn=None) -> Dict[str, An
             return {"ok": False, "cancelled": True, "error": "启动已手动停止"}
         return {"ok": False, "error": "llama-server 进程已退出（模型加载失败或显存不足），请查看日志"}
     log_fn("模型加载完成，服务已就绪。")
+    # 并发数快照：记录本次启动实际生效的 -np，供本地推理集成接管 ai_workers
+    try:
+        from .config_store import update_llama_config
+        update_llama_config(
+            lambda c: c.update(parallel=_to_int(merged.get("parallel"), DEFAULTS["parallel"])) or c)
+    except Exception:
+        pass
     with _state_lock:
         _llama_state["starting"] = False   # 健康检查通过 → 「运行中」
     _notify_state_change()

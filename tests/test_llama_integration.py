@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import unittest
 
 from gui_app import llama_integration as li
+from gui_app import llama_cpp
 from gui_app.config_store import _default_config
 
 
@@ -145,6 +146,74 @@ class TestBuildEngineConfigOverride(unittest.TestCase):
             eng = runner.build_engine_config(c)
         self.assertEqual(eng.model, "remote-model")
         self.assertEqual(eng.base_url, "https://remote/v1")
+
+
+class TestLaunchParallelSnapshot(unittest.TestCase):
+    """launch 成功后把实际生效的 -np 写入全局 llama_config.json（集成接管依据）。"""
+
+    def setUp(self):
+        import tempfile
+
+        self.td = tempfile.TemporaryDirectory()
+        self.addCleanup(self.td.cleanup)
+        llama_dir = Path(self.td.name) / "llama.cpp"
+        llama_dir.mkdir()
+        (llama_dir / "llama-server.exe").write_bytes(b"MZ")
+        self.model_file = Path(self.td.name) / "m.gguf"
+        self.model_file.write_bytes(b"gguf")
+        self.writes = []
+
+        def _capture(mutator):
+            cfg = {}
+            mutator(cfg)
+            self.writes.append(dict(cfg))
+
+        def _fake_proc(*a, **k):
+            p = mock.MagicMock()
+            p.poll.return_value = None
+            p.pid = 1234
+            return p
+
+        self._health_ok = True
+        patches = [
+            mock.patch.object(llama_cpp, "LLAMA_DIR", llama_dir),
+            mock.patch.object(llama_cpp, "_port_in_use", return_value=False),
+            mock.patch.object(llama_cpp, "_wait_for_health",
+                              return_value=True),
+            mock.patch.object(llama_cpp, "_model_layers", return_value=0),
+            mock.patch.object(llama_cpp, "_reader_thread", lambda *a, **k: None),
+            mock.patch.object(llama_cpp, "register_subprocess", lambda *a: None),
+            mock.patch.object(llama_cpp, "unregister_subprocess", lambda *a: None),
+            mock.patch.object(llama_cpp, "_notify_state_change", lambda: None),
+            mock.patch.object(llama_cpp, "_terminate_process", lambda *a: None),
+            mock.patch("gui_app.llama_cpp.subprocess.Popen", _fake_proc),
+            mock.patch("gui_app.config_store.update_llama_config",
+                       side_effect=_capture),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        llama_cpp._llama_proc = None
+        self.addCleanup(setattr, llama_cpp, "_llama_proc", None)
+
+    def test_success_writes_parallel_snapshot(self):
+        r = llama_cpp.launch(str(self.model_file), {"parallel": 4})
+        self.assertTrue(r["ok"])
+        self.assertEqual(self.writes, [{"parallel": 4}])
+
+    def test_unhealthy_no_snapshot(self):
+        self._health_ok = False
+        with mock.patch.object(llama_cpp, "_wait_for_health", return_value=False):
+            r = llama_cpp.launch(str(self.model_file), {"parallel": 4})
+        self.assertFalse(r["ok"])
+        self.assertEqual(self.writes, [])
+
+    def test_snapshot_overwrites_previous(self):
+        r1 = llama_cpp.launch(str(self.model_file), {"parallel": 4})
+        llama_cpp._llama_proc = None  # 模拟 stop 后重启
+        r2 = llama_cpp.launch(str(self.model_file), {"parallel": 8})
+        self.assertTrue(r1["ok"] and r2["ok"])
+        self.assertEqual(self.writes[-1], {"parallel": 8})
 
 
 if __name__ == "__main__":
