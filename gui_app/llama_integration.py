@@ -27,8 +27,12 @@ def is_active(cfg: Optional[Dict[str, Any]] = None) -> bool:
         return False
 
 
-def ai_override(cfg: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, str]]:
-    """集成激活时返回 {model, base_url, api_key} 覆盖值；未激活返回 None。"""
+def ai_override(cfg: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """集成激活时返回 {model, base_url, api_key, ai_workers} 覆盖值；未激活返回 None。
+
+    ai_workers 由本地推理的「并发线程 -np」（parallel）接管，请求并发不超过
+    llama-server 的并行槽数。
+    """
     if not is_active(cfg):
         return None
     from .config_store import load_llama_config, load_llama_model_configs
@@ -36,8 +40,13 @@ def ai_override(cfg: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, str]
     model_cfg = load_llama_model_configs().get(str(llama.get("last_model") or ""), {}) or {}
     host = model_cfg.get("host") or llama.get("host") or "127.0.0.1"
     port = model_cfg.get("port") or llama.get("port") or 8080
+    try:
+        workers = max(1, int(llama.get("parallel") or 1))
+    except (TypeError, ValueError):
+        workers = 1
     return {
         "model": DEFAULT_MODEL,
         "api_key": DEFAULT_API_KEY,
         "base_url": f"http://{host}:{port}/v1",
+        "ai_workers": workers,
     }

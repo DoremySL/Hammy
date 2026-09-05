@@ -630,7 +630,7 @@
   .ic{display:inline-block;width:1em;height:1em;stroke:currentColor;fill:none;
     stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none}
 
-  /* ── 标签增强页 ── */
+  /* ── 标签检索页 ── */
   .pt-quick{display:flex;gap:8px;margin-bottom:10px}
   .pt-quick input{flex:1;padding:8px 10px;border:1px solid var(--border-strong);border-radius:var(--r-md);
     font-size:13px;font-family:inherit;background:var(--panel-2);color:var(--text)}

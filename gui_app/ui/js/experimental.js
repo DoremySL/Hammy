@@ -23,6 +23,7 @@ function syncLlamaState(llamaStatus) {
   state.llamaIntegration = !!(llamaStatus && llamaStatus.enabled && llamaStatus.config && llamaStatus.config.integrate);
   state.llamaRunning = !!(llamaStatus && llamaStatus.running);
   state.llamaStarting = !!(llamaStatus && llamaStatus.starting);
+  state.llamaParallel = Math.max(1, Number(llamaStatus && llamaStatus.config && llamaStatus.config.parallel) || 1);
   if (state.llamaIntegration) {
     state.pillMode = 'llama';
     state.aiConnected = state.llamaRunning && !state.llamaStarting;

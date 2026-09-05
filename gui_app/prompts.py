@@ -213,11 +213,11 @@ def build_prompt(preset: Dict[str, Any], include_header: bool = True,
     return "\n".join(parts)
 
 
-# ── 标签增强（全局，独立存储于 _workspace/priority_tags.json） ──
+# ── 标签检索（全局，独立存储于 _workspace/priority_tags.json） ──
 
 
 def normalize_priority_items(items: Any) -> List[Dict[str, str]]:
-    """规范化标签增强列表：剔除非 dict 与空关键词，keyword/description 去首尾空格。"""
+    """规范化标签检索列表：剔除非 dict 与空关键词，keyword/description 去首尾空格。"""
     out: List[Dict[str, str]] = []
     if not isinstance(items, list):
         return out
@@ -244,7 +244,7 @@ def load_priority_tags() -> Dict[str, Any]:
 
 
 def save_priority_tags(enabled: Any, items: Any) -> Dict[str, Any]:
-    """保存标签增强到 _workspace/priority_tags.json。"""
+    """保存标签检索到 _workspace/priority_tags.json。"""
     data = {
         "enabled": bool(enabled),
         "items": normalize_priority_items(items),
@@ -254,14 +254,14 @@ def save_priority_tags(enabled: Any, items: Any) -> Dict[str, Any]:
 
 
 def build_priority_tags_section(enabled: Any, items: Any) -> str:
-    """拼出注入提示词的「标签增强」段落；未启用或无有效标签时返回空串。"""
+    """拼出注入提示词的「标签检索」段落；未启用或无有效标签时返回空串。"""
     if not enabled:
         return ""
     norm = normalize_priority_items(items)
     if not norm:
         return ""
     lines = [
-        "【标签增强】",
+        "【标签检索】",
         "为视频生成 tags 时，若画面内容匹配，请优先采用以下指定标签：",
     ]
     for it in norm:
@@ -273,13 +273,13 @@ def build_priority_tags_section(enabled: Any, items: Any) -> str:
 
 
 def _priority_tags_section() -> str:
-    """从已保存配置生成标签增强段落。"""
+    """从已保存配置生成标签检索段落。"""
     data = load_priority_tags()
     return build_priority_tags_section(data.get("enabled"), data.get("items"))
 
 
 def _append_priority_tags(prompt: str) -> str:
-    """在 prompt 末尾追加标签增强段落（非空时）。"""
+    """在 prompt 末尾追加标签检索段落（非空时）。"""
     section = _priority_tags_section()
     return prompt + "\n\n" + section if section else prompt
 

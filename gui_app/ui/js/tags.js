@@ -1,5 +1,5 @@
 /* ════════════════════════════════════════════════════════════
-   设置 Modal - 标签增强页
+   设置 Modal - 标签检索页
    ════════════════════════════════════════════════════════════ */
 function renderTagsTab(pt) {
   state.ptItems = (pt.items || []).map(x => ({ keyword: x.keyword, description: x.description || '' }));
@@ -10,7 +10,7 @@ function renderTagsTab(pt) {
   body.innerHTML = `
     <div class="group">
       <div class="field" style="flex-direction:row;align-items:center;gap:12px">
-        <label class="switch"><input type="checkbox" id="pt-enabled" ${pt.enabled ? 'checked' : ''}/> 启用标签增强</label>
+        <label class="switch"><input type="checkbox" id="pt-enabled" ${pt.enabled ? 'checked' : ''}/> 启用标签检索</label>
         <span class="help" style="margin:0">占位功能，后续会大改，目前仅简单把全部关键词拼入 prompt，不宜过多否则模型容易产生幻觉。</span>
       </div>
     </div>

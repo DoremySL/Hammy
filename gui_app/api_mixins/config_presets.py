@@ -1,4 +1,4 @@
-"""ConfigPresetMixin — 配置读写、提示词预设 CRUD、标签增强管理/导入导出。"""
+"""ConfigPresetMixin — 配置读写、提示词预设 CRUD、标签检索管理/导入导出。"""
 from __future__ import annotations
 
 import json
@@ -46,7 +46,7 @@ class ConfigPresetMixin:
         with_thumb = int(video.get("frame_time_tags") or 0) == 2
         return {"prompt": prompts.preview_prompt(fields, with_thumb_time=with_thumb)}
 
-    # ── 标签增强 ──
+    # ── 标签检索 ──
 
     def get_priority_tags(self) -> Dict[str, Any]:
         return prompts.load_priority_tags()
@@ -58,7 +58,7 @@ class ConfigPresetMixin:
         return {"section": prompts.build_priority_tags_section(enabled, items)}
 
     def import_priority_tags(self) -> Dict[str, Any]:
-        """弹出文件选择对话框导入标签增强 JSON（不落地，返回给前端载入页面）。"""
+        """弹出文件选择对话框导入标签检索 JSON（不落地，返回给前端载入页面）。"""
         import webview
         from ..mainthread import run_on_ui_thread
 
@@ -98,7 +98,7 @@ class ConfigPresetMixin:
         return {"ok": True, "enabled": enabled, "items": items}
 
     def export_priority_tags(self, enabled: Any, items: Any) -> Dict[str, Any]:
-        """弹出保存对话框，把当前标签增强导出为 JSON 文件。"""
+        """弹出保存对话框，把当前标签检索导出为 JSON 文件。"""
         import webview
         from ..mainthread import run_on_ui_thread
 

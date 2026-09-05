@@ -30,7 +30,7 @@ class TestBuildPriorityTagsSection(unittest.TestCase):
 
     def test_enabled_with_description(self):
         s = build_priority_tags_section(True, [{"keyword": "cat", "description": "feline"}])
-        self.assertIn("\u3010\u6807\u7b7e\u589e\u5f3a\u3011", s)
+        self.assertIn("\u3010\u6807\u7b7e\u68c0\u7d22\u3011", s)
         self.assertIn("- cat\uff1afeline", s)
 
     def test_enabled_without_description(self):

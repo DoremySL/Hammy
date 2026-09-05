@@ -80,7 +80,16 @@ class TestAiOverride(unittest.TestCase):
             "model": "model",
             "api_key": "not-needed",
             "base_url": "http://127.0.0.1:8080/v1",
+            "ai_workers": 1,
         })
+
+    def test_workers_follow_parallel(self):
+        self.llama_cfg.stop()
+        self.llama_cfg = mock.patch("gui_app.config_store.load_llama_config",
+                                    return_value={"parallel": 4})
+        self.llama_cfg.start()
+        ov = li.ai_override(self.c)
+        self.assertEqual(ov["ai_workers"], 4)
 
     def test_custom_host_port(self):
         self.llama_cfg.stop()

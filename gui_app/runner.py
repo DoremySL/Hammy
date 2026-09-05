@@ -104,6 +104,8 @@ def build_engine_config(cfg_dict: Dict[str, Any]) -> Config:
     cfg.retry_times = _safe_int(ai, "retry_times", cfg.retry_times)
     cfg.ai_timeout = _safe_int(ai, "ai_timeout", cfg.ai_timeout)
     cfg.ai_workers = _safe_int(ai, "ai_workers", cfg.ai_workers)
+    if ov:
+        cfg.ai_workers = max(1, _safe_int(ov, "ai_workers", cfg.ai_workers))
     cfg.enforce_json_mode = bool(ai.get("enforce_json_mode", cfg.enforce_json_mode))
 
     video = _section("video")
