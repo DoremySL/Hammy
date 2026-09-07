@@ -429,21 +429,30 @@ $('#btn-savecfg').addEventListener('click', async () => {
       } else toast('保存失败: ' + ((res && res.error) || ''), 'err');
     } else if (state.settings_tab === 'tags') {
       const d = collectTagsData();
-      const res2 = await apiCall('save_priority_tags', d.enabled, d.items);
+      const res2 = await apiCall('save_priority_tags', d.items, d.mode);
       if (res2 && res2.ok) {
         toast('标签检索已保存', 'ok');
         renderSettings();
       } else toast('保存失败: ' + ((res2 && res2.error) || ''), 'err');
     } else if (state.settings_tab === 'experimental') {
-      if (!$('#pixai-frames') || !$('#whisper-vad') || !$('#llama-enable-toggle')) {
+      if (!$('#pixai-frames') || !$('#whisper-vad') || !$('#llama-enable-toggle')
+          || !$('#ragvec-enable-toggle')) {
         toast('页面尚未加载完成，请稍候再试', 'err');
         return;
       }
       let thr = Number($('#pixai-threshold').value) || 0.9;
       if (thr > 1) thr = 0.99;
       if (thr < 0.5) thr = 0.5;
+      let rvThr = Number($('#ragvec-threshold').value);
+      if (!Number.isFinite(rvThr)) rvThr = 0.45;
+      rvThr = Math.min(0.8, Math.max(0.3, rvThr));
       const wv = Number($('#whisper-workers').value);
       const expData = { experimental: {
+        rag_vec_enabled: $('#ragvec-enable-toggle').checked,
+        rag_vec_device: getDropdownValue($('#ragvec-device-dd')) || 'auto',
+        rag_vec_threshold: rvThr,
+        rag_vec_top_n: Math.min(100, Math.max(1, Number($('#ragvec-topn').value) || 20)),
+        rag_vec_model: getDropdownValue($('#ragvec-model-dd')) || '',
         pixai_classify: $('#pixai-classify').checked,
         pixai_frames: Math.max(1, Number($('#pixai-frames').value) || 15),
         pixai_short_side: Math.max(64, Number($('#pixai-short-side').value) || 448),
@@ -482,6 +491,9 @@ $('#btn-savecfg').addEventListener('click', async () => {
         ok = !!(res3 && res3.ok);
       }
       if (ok) {
+        if (!$('#ragvec-enable-toggle').checked) {
+          try { await apiCall('stop_rag_vec'); } catch (e) { /* 后台未运行时忽略 */ }
+        }
         if (llamaError) {
           toast('扩展功能参数已保存（但 llama 停用失败: ' + llamaError + '）', 'err');
         } else {

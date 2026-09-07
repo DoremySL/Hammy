@@ -24,6 +24,7 @@ from batch_rename.config import Config
 from batch_rename.dependencies import DependencyError, ensure_dependencies, bindings
 from batch_rename.env import logger as engine_logger
 from batch_rename.pipeline import BatchPipeline
+from batch_rename.tag_recall import TagRecall
 
 
 def _safe_int(d: dict, key: str, default: int) -> int:
@@ -97,6 +98,7 @@ def build_engine_config(cfg_dict: Dict[str, Any]) -> Config:
         cfg.model = ov["model"]
         cfg.base_url = ov["base_url"]
         cfg.api_key = ov["api_key"]
+        cfg.llama_slots = max(1, _safe_int(ov, "ai_workers", 1))
 
     cfg.max_tokens = _safe_int(ai, "max_tokens", cfg.max_tokens)
     cfg.temperature = _safe_float(ai, "temperature", cfg.temperature)
@@ -107,6 +109,15 @@ def build_engine_config(cfg_dict: Dict[str, Any]) -> Config:
     if ov:
         cfg.ai_workers = max(1, _safe_int(ov, "ai_workers", cfg.ai_workers))
     cfg.enforce_json_mode = bool(ai.get("enforce_json_mode", cfg.enforce_json_mode))
+    cfg.rag_top_k = _safe_int(ai, "rag_top_k", cfg.rag_top_k)
+    # 调试开关（GUI 无开关）：完成日志列出召回的具体关键词
+    cfg.rag_debug_keywords = bool(ai.get("rag_debug_keywords", cfg.rag_debug_keywords))
+    exp = cfg_dict.get("experimental") if isinstance(cfg_dict.get("experimental"), dict) else {}
+    cfg.rag_vec_enabled = bool(exp.get("rag_vec_enabled", False))
+    cfg.rag_vec_device = str(exp.get("rag_vec_device", "auto") or "auto")
+    cfg.rag_vec_threshold = _safe_float(exp, "rag_vec_threshold", cfg.rag_vec_threshold)
+    cfg.rag_vec_top_n = _safe_int(exp, "rag_vec_top_n", cfg.rag_vec_top_n)
+    cfg.rag_vec_model = str(exp.get("rag_vec_model", "") or "").strip()
 
     video = _section("video")
     cfg.sampling_points = _safe_int(video, "sampling_points", cfg.sampling_points)
@@ -380,6 +391,37 @@ class PipelineRunner:
                         extra_meta_map[vp] += "\n\n" + txt
                     else:
                         extra_meta_map[vp] = txt
+                pt = prompts.load_priority_tags()
+                dense = None
+                pt_mode = pt["mode"]
+                if engine_cfg.rag_vec_enabled and pt_mode == "enhanced":
+                    from .st_embedding import StEmbedBackend, get_status as st_status
+                    if st_status().get("ready"):
+                        dense = StEmbedBackend(
+                            device=engine_cfg.rag_vec_device,
+                            model_key=engine_cfg.rag_vec_model,
+                            log_fn=lambda m: engine_logger.info(f"[RAG] {m}"))
+                    else:
+                        engine_logger.info("[RAG] 向量检索已启用但 st-embedding 未就绪，"
+                                           "本次仅词面召回")
+                tag_recall = TagRecall(items=pt["items"],
+                                       # GUI 三档值 → TagRecall 内部模式（on=全量注入，enhanced=两轮召回）
+                                       mode={"off": "off", "on": "full",
+                                             "enhanced": "rag"}[pt_mode],
+                                       top_k=engine_cfg.rag_top_k,
+                                       dense=dense,
+                                       vec_threshold=engine_cfg.rag_vec_threshold,
+                                       vec_top_n=engine_cfg.rag_vec_top_n)
+                if dense is not None:
+                    try:
+                        tag_recall.warmup_dense()  # 预构建索引，首个视频不承担耗时
+                    except Exception as e:
+                        engine_logger.info(f"[RAG] 向量索引构建失败，本次仅词面召回: {e}")
+                if tag_recall.mode != "off":
+                    mode_label = {"full": "开启（单轮全量注入）",
+                                  "rag": "增强（两轮+召回）"}[tag_recall.mode]
+                    engine_logger.info(
+                        f"[RAG] 标签检索模式: {mode_label} | 标签库 {tag_recall.total_items} 条")
                 pipeline = BatchPipeline(
                     paths, engine_cfg, self._client, self._stop,
                     on_file_done=_emit_file_done,
@@ -387,6 +429,7 @@ class PipelineRunner:
                     # 避免不同目录下同 stem 视频映射到同一文件互相覆盖
                     nfo_namer=lambda vp: f"{stable_id(vp)}.nfo",
                     extra_meta_map=extra_meta_map,
+                    tag_recall=tag_recall,
                 )
                 pipeline.run()
 

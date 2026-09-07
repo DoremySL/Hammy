@@ -474,6 +474,28 @@ class TestRemove(unittest.TestCase):
         self.assertTrue(inst.exists())
         self.assertTrue(mod.exists())  # 删除失败 → 模块文件夹不动
 
+    def test_remove_ragvec_resets_module_config(self):
+        """卸载 ragvec：安装目录删除 + rag_vec_enabled/model 复位（不留痕迹）。"""
+        from gui_app import config_store
+        from gui_app.st_embedding import remove_st_embedding
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name)
+        inst = base / "st-embedding"
+        inst.mkdir()
+        cfg_file = base / "config.json"
+        cfg_file.write_text(json.dumps(
+            _cfg(rag_vec_enabled=True, rag_vec_model="e5-small"),
+            ensure_ascii=False), encoding="utf-8")
+        with mock.patch("gui_app.st_embedding.ST_DIR", inst), \
+             mock.patch.object(config_store, "CONFIG_FILE", cfg_file):
+            r = remove_st_embedding()
+        self.assertTrue(r["ok"])
+        self.assertFalse(inst.exists())
+        disk = json.loads(cfg_file.read_text(encoding="utf-8"))
+        self.assertFalse(disk["experimental"].get("rag_vec_enabled", False))
+        self.assertEqual(disk["experimental"].get("rag_vec_model", ""), "")
+
 
 # ═══════════════════════════════════════════════════════════════
 # 模块配置存储（pixai / whisper config.json）

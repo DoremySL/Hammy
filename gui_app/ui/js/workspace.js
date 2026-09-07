@@ -51,9 +51,9 @@ function renderWorkspaceTab(stats) {
   $('#btn-clear-nfo').onclick = () => workspaceAction('clear_workspace', [false, false, true, false],
     `确定清理 ${stats.nfo_count} 个 NFO 缓存吗？\n\n「自动输出 NFO 至视频目录」关闭时，详情页依赖此缓存。`,
     r => `已清理 ${r.cleared.nfo} 个 NFO`);
-  $('#btn-clear-cache').onclick = () => workspaceAction('clear_workspace', [true, true, true, false],
-    '确定清除全部缓存吗？\n\n将删除：\n• 所有已处理记录（已处理视频会重新进入待处理）\n• 所有缩略图缓存\n• 所有 NFO 缓存\n\n不会删除任何视频文件，也不会清空已添加的源。',
-    r => `已清除：${r.cleared.history ? '已处理记录、' : ''}${r.cleared.thumbs} 个缩略图、${r.cleared.nfo} 个 NFO`,
+  $('#btn-clear-cache').onclick = () => workspaceAction('clear_workspace', [true, true, true, false, true, true],
+    '确定清除全部缓存吗？\n\n将删除：\n• 所有已处理记录（已处理视频会重新进入待处理）\n• 所有缩略图缓存\n• 所有 NFO 缓存\n• 视频探针缓存与去重指纹缓存（下次使用时自动重建）\n\n不会删除任何视频文件，也不会清空已添加的源。',
+    r => `已清除：${r.cleared.history ? '已处理记录、' : ''}${r.cleared.thumbs} 个缩略图、${r.cleared.nfo} 个 NFO${r.cleared.probe ? '、探针缓存' : ''}${r.cleared.similar ? '、去重缓存' : ''}`,
     '清除失败',
     async () => { const sr = await callApi('scan'); if (sr) loadFromResult(sr); });
 }

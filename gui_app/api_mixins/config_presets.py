@@ -51,11 +51,8 @@ class ConfigPresetMixin:
     def get_priority_tags(self) -> Dict[str, Any]:
         return prompts.load_priority_tags()
 
-    def save_priority_tags(self, enabled: Any, items: Any) -> Dict[str, Any]:
-        return prompts.save_priority_tags(enabled, items)
-
-    def preview_priority_tags(self, enabled: Any, items: Any) -> Dict[str, Any]:
-        return {"section": prompts.build_priority_tags_section(enabled, items)}
+    def save_priority_tags(self, items: Any, mode: Any) -> Dict[str, Any]:
+        return prompts.save_priority_tags(items, mode)
 
     def import_priority_tags(self) -> Dict[str, Any]:
         """弹出文件选择对话框导入标签检索 JSON（不落地，返回给前端载入页面）。"""
@@ -84,20 +81,20 @@ class ConfigPresetMixin:
             data = json.loads(Path(path).read_text(encoding="utf-8"))
         except Exception as e:
             return {"ok": False, "error": f"读取/解析失败: {e}"}
-        # 兼容 {enabled, items} 与纯数组两种根结构
+        # 兼容 {mode, items} 与纯数组两种根结构
         if isinstance(data, list):
-            enabled, items = True, data
+            items = data
         elif isinstance(data, dict):
-            enabled, items = bool(data.get("enabled", True)), data.get("items", [])
+            items = data.get("items", [])
         else:
             return {"ok": False, "error": "JSON 结构不符合预期"}
         items = prompts.normalize_priority_items(items)
         if not items:
             return {"ok": False, "error": "文件中没有有效标签"}
         self._remember_dir([path])
-        return {"ok": True, "enabled": enabled, "items": items}
+        return {"ok": True, "items": items}
 
-    def export_priority_tags(self, enabled: Any, items: Any) -> Dict[str, Any]:
+    def export_priority_tags(self, mode: Any, items: Any) -> Dict[str, Any]:
         """弹出保存对话框，把当前标签检索导出为 JSON 文件。"""
         import webview
         from ..mainthread import run_on_ui_thread
@@ -121,7 +118,7 @@ class ConfigPresetMixin:
             return {"ok": False, "cancelled": True}
         path = result[0] if isinstance(result, (list, tuple)) else result
         data = {
-            "enabled": bool(enabled),
+            "mode": str(mode or "off"),
             "items": prompts.normalize_priority_items(items),
         }
         try:

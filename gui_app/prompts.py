@@ -161,7 +161,7 @@ def set_active(pid: str) -> Dict[str, Any]:
 
 
 def get_active(with_thumb_time: bool = False) -> Dict[str, Any]:
-    """返回当前激活的模板 + 拼好的 prompt 字符串。"""
+    """返回当前激活的模板与拼好的 prompt（不含标签段落，注入由 TagRecall 负责）。"""
     from .config_store import load_config
     cfg = load_config()
     pid = cfg.get("active_prompt_id", "default")
@@ -172,7 +172,7 @@ def get_active(with_thumb_time: bool = False) -> Dict[str, Any]:
         preset = presets[0] if presets else _builtin_presets()[0]
     return {
         "preset": preset,
-        "prompt": _append_priority_tags(build_prompt(preset, with_thumb_time=with_thumb_time)),
+        "prompt": build_prompt(preset, with_thumb_time=with_thumb_time),
         "system_prompt": preset.get("system_prompt", ""),
     }
 
@@ -213,6 +213,11 @@ def build_prompt(preset: Dict[str, Any], include_header: bool = True,
     return "\n".join(parts)
 
 
+def preview_prompt(fields: Dict[str, Any], with_thumb_time: bool = False) -> str:
+    """前端预览：用临时 fields 拼出 prompt（不保存）。"""
+    return build_prompt({"fields": fields}, with_thumb_time=with_thumb_time)
+
+
 # ── 标签检索（全局，独立存储于 _workspace/priority_tags.json） ──
 
 
@@ -233,59 +238,27 @@ def normalize_priority_items(items: Any) -> List[Dict[str, str]]:
 
 
 def load_priority_tags() -> Dict[str, Any]:
-    """读取 _workspace/priority_tags.json；不存在返回默认结构。"""
+    """读取 _workspace/priority_tags.json；不存在/结构非法返回默认。
+
+    mode ∈ off/on/enhanced（关闭 / 开启=单轮全量注入 / 增强=两轮召回）。
+    """
     data = read_json(PRIORITY_TAGS_FILE, None)
-    if not isinstance(data, dict):
-        return {"enabled": False, "items": []}
-    return {
-        "enabled": bool(data.get("enabled", False)),
-        "items": normalize_priority_items(data.get("items", [])),
-    }
+    mode = ""
+    items: List[Dict[str, str]] = []
+    if isinstance(data, dict):
+        mode = str(data.get("mode") or "").strip().lower()
+        items = normalize_priority_items(data.get("items", []))
+    if mode not in ("off", "on", "enhanced"):
+        mode = "off"
+    return {"mode": mode, "items": items}
 
 
-def save_priority_tags(enabled: Any, items: Any) -> Dict[str, Any]:
-    """保存标签检索到 _workspace/priority_tags.json。"""
-    data = {
-        "enabled": bool(enabled),
-        "items": normalize_priority_items(items),
-    }
+def save_priority_tags(items: Any, mode: Any) -> Dict[str, Any]:
+    """保存标签检索到 _workspace/priority_tags.json（mode ∈ off/on/enhanced）。"""
+    m = str(mode or "").strip().lower()
+    data = {"mode": m if m in ("off", "on", "enhanced") else "off",
+            "items": normalize_priority_items(items)}
     write_json(PRIORITY_TAGS_FILE, data)
     return {"ok": True}
-
-
-def build_priority_tags_section(enabled: Any, items: Any) -> str:
-    """拼出注入提示词的「标签检索」段落；未启用或无有效标签时返回空串。"""
-    if not enabled:
-        return ""
-    norm = normalize_priority_items(items)
-    if not norm:
-        return ""
-    lines = [
-        "【标签检索】",
-        "为视频生成 tags 时，若画面内容匹配，请优先采用以下指定标签：",
-    ]
-    for it in norm:
-        if it["description"]:
-            lines.append(f"- {it['keyword']}：{it['description']}")
-        else:
-            lines.append(f"- {it['keyword']}")
-    return "\n".join(lines)
-
-
-def _priority_tags_section() -> str:
-    """从已保存配置生成标签检索段落。"""
-    data = load_priority_tags()
-    return build_priority_tags_section(data.get("enabled"), data.get("items"))
-
-
-def _append_priority_tags(prompt: str) -> str:
-    """在 prompt 末尾追加标签检索段落（非空时）。"""
-    section = _priority_tags_section()
-    return prompt + "\n\n" + section if section else prompt
-
-
-def preview_prompt(fields: Dict[str, Any], with_thumb_time: bool = False) -> str:
-    """前端预览：用临时 fields 拼出 prompt（不保存）。"""
-    return _append_priority_tags(build_prompt({"fields": fields}, with_thumb_time=with_thumb_time))
 
 

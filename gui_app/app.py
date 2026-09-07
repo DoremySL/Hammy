@@ -356,6 +356,10 @@ def _bind_window_events(window, api: "Api"):
             api.stop()  # 触发 stop_event
         except Exception:
             pass
+        try:
+            api.stop_similar_scan()
+        except Exception:
+            pass
         # 等待 runner 线程落盘 history：每 0.5s 轮询，最长 30s，超时则告警而非静默丢失。
         try:
             import time as _time

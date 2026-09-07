@@ -4,7 +4,7 @@ import random
 import re
 import threading
 from pathlib import Path
-from typing import List, Optional, Dict, Any, NamedTuple
+from typing import List, Optional, Dict, Any, NamedTuple, Sequence
 
 from .env import logger
 from .dependencies import bindings, DependencyError
@@ -130,7 +130,12 @@ def _extract_first_json(text: str, require_key: Optional[str] = "title") -> Opti
 
 
 class AnalyzeResult(NamedTuple):
-    """analyze_frames 的返回值。"""
+    """analyze_frames 的返回值。
+
+    recalled：增强模式下词面+向量去重后的候选关键词数（-1 = 非增强模式，
+    供管线完成日志决定是否追加「召回N个关键词」）。
+    recalled_keywords：与 recalled 对应的关键词列表（调试日志用，仅增强模式填充）。
+    """
     title: str
     plot: str
     tags: List[str]
@@ -139,6 +144,9 @@ class AnalyzeResult(NamedTuple):
     # error_kind: "" 成功 / format / empty / api / server / retryable / cancel / other
     error_kind: str = ""
     thumb_time: str = ""
+    raw: str = ""
+    recalled: int = -1
+    recalled_keywords: Sequence[str] = ()
 
 
 def _fmt_hms(seconds: float) -> str:
@@ -154,8 +162,8 @@ _THUMB_TIME_RE = re.compile(r"\d{1,3}:\d{2}:\d{2}")
 
 def _build_messages(frames: List[Frame], config: Config, video_path: str,
                     duration: float, container_title: str = "",
-                    extra_meta: str = "") -> list:
-    """构建 API 请求消息（system + 关键帧图片 + 辅助信息 + prompt）。"""
+                    extra_meta: str = "", priority_section: str = "") -> list:
+    """构建 API 请求消息；priority_section 为单轮全量注入的标签段落（RAG 首轮传空）。"""
     vid_name = Path(video_path).name
     dur_str = _fmt_hms(duration) if duration > 0 else "未知"
     meta_parts = [f"- 原始文件名: {vid_name}", f"- 视频总时长: {dur_str}"]
@@ -176,7 +184,8 @@ def _build_messages(frames: List[Frame], config: Config, video_path: str,
         user_content.append({"type": "image_url",
                              "image_url": {"url": f"data:image/jpeg;base64,{frame.b64}"}})
     user_content.append({"type": "text", "text": meta_info})
-    user_content.append({"type": "text", "text": config.prompt})
+    user_content.append({"type": "text",
+                         "text": config.prompt + ("\n\n" + priority_section if priority_section else "")})
     messages.append({"role": "user", "content": user_content})
     return messages
 
@@ -226,8 +235,9 @@ def _clean_tags(tags: Any) -> List[str]:
 
 
 def _call_and_parse(client: OpenAIClient, model: str, messages: list,
-                    config: Config, stop_event: threading.Event) -> AnalyzeResult:
-    """单次调用 AI 并解析响应。"""
+                    config: Config, stop_event: threading.Event,
+                    slot_id: Optional[int] = None) -> AnalyzeResult:
+    """单次调用 AI 并解析响应；slot_id 非 None 时透传 llama-server 槽位固定参数。"""
     kwargs = {
         "model": model,
         "messages": messages,
@@ -236,6 +246,8 @@ def _call_and_parse(client: OpenAIClient, model: str, messages: list,
         "temperature": config.temperature,
         "top_p": config.top_p,
     }
+    if slot_id is not None:
+        kwargs["extra_body"] = {"id_slot": int(slot_id)}
     if config.enforce_json_mode:
         kwargs["response_format"] = {"type": "json_object"}
 
@@ -269,7 +281,7 @@ def _call_and_parse(client: OpenAIClient, model: str, messages: list,
         thumb_time = ""
     if not title:
         raise AITitleEmptyError("AI 返回的 title 为空")
-    return AnalyzeResult(title, plot, tags, 0, "", thumb_time=thumb_time)
+    return AnalyzeResult(title, plot, tags, 0, "", thumb_time=thumb_time, raw=raw)
 
 
 def _api_status_cls():
@@ -346,28 +358,90 @@ def _handle_retryable_error(e: Exception, attempt: int, max_attempts: int,
     return None
 
 
+_REFINE_INSTRUCTION = (
+    "下面是根据首轮分析结果与视频信息检索到的候选标签（可能包含与画面无关的条目）。\n"
+    "请结合画面与候选标签，对首轮 JSON 做整体修订：\n"
+    "1. tags：将确实匹配视频内容的候选标签并入；无法确认匹配的候选不要采用；"
+    "与候选同义的自造表述统一为候选标签的写法。\n"
+    "2. plot：用候选标签中的规范用词润色与补充首轮 plot，使描述更准确完整；"
+    "仍须符合首轮对 plot 的字数与风格要求，不得提及候选列表或检索来源本身。\n"
+    "3. title：可用候选标签优化用词，仍须符合首轮对 title 的格式与字数要求。\n"
+    "4. thumb_time（如首轮输出含该字段）：保持首轮结果不变。\n"
+    "输出修订后的完整 JSON（结构、字段顺序与首轮要求完全一致），不要输出任何其他内容。\n\n"
+)
+
+
+def _refine_round(client: OpenAIClient, model: str, messages: list,
+                  result: AnalyzeResult, config: Config,
+                  stop_event: threading.Event, video_path: str,
+                  container_title: str, extra_meta: str,
+                  slot_id: Optional[int], tag_recall) -> AnalyzeResult:
+    """第二轮：召回候选 → assistant(首轮原文)+user(候选) 追加请求修订，失败沿用首轮。"""
+    parts = {
+        "plot": result.plot,
+        "tags": " ".join([*result.tags, result.title]),
+        "filename": " ".join(x for x in (Path(video_path).stem, container_title) if x),
+        "aux": extra_meta,
+    }
+    candidates = tag_recall.recall(parts)
+    if not candidates:
+        return result._replace(recalled=0, recalled_keywords=[])
+    keywords = [it["keyword"] for it in candidates]
+
+    refine_prompt = _REFINE_INSTRUCTION + tag_recall.build_candidates_section(candidates)
+    msgs = messages + [
+        {"role": "assistant", "content": result.raw},
+        {"role": "user", "content": refine_prompt},
+    ]
+    refined: Optional[AnalyzeResult] = None
+    for _attempt2 in range(2):
+        if stop_event.is_set():
+            return result._replace(recalled=len(candidates), recalled_keywords=keywords)
+        try:
+            refined = _call_and_parse(client, model, msgs, config, stop_event,
+                                      slot_id=slot_id)
+            break
+        except (AIFormatError, AITitleEmptyError):
+            continue  # 格式错误：立即重试一次
+        except Exception:
+            # 第二轮失败沿用首轮
+            return result._replace(recalled=len(candidates), recalled_keywords=keywords)
+    if refined is None or not refined.title:
+        return result._replace(recalled=len(candidates), recalled_keywords=keywords)
+
+    return AnalyzeResult(refined.title, refined.plot, refined.tags, result.retries, "",
+                         thumb_time=refined.thumb_time or result.thumb_time,
+                         raw=refined.raw, recalled=len(candidates),
+                         recalled_keywords=keywords)
+
+
 def analyze_frames(
     client: OpenAIClient, model: str, frames: List[Frame], config: Config,
     stop_event: threading.Event, video_path: str, duration: float,
     container_title: str = "", extra_meta: str = "",
+    slot_id: Optional[int] = None, priority_section: str = "",
+    tag_recall=None,
 ) -> AnalyzeResult:
-    """调用 AI 分析关键帧，返回 AnalyzeResult。"""
+    """调用 AI 分析关键帧；tag_recall 非 None 时走两轮 RAG（失败回退首轮）。"""
     if not frames:
         logger.warning("无有效帧可发送")
         return AnalyzeResult("", "", [], 0, "无有效帧", "other")
 
     messages = _build_messages(frames, config, video_path, duration,
-                               container_title, extra_meta)
+                               container_title, extra_meta,
+                               priority_section=priority_section)
     max_attempts = config.retry_times + 1
     last_error = "未知错误"
     last_error_kind = "other"
 
+    result: Optional[AnalyzeResult] = None
     for attempt in range(max_attempts):
         if stop_event.is_set():
             return AnalyzeResult("", "", [], attempt, "已取消", "cancel")
         try:
-            result = _call_and_parse(client, model, messages, config, stop_event)
-            return result._replace(retries=attempt)
+            result = _call_and_parse(client, model, messages, config, stop_event,
+                                     slot_id=slot_id)
+            break
         except (AIFormatError, AITitleEmptyError) as e:
             # 格式错误 / title 空：立即重试，不退避
             last_error = str(e)
@@ -382,4 +456,11 @@ def analyze_frames(
             last_error_kind = _error_kind_of(e)
             continue
 
-    return AnalyzeResult("", "", [], config.retry_times, last_error, last_error_kind)
+    if result is None:
+        return AnalyzeResult("", "", [], config.retry_times, last_error, last_error_kind)
+
+    if tag_recall is not None and result.title and not stop_event.is_set():
+        result = _refine_round(client, model, messages, result, config, stop_event,
+                               video_path, container_title, extra_meta,
+                               slot_id, tag_recall)
+    return result._replace(retries=attempt)

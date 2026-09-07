@@ -26,15 +26,17 @@ async function showDetail(v) {
     || '<span class="filemeta">无标签</span>';
   d.innerHTML = `
     <div class="row">
-      <h4>标签（点击筛选同类视频）</h4>
+      <h4>标签（点击筛选同类视频，右键加入标签检索）</h4>
       <div class="chips">${tags}</div>
     </div>
     <div class="row">
       <h4>简介</h4>
       <div class="plot">${esc(data.plot || '—')}</div>
     </div>`;
-  d.querySelectorAll('.chip').forEach(ch =>
-    ch.addEventListener('click', () => onTagClick(ch.dataset.tag)));
+  d.querySelectorAll('.chip').forEach(ch => {
+    ch.addEventListener('click', () => onTagClick(ch.dataset.tag));
+    ch.addEventListener('contextmenu', e => showChipMenu(e, ch.dataset.tag));
+  });
   if (state.primaryId === v.id && state.selected.size === 1) {
     const si = $('#selectedInfo');
     if (si) {
@@ -89,11 +91,11 @@ async function showPendingDetail(v) {
       || '<span class="filemeta">未识别到IP</span>';
     html += `
     <div class="row">
-      <h4>角色标签（置信度 &gt; 阈值）</h4>
+      <h4>角色标签（置信度 &gt; 阈值，右键加入标签检索）</h4>
       <div class="chips">${charTags}</div>
     </div>
     <div class="row">
-      <h4>IP / 版权标签</h4>
+      <h4>IP / 版权标签（右键加入标签检索）</h4>
       <div class="chips">${ipTags}</div>
     </div>`;
   }
@@ -106,8 +108,10 @@ async function showPendingDetail(v) {
     </div>`;
   }
   d.innerHTML = html;
-  d.querySelectorAll('.chip[data-web-tag]').forEach(ch =>
-    ch.addEventListener('click', () => onWebTagClick(ch.dataset.webTag)));
+  d.querySelectorAll('.chip[data-web-tag]').forEach(ch => {
+    ch.addEventListener('click', () => onWebTagClick(ch.dataset.webTag));
+    ch.addEventListener('contextmenu', e => showChipMenu(e, ch.dataset.webTag));
+  });
 }
 
 async function onWebTagClick(name) {

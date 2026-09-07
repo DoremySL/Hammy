@@ -97,13 +97,14 @@ const state = {
   settings_tab: 'config',
   active_preset_id: 'default',
   ptItems: [],
+  ptMode: 'off',
   ptSelected: new Set(),
   ptSelAnchor: null,
-  ptLoadedEnabled: false,
   settings_scroll_to: null,
   thumbCache: new Map(),
   pixaiTaggerEnabled: false,
   whisperEnabled: false,
+  ragVecEnabled: false,
   thumbOptimize: false,
   gpuBusy: false,
   installing: false,
@@ -468,6 +469,12 @@ window.__ui = {
   },
   whisperModelProgress(ev) {
     if (typeof window.__onWhisperModelProgress === 'function') window.__onWhisperModelProgress(ev);
+  },
+  ragvecModelProgress(ev) {
+    if (typeof window.__onRagVecModelProgress === 'function') window.__onRagVecModelProgress(ev);
+  },
+  ragvecModelDone(ev) {
+    if (typeof window.__onRagVecModelDone === 'function') window.__onRagVecModelDone(ev);
   },
   whisperModelDone(ev) {
     if (typeof window.__onWhisperModelDone === 'function') window.__onWhisperModelDone(ev);

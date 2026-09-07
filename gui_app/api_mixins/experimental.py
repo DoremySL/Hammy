@@ -121,7 +121,86 @@ class ExperimentalMixin:
             "llama": self.get_llama_status(),
             "pixai": self.get_pixai_tagger_status(),
             "whisper": self.get_whisper_status(),
+            "ragvec": self.get_rag_vec_status(),
         }
+
+    def get_rag_vec_status(self) -> Dict[str, Any]:
+        """向量检索模块安装状态、模型清单与启用状态。"""
+        from ..st_embedding import get_status
+        exp = self.get_config().get("experimental") or {}
+        status = get_status()
+        status["enabled"] = bool(exp.get("rag_vec_enabled", False))
+        status["current_model"] = str(exp.get("rag_vec_model", "") or "")
+        try:
+            threshold = float(exp.get("rag_vec_threshold", 0.45))
+            top_n = int(exp.get("rag_vec_top_n", 20))
+        except (TypeError, ValueError):
+            threshold, top_n = 0.45, 20
+        status["cfg"] = {
+            "device": str(exp.get("rag_vec_device", "auto") or "auto"),
+            "threshold": threshold,
+            "top_n": top_n,
+            "model": str(exp.get("rag_vec_model", "") or ""),
+        }
+        return status
+
+    def download_rag_vec_model(self, model_key: str = "") -> Dict[str, Any]:
+        """下载未安装的嵌入模型（魔搭，取消时清理未完成文件）。"""
+        from ..st_embedding import _download_model
+        if not model_key:
+            return {"ok": False, "error": "未指定模型"}
+        if not _install_lock.acquire(blocking=False):
+            return {"ok": False, "busy": True, "error": "已有模块正在安装，请等待完成后再试"}
+
+        def _progress(ev: Dict[str, Any]):
+            js_pusher.push("ragvecModelProgress", ev)
+
+        try:
+            result = _download_model(model_key, log_fn=_push_log, progress_cb=_progress)
+        except Exception as e:
+            result = {"ok": False, "error": f"下载过程异常: {e}"}
+        finally:
+            js_pusher.push("ragvecModelDone", result)
+            _install_lock.release()
+        return result
+
+    def get_rag_vec_mirrors(self) -> Dict[str, Any]:
+        """向量检索模块安装可选镜像（PyTorch CUDA/CPU + 通用 PyPI + GPU 检测）。"""
+        from ..installer import get_mirror_groups
+        return get_mirror_groups(["pytorch", "pypi"])
+
+    def install_rag_vec(self, pytorch_mirror: str = "nju-cu128",
+                        pypi_mirror: str = "nju",
+                        model: str = "") -> Dict[str, Any]:
+        """安装向量检索依赖（uv + venv + torch + sentence-transformers + 所选模型）。"""
+        from ..st_embedding import install_dependencies
+        if not _install_lock.acquire(blocking=False):
+            return {"ok": False, "error": "已有模块正在安装，请等待完成后再试"}
+        _install_stop_event.clear()
+        try:
+            return install_dependencies(pytorch_mirror=pytorch_mirror,
+                                        pypi_mirror=pypi_mirror, model=model,
+                                        log_fn=_push_log,
+                                        stop_event=_install_stop_event)
+        finally:
+            _install_stop_event.clear()
+            _install_lock.release()
+
+    def remove_rag_vec(self) -> Dict[str, Any]:
+        """删除 st-embedding 模块（venv + 模型 + 索引缓存）。"""
+        from ..st_embedding import remove_st_embedding as _remove
+        if not _install_lock.acquire(blocking=False):
+            return {"ok": False, "error": "已有模块正在安装，请等待完成后再卸载"}
+        try:
+            return _remove()
+        finally:
+            _install_lock.release()
+
+    def stop_rag_vec(self) -> Dict[str, Any]:
+        """停止嵌入后台进程，释放显存/内存；下次向量检索自动重启。"""
+        from ..st_embedding import stop_worker, get_status
+        stop_worker()
+        return {"ok": True, "message": "已停止嵌入后台进程", "worker_running": get_status().get("worker_running")}
 
     # ── PixAI Tagger 标签获取 ──
 

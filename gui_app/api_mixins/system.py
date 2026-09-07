@@ -205,11 +205,16 @@ class SystemMixin:
     def clear_workspace(self, clear_history: bool = True,
                         clear_thumbs: bool = True,
                         clear_nfo: bool = True,
-                        clear_manifest: bool = False) -> Dict[str, Any]:
-        """清除全部缓存（history + thumbnails + nfo），可选清源清单。默认不动 manifest 与视频本体。"""
+                        clear_manifest: bool = False,
+                        clear_probe: bool = False,
+                        clear_similar: bool = False) -> Dict[str, Any]:
+        """清除全部缓存（history + thumbnails + nfo），可选清源清单/探针缓存/去重缓存。
+        默认不动 manifest、probe_cache、similar_cache 与视频本体。"""
         return clear_workspace_cache(
             clear_history=clear_history,
             clear_thumbs=clear_thumbs,
             clear_nfo=clear_nfo,
             clear_manifest=clear_manifest,
+            clear_probe=clear_probe,
+            clear_similar=clear_similar,
         )

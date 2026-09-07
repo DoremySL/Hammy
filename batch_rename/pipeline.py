@@ -33,6 +33,32 @@ def _max_ai_seconds_per_video(config: Config) -> float:
     return (config.ai_timeout + _TIMEOUT_GRACE_SEC) * (config.retry_times + 1)
 
 
+def _ai_seconds_per_video(config: Config, rag_mode: bool) -> float:
+    """管线背压/join 超时用的单视频最坏耗时；两轮 RAG 模式按两轮估算翻倍。"""
+    secs = _max_ai_seconds_per_video(config)
+    return secs * 2 if rag_mode else secs
+
+
+def _rag_suffix(config: Config, recalled: int, keywords=()) -> str:
+    """完成日志的召回后缀。
+
+    调试开关 config.rag_debug_keywords（config.json ai 段，GUI 无界面，默认关闭）：
+    开启时在「召回N个关键词」后列出具体关键词。
+    """
+    if recalled < 0:
+        return ""
+    if keywords and getattr(config, "rag_debug_keywords", False):
+        return f"（召回{recalled}个关键词：{'、'.join(keywords)}）"
+    return f"（召回{recalled}个关键词）"
+
+
+def _worker_slot_ids(n_workers: int, slots: int) -> List[Optional[int]]:
+    """worker i → 槽位 i % slots；slots <= 0（远程 API）返回全 None。"""
+    if slots <= 0:
+        return [None] * n_workers
+    return [i % slots for i in range(n_workers)]
+
+
 # 每文件完成回调签名: (original_path, new_path, status, info, title, plot, tags)
 # status ∈ {"ok","skipped","error","frame_error"}；new_path 为改名后路径（失败时为原路径）
 OnFileDone = Callable[[str, Optional[str], str, Dict[str, Any], str, str, List[str]], None]
@@ -43,15 +69,17 @@ class FrameProducer:
     """抽帧生产者：ThreadPoolExecutor 并发抽帧，结果入任务队列。"""
 
     def __init__(self, videos: List[str], task_queue: queue.Queue,
-                 config: Config, stop_event: threading.Event):
+                 config: Config, stop_event: threading.Event,
+                 ai_secs: Optional[float] = None):
         self.videos = videos
         self.task_queue = task_queue
         self.config = config
         self.stop_event = stop_event
+        self._ai_secs = ai_secs if ai_secs is not None else _max_ai_seconds_per_video(config)
 
     def _safe_put(self, item, max_wait: Optional[float] = None) -> bool:
         if max_wait is None:
-            max_wait = _max_ai_seconds_per_video(self.config)
+            max_wait = self._ai_secs
         deadline = time.time() + max_wait
         while not self.stop_event.is_set():
             try:
@@ -125,7 +153,9 @@ class AIWorker:
                  task_queue: queue.Queue, stop_event: threading.Event,
                  on_file_done: Optional[OnFileDone] = None,
                  nfo_namer: Optional[Callable[[str], str]] = None,
-                 extra_meta_map: Optional[Dict[str, str]] = None):
+                 extra_meta_map: Optional[Dict[str, str]] = None,
+                 slot_id: Optional[int] = None,
+                 tag_recall=None):
         self.client = client
         self.config = config
         self.stats = stats
@@ -136,6 +166,14 @@ class AIWorker:
         self._nfo_namer = nfo_namer
         # 每个视频的额外上下文（扩展功能注入，key=视频路径）
         self.extra_meta_map = extra_meta_map or {}
+        self.slot_id = slot_id   # llama 集成时 worker i → slot i，两轮同槽命中缓存
+        if tag_recall is not None and getattr(tag_recall, "mode", "") == "full":
+            self.priority_section = tag_recall.full_section
+        else:
+            self.priority_section = ""
+        self._rag_provider = (tag_recall
+                              if tag_recall is not None and getattr(tag_recall, "mode", "") == "rag"
+                              else None)
 
     def _move_failed_hint(self) -> str:
         return "，稍后将移至 _failed"
@@ -151,7 +189,8 @@ class AIWorker:
             logger.debug(f"on_file_done 回调异常: {e}")
 
     def _handle_success(self, vp: str, info: Dict[str, Any], title: str,
-                        plot: str, tags: List[str], retries: int) -> str:
+                        plot: str, tags: List[str], retries: int,
+                        recalled: int = -1, recalled_keywords=()) -> str:
         name = Path(vp).name
         final_stem = build_new_stem(vp, info, title, self.config)
         new_path, status = rename_video(vp, final_stem, self.config)
@@ -174,7 +213,9 @@ class AIWorker:
         self._emit_file_done(vp, new_path, status, info, title, plot, tags)
 
         if status == "ok":
-            return f"{name} -> {Path(new_path).name}{retry_hint(retries, success=True)}"
+            # 增强模式（recalled ≥ 0）追加召回数：词面+向量去重后的候选关键词数
+            rag_suffix = _rag_suffix(self.config, recalled, recalled_keywords)
+            return f"{name} -> {Path(new_path).name}{rag_suffix}{retry_hint(retries, success=True)}"
         elif status == "skipped":
             return f"{name}（文件名未变化）"
         else:
@@ -252,12 +293,16 @@ class AIWorker:
                 self.stop_event, vp, info.get("duration", 0.0),
                 container_title=info.get("container_title", ""),
                 extra_meta=self.extra_meta_map.get(vp, ""),
+                slot_id=self.slot_id,
+                priority_section=self.priority_section,
+                tag_recall=self._rag_provider,
             )
             if result.title:
                 if result.thumb_time:
                     info["thumb_time"] = result.thumb_time
                 display_msg = self._handle_success(vp, info, result.title, result.plot,
-                                                  result.tags, result.retries)
+                                                  result.tags, result.retries,
+                                                  result.recalled, result.recalled_keywords)
             else:
                 display_msg = self._handle_failure(vp, result.retries,
                                                    result.err_msg, result.error_kind)
@@ -303,7 +348,8 @@ class BatchPipeline:
                  stop_event: threading.Event,
                  on_file_done: Optional[OnFileDone] = None,
                  nfo_namer: Optional[Callable[[str], str]] = None,
-                 extra_meta_map: Optional[Dict[str, str]] = None):
+                 extra_meta_map: Optional[Dict[str, str]] = None,
+                 tag_recall=None):
         self.paths = paths
         self.config = config
         self.client = client
@@ -312,6 +358,8 @@ class BatchPipeline:
         self.nfo_namer = nfo_namer
         # 每个视频的额外上下文（扩展功能注入，key=视频路径）
         self.extra_meta_map = extra_meta_map or {}
+        self.tag_recall = tag_recall
+        self._rag_mode = tag_recall is not None and getattr(tag_recall, "mode", "") == "rag"
         # 暴露 stats 给外部（GUI 完成后读取真实计数）
         self.stats: Optional[PipelineStats] = None
         self._videos: List[str] = []
@@ -357,15 +405,23 @@ class BatchPipeline:
     def _run_workers(self, stats):
         """启动生产者 + 消费者线程，等待完成或超时。"""
         videos = self._videos
+        ai_max_per_video = _ai_seconds_per_video(self.config, self._rag_mode)
         task_queue: queue.Queue = queue.Queue(maxsize=self.config.ai_workers * _TASK_QUEUE_FACTOR)
-        producer = FrameProducer(videos, task_queue, self.config, self.stop_event)
+        producer = FrameProducer(videos, task_queue, self.config, self.stop_event,
+                                 ai_secs=ai_max_per_video)
         producer_thread = threading.Thread(target=producer.run, name="producer", daemon=False)
         producer_thread.start()
 
+        slots = max(0, int(getattr(self.config, "llama_slots", 0) or 0))
+        slot_ids = _worker_slot_ids(self.config.ai_workers, slots)
+        if slots > 0 and slots < self.config.ai_workers:
+            logger.warning(f"[RAG] 槽位数({slots})少于 AI 并发({self.config.ai_workers})，"
+                           f"同槽视频将交替覆盖缓存，两轮同槽收益下降")
         workers = [AIWorker(self.client, self.config, stats, task_queue, self.stop_event,
                             on_file_done=self.on_file_done, nfo_namer=self.nfo_namer,
-                            extra_meta_map=self.extra_meta_map)
-                   for _ in range(self.config.ai_workers)]
+                            extra_meta_map=self.extra_meta_map,
+                            slot_id=slot_ids[i], tag_recall=self.tag_recall)
+                   for i in range(self.config.ai_workers)]
         # AI worker 设为 daemon：网络调用失效时可防进程退出挂死
         worker_threads = [threading.Thread(target=w.run, name=f"ai-{i}", daemon=True)
                           for i, w in enumerate(workers)]
@@ -374,7 +430,6 @@ class BatchPipeline:
             t.start()
 
         start_time = time.time()
-        ai_max_per_video = _max_ai_seconds_per_video(self.config)
         per_thread_timeout = max(_MIN_JOIN_TIMEOUT_SEC,
             (len(videos) / max(1, self.config.ai_workers)) * ai_max_per_video * _JOIN_SLACK_FACTOR)
         # 所有线程共享一个总 deadline

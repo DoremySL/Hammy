@@ -10,9 +10,10 @@ async function renderExperimentalTabWrapper() {
       syncLlamaState(st.llama);
       state.pixaiTaggerEnabled = !!(st.pixai && st.pixai.enabled);
       state.whisperEnabled = !!(st.whisper && st.whisper.enabled);
-      return { cfg: st.cfg, uvStatus: st.uv, llamaStatus: st.llama, pStatus: st.pixai, wStatus: st.whisper };
+      state.ragVecEnabled = !!(st.ragvec && st.ragvec.enabled);
+      return { cfg: st.cfg, uvStatus: st.uv, llamaStatus: st.llama, pStatus: st.pixai, wStatus: st.whisper, rvStatus: st.ragvec };
     },
-    (data) => renderExperimentalPage(data.cfg, data.uvStatus, data.llamaStatus, data.pStatus, data.wStatus),
+    (data) => renderExperimentalPage(data.cfg, data.uvStatus, data.llamaStatus, data.pStatus, data.wStatus, data.rvStatus),
     () => renderSettings()
   );
 }
@@ -36,7 +37,7 @@ function syncLlamaState(llamaStatus) {
   if (typeof updateLlamaTabVisibility === 'function') updateLlamaTabVisibility();
 }
 
-function renderExperimentalPage(cfg, uvStatus, llamaStatus, pStatus, wStatus) {
+function renderExperimentalPage(cfg, uvStatus, llamaStatus, pStatus, wStatus, rvStatus) {
   const body = $('#modal-body');
   const exp = (cfg && cfg.experimental) || {};
   body.innerHTML = `
@@ -45,14 +46,16 @@ function renderExperimentalPage(cfg, uvStatus, llamaStatus, pStatus, wStatus) {
       ${_renderLlamaSection(llamaStatus)}
       ${_renderPixaiSection(exp, pStatus)}
       ${_renderWhisperSection(exp, wStatus)}
+      ${_renderRagVecSection(exp, rvStatus)}
       ${_renderUvCard(uvStatus)}
     </div>
   `;
 
-  _bindManageButtons(uvStatus, llamaStatus, pStatus, wStatus);
+  _bindManageButtons(uvStatus, llamaStatus, pStatus, wStatus, rvStatus);
   _bindLlamaEvents(llamaStatus);
   _bindPixaiEvents(pStatus);
   _bindWhisperEvents(wStatus);
+  _bindRagVecEvents(rvStatus);
 }
 
 function _statusBadge(st) {
@@ -111,7 +114,7 @@ function _renderUvCard(uvStatus) {
     </div>`;
 }
 
-function _bindManageButtons(uvStatus, llamaStatus, pStatus, wStatus) {
+function _bindManageButtons(uvStatus, llamaStatus, pStatus, wStatus, rvStatus) {
   const installBtn = $('#btn-llama-install');
   if (installBtn && !llamaStatus.ready) installBtn.addEventListener('click', () => showLlamaCudaDialog());
 
@@ -156,6 +159,26 @@ function _bindManageButtons(uvStatus, llamaStatus, pStatus, wStatus) {
       state.whisperEnabled = false; state.whisperTranscribedIds.clear();
       refreshGridData(); toast(r.message || '已删除', 'ok'); renderSettings();
     } else { toast('删除失败: ' + ((r && r.error) || ''), 'err'); wRemoveBtn.disabled = false; wRemoveBtn.textContent = '卸载'; }
+  });
+
+  const rvInstallBtn = $('#btn-ragvec-install');
+  if (rvInstallBtn && rvStatus && !rvStatus.ready) rvInstallBtn.addEventListener('click', async () => {
+    const sel = await showMirrorSelectDialog({
+      api: 'get_rag_vec_mirrors', title: '选择镜像站与模型 — 标签向量检索',
+      showModelSelect: true, models: (rvStatus && rvStatus.models) || [],
+    });
+    if (sel) startRagVecInstall(sel.pytorch || 'nju-cu128', sel.pypi || 'nju', sel.model || '');
+  });
+
+  const rvRemoveBtn = $('#btn-ragvec-remove');
+  if (rvRemoveBtn && rvStatus && rvStatus.dir_exists) rvRemoveBtn.addEventListener('click', async () => {
+    if (!await showConfirm('确定删除 st-embedding 吗？\n\n将删除 venv、模型文件与索引缓存。')) return;
+    rvRemoveBtn.disabled = true; rvRemoveBtn.textContent = '删除中…';
+    const r = await apiCall('remove_rag_vec');
+    if (r && r.ok) {
+      state.ragVecEnabled = false;
+      toast(r.message || '已删除', 'ok'); renderSettings();
+    } else { toast('删除失败: ' + ((r && r.error) || ''), 'err'); rvRemoveBtn.disabled = false; rvRemoveBtn.textContent = '卸载'; }
   });
 
   const uvCleanBtn = $('#btn-uv-clean');
@@ -2288,6 +2311,7 @@ function _bindLlamaTabEvents(llamaStatus) {
 document.addEventListener('click', (e) => {
   if (e.target.closest('#miniProgBox') && state.hfDownloading) {
     if (state.dlKind === 'whisper') openWhisperModelDialog();
+    else if (state.dlKind === 'ragvec') openRagVecModelDialog();
     else openHfDownloadDialog();
   }
 });
@@ -2301,3 +2325,228 @@ $('#confirmBg').addEventListener('click', e => {
 $('#modal-body').addEventListener('scroll', () => {
   $('#modal-body').classList.toggle('scrolled-past-hero', $('#modal-body').scrollTop > 10);
 }, { passive: true });
+
+function _ragVecBadge(st) {
+  if (st.ready) return `<span class="exp-badge ok">${icon('check')} 已安装就绪</span>`;
+  if (st.venv_exists && !st.model_exists) return `<span class="exp-badge warn">${icon('warning')} 依赖已装，模型未下载</span>`;
+  if (st.dir_exists) return `<span class="exp-badge warn">${icon('warning')} 安装不完整</span>`;
+  return '<span class="exp-badge dim">未安装</span>';
+}
+
+function _renderRagVecSection(exp, rvStatus) {
+  const enabled = !!state.ragVecEnabled;
+  const st = rvStatus || {};
+  const cfg = st.cfg || {};
+  const device = cfg.device || 'auto';
+  const models = st.models || [];
+  const curDef = models.find(m => m.key === cfg.model || m.repo === cfg.model) || models[0] || {};
+  const curTitle = curDef.title || '请选择模型';
+  const modelOpts = models.map(m => {
+    const isInst = !!m.installed;
+    return `<div class="dd-opt${m.key === curDef.key ? ' active' : ''}${isInst ? '' : ' disabled'}" data-value="${esc(m.key)}"${isInst ? '' : ` data-tip="${esc(m.repo)}（未下载，点击打开模型下载）"`}>${esc(m.title)}${isInst ? '' : '（未下载）'}</div>`;
+  }).join('');
+  const deviceNames = { auto: '自动', cuda: 'CUDA (GPU)', cpu: 'CPU' };
+  const deviceOpts = [['auto', '自动'], ['cuda', 'CUDA (GPU)'], ['cpu', 'CPU']]
+    .map(([v, t]) => `<div class="dd-opt${v === device ? ' active' : ''}" data-value="${v}">${t}</div>`).join('');
+  const stopBtn = st.dir_exists
+    ? `<button class="ws-btn" id="btn-ragvec-stop" ${st.worker_running ? '' : 'disabled'} data-tip="${st.worker_running ? '停止嵌入后台进程，释放显存/内存；下次向量检索自动重启' : '后台未在运行'}">释放资源</button>`
+    : '';
+  return `
+    <div class="exp-card ${!enabled ? 'is-disabled' : ''}">
+      <div class="exp-card-head">
+        <label class="switch master-switch">
+          <input type="checkbox" id="ragvec-enable-toggle" ${enabled ? 'checked' : ''} ${!st.ready ? 'disabled' : ''}/>
+        </label>
+        <div class="exp-head-main" data-tip="点击展开 / 收起配置">
+          <div class="exp-title-row"><strong>标签向量检索 (Sentence-Transformers)</strong>${_ragVecBadge(st)}</div>
+          <div class="exp-desc">用语义相似度补充关键词匹配，帮标签检索多找回一些候选；仅在标签检索=「增强」时生效。</div>
+        </div>
+        <div class="exp-head-actions">
+          ${stopBtn}
+          ${_installBtns('ragvec', st)}
+        </div>
+      </div>
+      <div id="ragvec-cfg-panel" class="exp-cfg-panel" style="display:${state.settingsOpen.has('ragvec-cfg') ? 'block' : 'none'}">
+        <div class="exp-input-row">
+          <div class="field">
+            <label data-tip="嵌入模型运行设备：自动 = 有 N 卡用 CUDA，否则 CPU；切换后点「应用」生效">运行设备</label>
+            <div class="dd" id="ragvec-device-dd">
+              <button class="dd-btn" type="button"><span class="dd-label">${deviceNames[device] || '自动'}</span>${ddArrow()}</button>
+              <div class="dd-panel">${deviceOpts}</div>
+            </div>
+          </div>
+          <div class="field">
+            <label data-tip="向量相似度阈值：越高候选越严格，越低找回越多（0.30–0.80）">相似度阈值</label>
+            <input type="number" id="ragvec-threshold" min="0.3" max="0.8" step="0.01" value="${cfg.threshold != null ? cfg.threshold : 0.45}"/>
+          </div>
+          <div class="field">
+            <label data-tip="向量检索找回的候选标签数量上限（关键词匹配之外的部分）">向量候选上限</label>
+            <input type="number" id="ragvec-topn" min="1" max="100" value="${cfg.top_n != null ? cfg.top_n : 20}"/>
+          </div>
+        </div>
+        <div class="exp-input-row">
+          <div class="field" style="flex:1">
+            <label data-tip="嵌入模型；点击未安装的模型可直接下载">嵌入模型</label>
+            <div class="dd ragvec-model-dd" id="ragvec-model-dd">
+              <button class="dd-btn" type="button"><span class="dd-label">${curTitle}</span>${ddArrow()}</button>
+              <div class="dd-panel">${modelOpts}</div>
+            </div>
+          </div>
+        </div>
+        <div class="exp-desc">设备切换无需重装；标签库很大时建议用 GPU 构建索引。</div>
+      </div>
+    </div>`;
+}
+
+function _bindRagVecEvents(rvStatus) {
+  const toggle = $('#ragvec-enable-toggle');
+  if (toggle) toggle.addEventListener('change', () => {
+    state.ragVecEnabled = toggle.checked;
+    toast(`标签向量检索已${toggle.checked ? '启用' : '禁用'}（点击「应用」保存）`, 'dim');
+  });
+  _bindCardToggle('ragvec', state.ragVecEnabled);
+  const dd = $('#ragvec-device-dd');
+  if (dd) initDropdown(dd, () => toast('设备已选择（点击「应用」保存）', 'dim'));
+  const modelDD = $('#ragvec-model-dd');
+  if (modelDD) initDropdown(modelDD, () => toast('模型已选择（点击「应用」保存）', 'dim'));
+  if (modelDD) modelDD.querySelectorAll('.dd-opt.disabled').forEach(opt => {
+    opt.addEventListener('click', (e) => {
+      e.stopPropagation();
+      modelDD.classList.remove('open');
+      openRagVecModelDialog();
+    });
+  });
+
+  const stopBtn = $('#btn-ragvec-stop');
+  if (stopBtn) stopBtn.addEventListener('click', async () => {
+    stopBtn.disabled = true; stopBtn.textContent = '停止中…';
+    const r = await apiCall('stop_rag_vec');
+    if (r && r.ok) {
+      toast(r.message || '已停止嵌入后台进程', 'ok');
+      renderSettings();
+    } else {
+      toast('停止失败: ' + ((r && r.error) || ''), 'err');
+      stopBtn.disabled = false; stopBtn.textContent = '释放资源';
+    }
+  });
+}
+
+async function startRagVecInstall(pytorchMirror, pypiMirror, modelKey) {
+  if (state.installing || state.hfDownloading) {
+    toast(state.hfDownloading ? '模型下载进行中，请等待完成' : '已有模块正在安装，请等待完成', 'err');
+    return;
+  }
+  state.installing = true;
+  closeSettings();
+  gotoLog();
+  $('#log').innerHTML = '';
+  const logEmpty = $('#logEmpty'); if (logEmpty) logEmpty.remove();
+  $('#prog-bar').style.width = '0%';
+  $('#prog-bar').className = 'active';
+  $('#prog-num').textContent = '正在安装标签向量检索…';
+  $('#btn-stop').classList.add('active');
+  $('#btn-stop').classList.remove('done');
+  toast('开始安装，请查看日志面板…');
+  try {
+    const r = await apiCall('install_rag_vec', pytorchMirror, pypiMirror, modelKey || '');
+    if (r && r.ok) {
+      $('#prog-bar').style.width = '100%'; $('#prog-bar').className = 'done';
+      $('#prog-num').textContent = '安装完成';
+      await apiCall('save_config', { experimental: { rag_vec_enabled: true } });
+      state.ragVecEnabled = true;
+      toast('标签向量检索安装完成，已自动启用', 'ok');
+    } else if (r && r.cancelled) {
+      $('#prog-bar').className = ''; $('#prog-num').textContent = '安装已取消';
+      toast('安装已取消', 'dim');
+    } else {
+      $('#prog-bar').className = ''; $('#prog-num').textContent = '安装失败';
+      toast('安装失败: ' + ((r && r.error) || '').slice(0, 200), 'err');
+    }
+  } catch (e) {
+    $('#prog-bar').className = ''; $('#prog-num').textContent = '安装失败';
+    toast('安装失败: ' + ((e && e.message) || e), 'err');
+  } finally {
+    state.installing = false;
+    $('#btn-stop').classList.remove('active');
+    renderSettings();
+  }
+}
+
+let _rvData = null;
+const _rvDlApi = _makeModelDownloader({
+  kind: 'ragvec', dialogCls: 'wm-dialog',
+  progressKey: '__onRagVecModelProgress', doneKey: '__onRagVecModelDone',
+  cancelledMsg: () => '未完成的文件已清理，再次下载将从零开始。',
+  successMsg: r => `<div class="ok">已下载 ${r.downloaded} 个文件到模型目录</div>
+      <div class="hf-files-hint" style="margin-top:4px">关闭弹窗后，在卡片「嵌入模型」下拉中选择该模型并点「应用」即可切换。</div>`,
+  afterDone: _rvRefresh,
+  onClose: () => {
+    _rvData = null;
+    if ($('#modal').classList.contains('show')) renderSettings();
+  },
+});
+
+async function openRagVecModelDialog() {
+  const ctx = _hfBox();
+  if (!ctx) return;
+  const { bg, box } = ctx;
+  if (bg.classList.contains('show')) { toast('请先关闭当前弹窗', 'dim'); return; }
+  if (state.hfDownloading && state.dlKind !== 'ragvec') { toast('已有模型下载进行中，请等待完成', 'err'); return; }
+  if (_rvDlApi.dl.active) {
+    box.classList.add('wm-dialog');
+    _rvDlApi.renderProgress(box);
+    bg.classList.add('show');
+    return;
+  }
+  let st;
+  try { st = await apiCall('get_rag_vec_status'); } catch (e) { st = null; }
+  if (!st) { toast('获取模型状态失败', 'err'); return; }
+  _rvData = { models: st.models || [], installed: st.installed || {}, current: st.current_model || '' };
+  _rvDlApi.dl.origHtml = box.innerHTML;
+  box.classList.add('wm-dialog');
+  _rvRenderList(box);
+  bg.classList.add('show');
+}
+
+function _rvRenderList(box) {
+  box.innerHTML = `
+    <div class="confirm-title">嵌入模型管理</div>
+    <div class="wm-list">${_rvData.models.map(m => _rvRowHtml(m)).join('')}</div>
+    <div class="confirm-foot"><button class="btn" id="rvClose">关闭</button></div>`;
+  $('#rvClose').addEventListener('click', () => _rvDlApi.close());
+  box.querySelectorAll('.rv-dl-btn').forEach(btn =>
+    btn.addEventListener('click', () => _rvStartDownload(box, btn.dataset.key)));
+}
+
+function _rvRowHtml(m) {
+  const isInst = !!_rvData.installed[m.key];
+  const isCur = m.key === _rvData.current;
+  const badge = isInst
+    ? `<span class="exp-badge ok">${icon('check')} 已安装${isCur ? ' · 当前使用' : ''}</span>` : '';
+  const action = isInst ? '' : `
+    <button class="ws-btn primary rv-dl-btn" data-key="${esc(m.key)}">${icon('download')} 下载</button>`;
+  return `<div class="wm-row">
+    <div class="wm-main">
+      <div class="wm-name">${esc(m.title)}${m.recommended ? '<span class="mirror-rec-badge">推荐</span>' : ''}</div>
+      <div class="wm-desc" title="${esc(m.repo || '')}">${esc(m.desc || '')} · ${esc(m.size_label || '')}${isInst ? '' : ' · ' + esc(m.repo || '')}</div>
+    </div>
+    <div class="wm-right">${badge}${action}</div>
+  </div>`;
+}
+
+function _rvStartDownload(box, key) {
+  const meta = (_rvData.models || []).find(m => m.key === key) || { title: '模型' };
+  _rvDlApi.start(box, meta.title, apiCall('download_rag_vec_model', key));
+}
+
+function _rvRefresh() {
+  apiCall('get_rag_vec_status').then(st => {
+    if (!st || !_rvData) return;
+    _rvData.installed = st.installed || {};
+    _rvData.current = st.current_model || '';
+    const ctx = _hfBox();
+    if (ctx && ctx.bg.classList.contains('show') && ctx.box.classList.contains('wm-dialog')) {
+      _rvRenderList(ctx.box);
+    }
+  });
+}

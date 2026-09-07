@@ -5,7 +5,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .workspace_paths import NFO_DIR, THUMB_DIR
+from . import discovery
+from .workspace_paths import NFO_DIR, SIMILAR_CACHE_FILE, THUMB_DIR
 from .workspace_store import (
     _lock,
     load_history,
@@ -200,9 +201,12 @@ def _clear_dir(d: Path) -> int:
 def clear_workspace_cache(clear_history: bool = True,
                            clear_thumbs: bool = True,
                            clear_nfo: bool = True,
-                           clear_manifest: bool = False) -> Dict[str, Any]:
+                           clear_manifest: bool = False,
+                           clear_probe: bool = False,
+                           clear_similar: bool = False) -> Dict[str, Any]:
     """清除工作区缓存。视频本体不受影响。"""
-    cleared = {"history": 0, "thumbs": 0, "nfo": 0, "manifest": False}
+    cleared = {"history": 0, "thumbs": 0, "nfo": 0, "manifest": False,
+               "probe": False, "similar": False}
     with _lock:
         if clear_history:
             save_history({"entries": []})
@@ -214,4 +218,13 @@ def clear_workspace_cache(clear_history: bool = True,
         if clear_manifest:
             save_manifest({"roots": [], "adhoc_files": []})
             cleared["manifest"] = True
+        if clear_probe:
+            discovery.clear_probe_cache()
+            cleared["probe"] = True
+        if clear_similar:
+            try:
+                SIMILAR_CACHE_FILE.unlink(missing_ok=True)
+            except OSError:
+                pass
+            cleared["similar"] = True
     return {"ok": True, "cleared": cleared}

@@ -212,6 +212,18 @@ def prune_probe_cache(paths) -> None:
     flush_probe_cache(force=True)
 
 
+def clear_probe_cache() -> None:
+    """清空探针缓存：内存条目与磁盘文件一并删除（清除全部缓存时调用）。"""
+    global _probe_dirty
+    with _probe_lock:
+        _probe_mem.clear()
+        _probe_dirty = False
+    try:
+        PROBE_CACHE_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def _ffprobe_video(path: str) -> Dict[str, Any]:
     """ffprobe 获取视频元数据子集。"""
     with _ffmpeg_semaphore:

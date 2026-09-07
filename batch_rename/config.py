@@ -31,6 +31,16 @@ class Config:
     prompt: str = ""
     include_date: bool = True
     include_original: bool = False
+    rag_top_k: int = 40
+    # 调试开关（GUI 无界面）：完成日志在「召回N个关键词」后列出具体关键词。
+    # 由 config.json ai 段同名键控制，手动改为 true 生效
+    rag_debug_keywords: bool = False
+    llama_slots: int = 0
+    rag_vec_enabled: bool = False
+    rag_vec_device: str = "auto"      # auto / cuda / cpu
+    rag_vec_threshold: float = 0.45   # 余弦相似度阈值
+    rag_vec_top_n: int = 20           # 向量候选上限
+    rag_vec_model: str = ""           # 模型 repo（空 = 模块默认 Qwen3-Embedding-0.6B）
 
     def validate(self) -> None:
         """钳制所有数值参数到有效范围。"""
@@ -43,3 +53,7 @@ class Config:
         self.ai_workers = max(1, self.ai_workers)
         self.ai_timeout = max(1, self.ai_timeout)
         self.retry_times = max(0, self.retry_times)
+        self.rag_top_k = max(1, self.rag_top_k)
+        self.llama_slots = max(0, self.llama_slots)
+        self.rag_vec_threshold = max(0.0, min(1.0, self.rag_vec_threshold))
+        self.rag_vec_top_n = max(1, self.rag_vec_top_n)

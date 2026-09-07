@@ -29,6 +29,8 @@ def _default_config() -> Dict[str, Any]:
             "ai_timeout": 300,
             "ai_workers": 4,
             "enforce_json_mode": True,
+            # 调试开关：完成日志在「召回N个关键词」后列出具体关键词（GUI 无开关，手动改）
+            "rag_debug_keywords": False,
         },
         "video": {
             "sampling_points": 5,
