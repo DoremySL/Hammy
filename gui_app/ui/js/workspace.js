@@ -68,10 +68,10 @@ function renderWorkspaceTab(stats) {
 
   body.innerHTML = `
     <div class="cw-page">
+      <div class="cw-grid">${cards}</div>
       <div class="cw-hero">
         <div class="cw-bars">${bars}</div>
       </div>
-      <div class="cw-grid">${cards}</div>
     </div>`;
 
   requestAnimationFrame(() => requestAnimationFrame(() => {

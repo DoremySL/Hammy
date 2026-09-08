@@ -222,7 +222,11 @@ def preview_prompt(fields: Dict[str, Any], with_thumb_time: bool = False) -> str
 
 
 def normalize_priority_items(items: Any) -> List[Dict[str, str]]:
-    """规范化标签检索列表：剔除非 dict 与空关键词，keyword/description 去首尾空格。"""
+    """规范化标签检索列表：剔除非 dict 与空关键词；其余字段去首尾空格。
+
+    related 为逗号分隔的关联词字符串（供字面与向量检索，不注入提示词）；
+    group 为显示分组（仅供展示与筛选，不参与检索召回）。
+    """
     out: List[Dict[str, str]] = []
     if not isinstance(items, list):
         return out
@@ -232,8 +236,12 @@ def normalize_priority_items(items: Any) -> List[Dict[str, str]]:
         kw = str(it.get("keyword", "") or "").strip()
         if not kw:
             continue
-        desc = str(it.get("description", "") or "").strip()
-        out.append({"keyword": kw, "description": desc})
+        out.append({
+            "keyword": kw,
+            "description": str(it.get("description", "") or "").strip(),
+            "related": str(it.get("related", "") or "").strip(),
+            "group": str(it.get("group", "") or "").strip(),
+        })
     return out
 
 

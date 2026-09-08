@@ -102,6 +102,43 @@ class TestRecallMatch(unittest.TestCase):
         self.assertEqual([c["keyword"] for c in cands], ["bbb", "aaa"])
 
 
+class TestRelatedRecall(unittest.TestCase):
+    """关联词与关键词同级参与三级词面匹配。"""
+
+    def test_related_exact(self):
+        items = [{"keyword": "4K", "description": "", "related": "2160p UHD,超清"}]
+        for hay in ("一部2160p UHD的影片", "这部影片是超清制作"):
+            cands = TagRecall(items, mode="rag").recall({"plot": hay})
+            self.assertEqual([c["keyword"] for c in cands], ["4K"], hay)
+
+    def test_related_compact_and_token(self):
+        items = [{"keyword": "胶片", "description": "", "related": "film grain"},
+                 {"keyword": "HDR", "description": "", "related": "dolby vision"}]
+        cands = TagRecall(items, mode="rag").recall({"plot": "很有filmgrain质感"})
+        self.assertIn("胶片", [c["keyword"] for c in cands])
+        cands = TagRecall(items, mode="rag").recall({"plot": "dolbyvision编码"})
+        self.assertIn("HDR", [c["keyword"] for c in cands])
+
+    def test_group_not_matched(self):
+        # 分组名仅供显示，不参与词面召回
+        items = [{"keyword": "4K", "description": "", "related": "", "group": "画质"}]
+        self.assertEqual(TagRecall(items, mode="rag").recall({"plot": "画质细腻"}), [])
+
+    def test_section_excludes_related(self):
+        items = [{"keyword": "4K", "description": "高分辨率", "related": "2160p,超清"}]
+        tr = TagRecall(items, mode="full")
+        self.assertIn("- 4K：高分辨率", tr.full_section)
+        self.assertNotIn("2160p", tr.full_section)
+        section = tr.build_candidates_section(tr.items)
+        self.assertNotIn("2160p", section)
+
+    def test_related_items_passed_to_dense(self):
+        # 向量索引材料应携带关联词（build_index 收到的 items 含 related 字段）
+        items = [{"keyword": "4K", "description": "高分辨率", "related": "2160p"}]
+        tr = TagRecall(items, mode="rag")
+        self.assertEqual(tr.items, items)
+
+
 class TestSections(unittest.TestCase):
     def test_candidates_section(self):
         tr = _rag()

@@ -25,7 +25,8 @@ async function openSettings(tab) {
   $('#modal').classList.add('show');
   renderSettings();
 }
-function closeSettings() {
+async function closeSettings() {
+  if (state.settings_tab === 'tags' && window.ptLeaveGuard && !await ptLeaveGuard()) return;
   state.settingsOpen.clear();
   state.settingsScroll = 0;
   $('#modal-body').innerHTML = '';
@@ -39,7 +40,9 @@ document.addEventListener('keydown', e => {
 });
 
 $$('#settings-tabs .tab').forEach(t => {
-  t.addEventListener('click', () => {
+  t.addEventListener('click', async () => {
+    if (t.dataset.settingsTab === state.settings_tab) return;
+    if (state.settings_tab === 'tags' && window.ptLeaveGuard && !await ptLeaveGuard()) return;
     state.settings_tab = t.dataset.settingsTab;
     state.settings_scroll_to = null;
     $$('#settings-tabs .tab').forEach(x => x.classList.toggle('active', x === t));
@@ -76,7 +79,7 @@ async function renderSettings() {
         await renderPromptsTabWrapper();
         break;
       case 'tags':
-        foot.textContent = '编辑后点击「应用」生效。';
+        foot.textContent = '此页修改即时保存。';
         await renderTagsTabWrapper();
         break;
       case 'experimental':
@@ -388,15 +391,15 @@ async function renderWorkspaceTabWrapper() {
   const seq = _settingsSeq;
   body.innerHTML = `
     <div class="cw-page">
+      <div class="cw-grid">
+        ${'<div class="cw-skel sk-card"></div>'.repeat(6)}
+      </div>
       <div class="cw-hero">
         <div class="cw-bars">
           <div class="cw-skel sk-bar"></div><div class="cw-skel sk-bar"></div>
           <div class="cw-skel sk-bar"></div><div class="cw-skel sk-bar"></div>
           <div class="cw-skel sk-btn"></div>
         </div>
-      </div>
-      <div class="cw-grid">
-        ${'<div class="cw-skel sk-card"></div>'.repeat(6)}
       </div>
     </div>`;
   try {
@@ -539,9 +542,9 @@ $('#btn-savecfg').addEventListener('click', async () => {
 
 function updateSaveButtonState() {
   const btnSave = $('#btn-savecfg');
-  const isWorkspace = state.settings_tab === 'workspace';
-  btnSave.style.display = isWorkspace ? 'none' : '';
-  if (!isWorkspace) {
+  const hide = ['workspace', 'tags'].includes(state.settings_tab);
+  btnSave.style.display = hide ? 'none' : '';
+  if (!hide) {
     btnSave.disabled = false;
     btnSave.textContent = '应用';
   }

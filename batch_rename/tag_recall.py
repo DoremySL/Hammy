@@ -1,15 +1,16 @@
-"""标签检索召回：词面三级匹配 + 可选向量融合。"""
+"""标签检索召回：词面三级匹配（关键词+关联词）+ 可选向量融合。"""
 from __future__ import annotations
 
 import re
 import threading
 import unicodedata
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 KIND_SCORE = {"exact": 1.0, "compact": 0.9, "token": 0.7}
 
 _SEP_RE = re.compile(r"[\s_\-]+")
 _LATIN_RE = re.compile(r"[a-z0-9]+")
+_RELATED_SPLIT_RE = re.compile(r"[,，、;；]+")
 
 _FULL_HEADER = "【标签检索】\n为视频生成 tags 时，若画面内容匹配，请优先采用以下指定标签："
 _CAND_HEADER = ("【标签检索·召回候选】\n以下标签来自标签库检索，可能包含与视频无关的条目，"
@@ -25,8 +26,12 @@ def _compact(s: Any) -> str:
     s = unicodedata.normalize("NFKC", str(s or "")).lower()
     return _SEP_RE.sub("", s)
 
+def split_related(related: Any) -> List[str]:
+    """关联词字符串 → 关联词列表（按中英文逗号/顿号/分号切分）。"""
+    return [t for t in (x.strip() for x in _RELATED_SPLIT_RE.split(str(related or ""))) if t]
+
 def build_section(items: List[Dict[str, str]], header: str) -> str:
-    """条目列表 → 提示词段落（- 关键词：描述）。"""
+    """条目列表 → 提示词段落（- 关键词：描述；不含关联词）。"""
     lines = [header]
     for it in items:
         desc = it.get("description", "")
@@ -34,16 +39,20 @@ def build_section(items: List[Dict[str, str]], header: str) -> str:
     return "\n".join(lines)
 
 class _Entry:
-    """单个标签的预计算匹配索引。"""
-    __slots__ = ("idx", "item", "norm", "compact", "latin_tokens")
+    """单个标签的预计算匹配索引：关键词与各关联词各为一组匹配目标。"""
+    __slots__ = ("idx", "item", "targets")
 
     def __init__(self, idx: int, item: Dict[str, str]):
         self.idx = idx
         self.item = item
-        kw = item["keyword"]
-        self.norm = _norm(kw)
-        self.compact = _compact(kw)
-        self.latin_tokens = frozenset(_LATIN_RE.findall(self.norm)) if self.norm else frozenset()
+        self.targets: List[Tuple[str, str, frozenset]] = []
+        for text in [item["keyword"], *split_related(item.get("related", ""))]:
+            norm = _norm(text)
+            if not norm:
+                continue
+            compact = _compact(text)
+            latin_tokens = frozenset(_LATIN_RE.findall(norm))
+            self.targets.append((norm, compact, latin_tokens))
 
 class TagRecall:
     """标签检索提供方：显式模式路由 + 词面召回（+ 可选向量召回合并）。"""
@@ -61,7 +70,8 @@ class TagRecall:
                 if not kw:
                     continue
                 norm_items.append({"keyword": kw,
-                                   "description": str(it.get("description", "") or "").strip()})
+                                   "description": str(it.get("description", "") or "").strip(),
+                                   "related": str(it.get("related", "") or "").strip()})
 
         self.total_items = len(norm_items)
         self.items = norm_items
@@ -135,13 +145,14 @@ class TagRecall:
 
     @staticmethod
     def _match(e: _Entry, hay_n: str, hay_c: str, hay_tokens: frozenset) -> Optional[str]:
-        """三级匹配：精确（规范化子串）→ 紧凑（无分隔符子串）→ 分词（拉丁词元全集）。"""
-        if e.norm and e.norm in hay_n:
-            return "exact"
-        if e.compact and e.compact in hay_c:
-            return "compact"
-        if e.latin_tokens and e.latin_tokens <= hay_tokens:
-            return "token"
+        """任一匹配目标（关键词或关联词）三级命中即召回：精确 → 紧凑 → 分词。"""
+        for norm, compact, latin_tokens in e.targets:
+            if norm in hay_n:
+                return "exact"
+            if compact and compact in hay_c:
+                return "compact"
+            if latin_tokens and latin_tokens <= hay_tokens:
+                return "token"
         return None
 
     def build_candidates_section(self, candidates: List[Dict[str, str]]) -> str:

@@ -308,6 +308,12 @@ def _items_hash(items: List[Dict[str, str]]) -> str:
     payload = json.dumps(items, ensure_ascii=False, sort_keys=False)
     return hashlib.md5(payload.encode("utf-8")).hexdigest()
 
+def _embed_text(it: Dict[str, str]) -> str:
+    """条目 → 向量编码文本：关键词：描述；有关联词时追加（分组名不参与）。"""
+    base = f"{it.get('keyword', '')}：{it.get('description', '')}".strip("：")
+    related = str(it.get("related", "") or "").strip()
+    return f"{base}。关联词：{related}" if base and related else (base or related)
+
 class StEmbedBackend:
     """TagRecall.dense 协议实现：build_index(items) + search(parts, top_k)。
 
@@ -474,8 +480,7 @@ class StEmbedBackend:
                     self._log(f"向量索引编码中… {ev.get('done')}/{ev.get('total')}")
 
         ev = self._request({"op": "build", "hash": _items_hash(items),
-                            "texts": [f"{it['keyword']}：{it['description']}".strip("：")
-                                      for it in items]},
+                            "texts": [_embed_text(it) for it in items]},
                            "built", _BUILD_TIMEOUT_SEC, _on_event)
         extra = ""
         if not ev.get("cached") and ev.get("encode_s") is not None:

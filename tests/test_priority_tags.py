@@ -13,13 +13,17 @@ from gui_app.prompts import normalize_priority_items, load_priority_tags, save_p
 class TestNormalizePriorityItems(unittest.TestCase):
     def test_filter_and_strip(self):
         items = [
-            {"keyword": " a ", "description": " d "},
+            {"keyword": " a ", "description": " d ", "related": " r1 , r2 ", "group": " g "},
             {"keyword": ""},
             "x",
             {"description": "no kw"},
         ]
         self.assertEqual(normalize_priority_items(items),
-                         [{"keyword": "a", "description": "d"}])
+                         [{"keyword": "a", "description": "d", "related": "r1 , r2", "group": "g"}])
+
+    def test_missing_fields_default_empty(self):
+        self.assertEqual(normalize_priority_items([{"keyword": "k"}]),
+                         [{"keyword": "k", "description": "", "related": "", "group": ""}])
 
     def test_non_list(self):
         self.assertEqual(normalize_priority_items("nope"), [])
@@ -44,7 +48,19 @@ class TestSaveLoadRoundtrip(unittest.TestCase):
         self.assertEqual(disk["mode"], "on")
         self.assertEqual(loaded["mode"], "on")
         self.assertEqual(loaded["items"],
-                         [{"keyword": "海边", "description": "海边的场景"}])
+                         [{"keyword": "海边", "description": "海边的场景",
+                           "related": "", "group": ""}])
+
+    def test_roundtrip_new_fields(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        pt_file = Path(tmp.name) / "priority_tags.json"
+        items = [{"keyword": "4K", "description": "高分辨率",
+                  "related": "2160p UHD,超清", "group": "画质"}]
+        with mock.patch.object(prompts, "PRIORITY_TAGS_FILE", pt_file):
+            save_priority_tags(items, "enhanced")
+            loaded = load_priority_tags()
+        self.assertEqual(loaded["items"], items)
 
     def test_roundtrip_enhanced(self):
         disk, loaded = self._roundtrip("enhanced")
