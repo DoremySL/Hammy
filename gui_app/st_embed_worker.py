@@ -33,6 +33,14 @@ def main() -> None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         except Exception:
             device = "cpu"
+    elif device == "cuda":
+        try:
+            import torch
+            cuda_ok = bool(torch.cuda.is_available())
+        except Exception:
+            cuda_ok = False
+        if not cuda_ok:
+            device = "cpu"
 
     t0 = time.time()
     try:

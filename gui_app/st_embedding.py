@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import queue
+import re
 import subprocess
 import threading
 import time
@@ -115,6 +116,21 @@ def _download_model(model_key: str,
         return {"ok": False, "error": "下载完成但未找到模型权重文件"}
     return {"ok": True, "downloaded": len(model["files"]), "model": model["key"]}
 
+def _torch_build() -> str:
+    """读取 venv 内 torch 版本串判断构建（+cpu / +cuXXX）；未安装返回空串。"""
+    candidates = [VENV_DIR / "Lib" / "site-packages" / "torch" / "version.py"]
+    candidates += sorted(VENV_DIR.glob("lib/python*/site-packages/torch/version.py"))
+    for path in candidates:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if "+cpu" in text:
+            return "cpu"
+        m = re.search(r"\+cu(\d+)", text)
+        return f"cu{m.group(1)}" if m else "cuda"
+    return ""
+
 def get_status() -> Dict[str, Any]:
     """st-embedding 模块安装状态（含模型清单与安装位图）。"""
     venv_python = venv_python_path(VENV_DIR)
@@ -138,6 +154,7 @@ def get_status() -> Dict[str, Any]:
         "dir_path": str(ST_DIR),
         "model_dir_path": str(MODEL_DIR),
         "worker_running": _is_worker_alive(),
+        "torch_build": _torch_build(),
         "models": models,
         "installed": installed,
     }
@@ -415,8 +432,10 @@ class StEmbedBackend:
             if ev is None:
                 raise RuntimeError("worker 输出流中断")
             if ev.get("event") == "ready":
-                self._log(f"嵌入 worker 就绪（device={ev.get('device')}，dim={ev.get('dim')}，"
-                          f"加载 {ev.get('load_s')}s）")
+                actual = str(ev.get("device", ""))
+                note = "；CUDA 不可用，已回退 CPU" if self.device == "cuda" and "cpu" in actual.lower() else ""
+                self._log(f"嵌入 worker 就绪（device={actual}，dim={ev.get('dim')}，"
+                          f"加载 {ev.get('load_s')}s{note}）")
                 return
             if ev.get("event") == "error":
                 raise RuntimeError(str(ev.get("message", "worker 初始化失败")))

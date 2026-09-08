@@ -413,6 +413,8 @@ class PipelineRunner:
                                        vec_threshold=engine_cfg.rag_vec_threshold,
                                        vec_top_n=engine_cfg.rag_vec_top_n)
                 if dense is not None:
+                    engine_logger.info(f"[RAG] 正在加载嵌入模型: {dense.model_title}"
+                                       f"（device={dense.device}），首次需导入 torch，CPU 下可能耗时较久…")
                     try:
                         tag_recall.warmup_dense()  # 预构建索引，首个视频不承担耗时
                     except Exception as e:

@@ -70,7 +70,7 @@ function renderTagsTab(pt) {
               <button type="button" id="btn-pt-export">导出</button>
             </div>
           </div>
-          <div class="pt-list" id="pt-list"></div>
+          <div class="tag-list-wrap"><div class="pt-list" id="pt-list"></div></div>
         </div>
         <div class="tag-right" id="pt-editor"></div>
       </div>
@@ -134,10 +134,17 @@ function renderTagRows() {
   } else if (!idxs.length) {
     list.innerHTML = '<div class="pt-list-empty">没有匹配的标签。</div>';
   } else {
-    list.innerHTML = idxs.map(i => {
+    const selFlags = idxs.map(i => state.ptSelected.has(i));
+    list.innerHTML = idxs.map((i, p) => {
       const it = state.ptItems[i];
       const sub = it.description || it.related;
-      return `<div class="pt-item${state.ptSelected.has(i) ? ' selected' : ''}${i === state.ptEditIdx && !state.ptAddMode ? ' editing' : ''}" data-i="${i}">` +
+      let runCls = '';
+      if (selFlags[p]) {
+        const prev = p > 0 && selFlags[p - 1];
+        const next = p + 1 < idxs.length && selFlags[p + 1];
+        runCls = prev && next ? ' sel-mid' : next ? ' sel-start' : prev ? ' sel-end' : '';
+      }
+      return `<div class="pt-item${selFlags[p] ? ' selected' : ''}${runCls}${i === state.ptEditIdx && !state.ptAddMode ? ' editing' : ''}" data-i="${i}">` +
         `<span class="pt-kw">${esc(it.keyword)}</span>` +
         (sub ? `<span class="pt-desc" data-tip="${esc(sub)}">${esc(sub)}</span>` : '') +
         `</div>`;
@@ -204,7 +211,7 @@ async function ptOpenEdit(idx) {
   state.ptAddMode = false;
   state.ptEditIdx = idx;
   state.ptSelected.clear();
-  state.ptSelAnchor = null;
+  state.ptSelAnchor = idx;
   state.ptDirty = false;
   renderTagRows();
   ptRenderEditor();
@@ -226,6 +233,13 @@ function ptGroupOptions(cur) {
   if (cur && !groups.includes(cur)) groups.push(cur);
   return ['<div class="dd-opt' + (cur ? '' : ' active') + '" data-value="">默认分组</div>',
     ...groups.map(g => `<div class="dd-opt${g === cur ? ' active' : ''}" data-value="${esc(g)}">${esc(g)}</div>`)].join('');
+}
+
+function ptSyncEditorGroupDd(group) {
+  const dd = $('#pt-f-group');
+  if (!dd) return;
+  dd.querySelector('.dd-panel').innerHTML = ptGroupOptions(group);
+  setDropdownValue(dd, group);
 }
 
 function ptBuildFields(container, it) {
@@ -324,6 +338,7 @@ async function ptApplyAdd() {
   if (state.ptGroupFilter && state.ptGroupFilter !== '__default__' && state.ptGroupFilter !== f.group) {
     state.ptGroupFilter = f.group;
   }
+  ptSyncEditorGroupDd(f.group);
   ptRenderGroupDd();
   renderTagRows();
   const ed = $('#pt-editor');
@@ -345,6 +360,7 @@ async function ptApplyEdit() {
     return;
   }
   state.ptDirty = false;
+  ptSyncEditorGroupDd(f.group);
   ptRenderGroupDd();
   renderTagRows();
   toast(`已保存: ${f.keyword}`, 'ok');
@@ -383,12 +399,20 @@ async function exportTags() {
   else toast('导出失败: ' + (res.error || ''), 'err');
 }
 
-/* ── 主界面标签 chip「加入标签检索」弹窗（与右栏编辑器同套字段） ── */
-async function openTagAddToSearch(name) {
+/* ── 主界面标签 chip 右键菜单与「加入标签检索」弹窗 ── */
+function showChipMenu(e, name, asRelated) {
+  e.preventDefault();
+  e.stopPropagation();
+  const m = $('#ctxmenu');
+  m.innerHTML = '<button data-i="0">加入标签检索</button>';
+  m.querySelector('button').onclick = () => { hideContextMenu(); openTagAddToSearch(name, asRelated); };
+  positionCtxMenu(m, e);
+}
+
+async function openTagAddToSearch(name, asRelated) {
   const cur = await callApi('get_priority_tags');
   if (!cur) return;
   const items = ptNormItems(cur.items);
-  const groups = ptAllGroups(items);
   const bg = document.createElement('div');
   bg.className = 'pt-editor-bg';
   bg.innerHTML = `
@@ -402,10 +426,12 @@ async function openTagAddToSearch(name) {
     </div>`;
   document.body.appendChild(bg);
   const body = bg.querySelector('#pt-add-body');
-  ptBuildFields(body, { keyword: name, description: '', related: '', group: '' });
-  if (!groups.length) body.querySelector('#pt-f-group').closest('.field').style.display = 'none';
+  ptBuildFields(body, asRelated
+    ? { keyword: '', description: '', related: name, group: '' }
+    : { keyword: name, description: '', related: '', group: '' });
   const kwEl = body.querySelector('#pt-f-kw');
-  kwEl.focus(); kwEl.select();
+  kwEl.focus();
+  if (!asRelated) kwEl.select();
   bg.addEventListener('keydown', e => {
     if (e.key === 'Escape') { e.stopPropagation(); bg.remove(); }
   });

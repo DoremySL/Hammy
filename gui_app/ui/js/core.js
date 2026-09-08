@@ -136,14 +136,14 @@ function initDropdown(el, onChange, noValueActive) {
       el.classList.add('open');
     }
   });
-  el.querySelectorAll('.dd-opt').forEach(opt => {
-    opt.addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (opt.classList.contains('disabled')) return;
-      if (!(noValueActive && opt.dataset.value)) setDropdownValue(el, opt.dataset.value);
-      el.classList.remove('open');
-      if (onChange) onChange(opt.dataset.value, opt);
-    });
+  el.addEventListener('click', (e) => {
+    const opt = e.target.closest('.dd-opt');
+    if (!opt || !el.contains(opt)) return;
+    e.stopPropagation();
+    if (opt.classList.contains('disabled')) return;
+    if (!(noValueActive && opt.dataset.value)) setDropdownValue(el, opt.dataset.value);
+    el.classList.remove('open');
+    if (onChange) onChange(opt.dataset.value, opt);
   });
 }
 function _positionPanel(el) {

@@ -1475,7 +1475,7 @@ async function launchLlama() {
       if (st) syncLlamaState(st);
       if (st && st.ok !== false) {
         if (state.settings_tab === 'llama') renderLlamaTab(st);
-        else renderSettings();
+        else if (state.settings_tab === 'config' || state.settings_tab === 'experimental') renderSettings();
       }
     } catch (e) {
       toast('刷新 llama 状态失败: ' + ((e && e.message) || e), 'err');
@@ -2202,6 +2202,7 @@ async function rescanLlamaModels(toastMsg) {
     const r = await apiCall('scan_llama_models');
     if (r && r.ok) {
       if (toastMsg) toast(toastMsg, 'ok');
+      if (state.settings_tab !== 'llama') return;
       const st = await apiCall('get_llama_status');
       if (st && st.ok !== false) {
         renderLlamaTab(st);
@@ -2211,7 +2212,7 @@ async function rescanLlamaModels(toastMsg) {
       toast('扫描失败: ' + (r.error || ''), 'err');
     }
   } catch (e) { toast('扫描失败', 'err'); }
-  renderSettings();
+  if (state.settings_tab === 'llama') renderSettings();
 }
 
 function _bindLlamaTabEvents(llamaStatus) {
@@ -2346,8 +2347,19 @@ function _renderRagVecSection(exp, rvStatus) {
     return `<div class="dd-opt${m.key === curDef.key ? ' active' : ''}${isInst ? '' : ' disabled'}" data-value="${esc(m.key)}"${isInst ? '' : ` data-tip="${esc(m.repo)}（未下载，点击打开模型下载）"`}>${esc(m.title)}${isInst ? '' : '（未下载）'}</div>`;
   }).join('');
   const deviceNames = { auto: '自动', cuda: 'CUDA (GPU)', cpu: 'CPU' };
+  const torchBuild = st.torch_build || '';
+  const cudaOk = torchBuild.startsWith('cu');
   const deviceOpts = [['auto', '自动'], ['cuda', 'CUDA (GPU)'], ['cpu', 'CPU']]
-    .map(([v, t]) => `<div class="dd-opt${v === device ? ' active' : ''}" data-value="${v}">${t}</div>`).join('');
+    .map(([v, t]) => {
+      const dis = v === 'cuda' && !cudaOk;
+      const tip = dis ? ` data-tip="${torchBuild === 'cpu'
+        ? '当前安装的是 CPU 版 torch，CUDA 不可用；如需 GPU 请卸载后重装依赖并选择 CUDA 镜像'
+        : '未检测到 torch；安装依赖时选择 CUDA 镜像后可用'}"` : '';
+      return `<div class="dd-opt${v === device ? ' active' : ''}${dis ? ' disabled' : ''}" data-value="${v}"${tip}>${t}${dis ? '（不可用）' : ''}</div>`;
+    }).join('');
+  const deviceNote = device === 'cuda' && !cudaOk
+    ? '当前为 CPU 版 torch，CUDA 不可用：运行时会自动回退 CPU；如需 GPU 请卸载后重装依赖并选择 CUDA 镜像。'
+    : '设备切换无需重装；标签库很大时建议用 GPU 构建索引。';
   const stopBtn = st.dir_exists
     ? `<button class="ws-btn" id="btn-ragvec-stop" ${st.worker_running ? '' : 'disabled'} data-tip="${st.worker_running ? '停止嵌入后台进程，释放显存/内存；下次向量检索自动重启' : '后台未在运行'}">释放资源</button>`
     : '';
@@ -2358,7 +2370,7 @@ function _renderRagVecSection(exp, rvStatus) {
           <input type="checkbox" id="ragvec-enable-toggle" ${enabled ? 'checked' : ''} ${!st.ready ? 'disabled' : ''}/>
         </label>
         <div class="exp-head-main" data-tip="点击展开 / 收起配置">
-          <div class="exp-title-row"><strong>标签向量检索 (Sentence-Transformers)</strong>${_ragVecBadge(st)}</div>
+          <div class="exp-title-row"><strong>Sentence-Transformers 向量检索</strong>${_ragVecBadge(st)}</div>
           <div class="exp-desc">用语义相似度补充关键词匹配，帮标签检索多找回一些候选；仅在标签检索=「增强」时生效。</div>
         </div>
         <div class="exp-head-actions">
@@ -2393,7 +2405,7 @@ function _renderRagVecSection(exp, rvStatus) {
             </div>
           </div>
         </div>
-        <div class="exp-desc">设备切换无需重装；标签库很大时建议用 GPU 构建索引。</div>
+        <div class="exp-desc">${esc(deviceNote)}</div>
       </div>
     </div>`;
 }

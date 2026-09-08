@@ -110,7 +110,7 @@ async function showPendingDetail(v) {
   d.innerHTML = html;
   d.querySelectorAll('.chip[data-web-tag]').forEach(ch => {
     ch.addEventListener('click', () => onWebTagClick(ch.dataset.webTag));
-    ch.addEventListener('contextmenu', e => showChipMenu(e, ch.dataset.webTag));
+    ch.addEventListener('contextmenu', e => showChipMenu(e, ch.dataset.webTag, true));
   });
 }
 
