@@ -88,7 +88,7 @@ async function renderSettings() {
         await renderLlamaTabWrapper();
         break;
       case 'workspace':
-        foot.textContent = '';
+        foot.textContent = '仅删除缓存数据，不影响视频文件；「失效记录」会连同对应缩略图 / NFO 一并清除。';
         await renderWorkspaceTabWrapper();
         break;
     }
@@ -385,11 +385,30 @@ async function renderPromptsTabWrapper() {
 
 async function renderWorkspaceTabWrapper() {
   const body = $('#modal-body');
-  await renderTabWithLoading(body,
-    () => apiCall('get_workspace_stats'),
-    (stats) => renderWorkspaceTab(stats),
-    () => renderSettings()
-  );
+  const seq = _settingsSeq;
+  body.innerHTML = `
+    <div class="cw-page">
+      <div class="cw-hero">
+        <div class="cw-bars">
+          <div class="cw-skel sk-bar"></div><div class="cw-skel sk-bar"></div>
+          <div class="cw-skel sk-bar"></div><div class="cw-skel sk-bar"></div>
+          <div class="cw-skel sk-btn"></div>
+        </div>
+      </div>
+      <div class="cw-grid">
+        ${'<div class="cw-skel sk-card"></div>'.repeat(6)}
+      </div>
+    </div>`;
+  try {
+    const stats = await apiCall('get_workspace_stats');
+    if (seq !== _settingsSeq) return;
+    renderWorkspaceTab(stats);
+  } catch (e) {
+    if (seq !== _settingsSeq) return;
+    body.innerHTML = '<div class="empty">' + icon('warning') + ' 加载失败：' + esc(String(e).slice(0, 100)) +
+      '<br/><br/><button class="btn">重试</button></div>';
+    body.querySelector('button').onclick = () => renderSettings();
+  }
 }
 
 async function renderTagsTabWrapper() {
@@ -520,10 +539,9 @@ $('#btn-savecfg').addEventListener('click', async () => {
 
 function updateSaveButtonState() {
   const btnSave = $('#btn-savecfg');
-  if (state.settings_tab === 'workspace') {
-    btnSave.disabled = true;
-    btnSave.textContent = '无需保存';
-  } else {
+  const isWorkspace = state.settings_tab === 'workspace';
+  btnSave.style.display = isWorkspace ? 'none' : '';
+  if (!isWorkspace) {
     btnSave.disabled = false;
     btnSave.textContent = '应用';
   }

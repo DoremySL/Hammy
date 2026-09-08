@@ -3,11 +3,9 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
-from ..workspace_paths import NFO_DIR, THUMB_DIR
-from ..workspace_store import load_history
-from ..workspace_service import clear_workspace_cache, prune_missing_history, reconcile_history
+from ..workspace_service import clear_workspace_cache, prune_missing_history, workspace_stats
 from ..env import APP_ROOT, VIDEO_FILTER_WINFORMS
 
 
@@ -166,36 +164,8 @@ class SystemMixin:
     # ── workspace 维护 ──
 
     def get_workspace_stats(self) -> Dict[str, Any]:
-        """返回 workspace 统计：history 条数、缓存大小。"""
-        h = load_history()
-        entries = h.get("entries", [])
-
-        def _dir_stats(d) -> Tuple[int, int]:
-            """单次遍历目录，返回 (文件数, 总字节数)。"""
-            count = 0
-            size = 0
-            try:
-                for f in d.iterdir():
-                    try:
-                        if f.is_file():
-                            count += 1
-                            size += f.stat().st_size
-                    except OSError:
-                        pass
-            except OSError:
-                pass
-            return count, size
-
-        thumb_count, thumb_size = _dir_stats(THUMB_DIR)
-        nfo_count, nfo_size = _dir_stats(NFO_DIR)
-        return {
-            "history_count": len(entries),
-            "thumb_count": thumb_count,
-            "nfo_count": nfo_count,
-            "thumb_size_mb": round(thumb_size / (1024 * 1024), 2),
-            "nfo_size_mb": round(nfo_size / (1024 * 1024), 2),
-            "reconcile": reconcile_history(),
-        }
+        """返回 workspace 统计（缓存清理页打开时才计算）。"""
+        return workspace_stats()
 
     def prune_history(self) -> Dict[str, Any]:
         """清理 history 中磁盘上已不存在的记录，同时清除对应的缩略图/NFO 缓存。"""

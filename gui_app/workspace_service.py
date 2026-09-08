@@ -1,12 +1,13 @@
-"""workspace_service.py — 业务逻辑：缓存路径解析、还原、对账、清理。"""
+"""workspace_service.py — 业务逻辑：缓存路径解析、还原、对账、清理、统计。"""
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import discovery
-from .workspace_paths import NFO_DIR, SIMILAR_CACHE_FILE, THUMB_DIR
+from .workspace_paths import NFO_DIR, PROBE_CACHE_FILE, SIMILAR_CACHE_FILE, THUMB_DIR
 from .workspace_store import (
     _lock,
     load_history,
@@ -228,3 +229,102 @@ def clear_workspace_cache(clear_history: bool = True,
                 pass
             cleared["similar"] = True
     return {"ok": True, "cleared": cleared}
+
+
+# ── 缓存统计（仅在打开缓存清理页时调用）──
+
+
+def _dir_stats(d: Path) -> Dict[str, int]:
+    """单次遍历目录，返回 {count, size}。"""
+    count = 0
+    size = 0
+    try:
+        for f in d.iterdir():
+            try:
+                if f.is_file():
+                    count += 1
+                    size += f.stat().st_size
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return {"count": count, "size": size}
+
+
+_json_count_memo: Dict[Tuple[str, float, int], int] = {}
+_JSON_COUNT_LIMIT = 64 * 1024 * 1024
+
+
+def _count_top_level_keys(text: str) -> int:
+    """增量统计 JSON 顶层对象的键数，值解析后即丢弃。"""
+    dec = json.JSONDecoder()
+    n = len(text)
+
+    def skip_ws(i: int) -> int:
+        while i < n and text[i] in " \t\r\n":
+            i += 1
+        return i
+
+    i = skip_ws(0)
+    if i >= n or text[i] != "{":
+        return 0
+    i = skip_ws(i + 1)
+    count = 0
+    while i < n:
+        c = text[i]
+        if c == "}":
+            return count
+        if c == ",":
+            i = skip_ws(i + 1)
+            continue
+        if c != '"':
+            return 0
+        try:
+            _, i = dec.raw_decode(text, i)
+            i = skip_ws(i)
+            if i >= n or text[i] != ":":
+                return 0
+            _, i = dec.raw_decode(text, skip_ws(i + 1))
+        except ValueError:
+            return 0
+        count += 1
+        i = skip_ws(i)
+    return 0
+
+
+def _json_stats(p: Path) -> Dict[str, int]:
+    """单 JSON 缓存统计；count 为 -1 表示文件过大未解析条数。"""
+    try:
+        st = p.stat()
+    except OSError:
+        return {"count": 0, "size": 0}
+    size = st.st_size
+    if size == 0:
+        return {"count": 0, "size": 0}
+    if size > _JSON_COUNT_LIMIT:
+        return {"count": -1, "size": size}
+    key = (str(p), st.st_mtime, size)
+    cached = _json_count_memo.get(key)
+    if cached is None:
+        try:
+            cached = _count_top_level_keys(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            cached = 0
+        if len(_json_count_memo) > 32:
+            _json_count_memo.clear()
+        _json_count_memo[key] = cached
+    return {"count": cached, "size": size}
+
+
+def workspace_stats() -> Dict[str, Any]:
+    """缓存清理页统计：已处理/失效记录 + 四类缓存的条数与体积。"""
+    rec = reconcile_history()
+    return {
+        "ok": True,
+        "history_count": rec["total"],
+        "missing_count": rec["missing"],
+        "thumb": _dir_stats(THUMB_DIR),
+        "nfo": _dir_stats(NFO_DIR),
+        "probe": _json_stats(PROBE_CACHE_FILE),
+        "similar": _json_stats(SIMILAR_CACHE_FILE),
+    }
