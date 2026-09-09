@@ -6,23 +6,20 @@ let _pvTimer = null, _pvSeq = 0;
 function renderPromptsTab(presets, activePreset) {
   const body = $('#modal-body');
   const isCustom = activePreset.id.startsWith('custom_');
-  const isActive = activePreset.id === state.active_preset_id;
-  const canDelete = isCustom && !isActive;
   const canSave = isCustom;
   body.innerHTML = `
     <div class="preset-bar">
       <input type="hidden" id="preset-editing-id" value="${esc(activePreset.id)}"/>
-      <div class="dd" id="preset-select">
+      <div class="dd" id="preset-select" data-tip="选择模板即启用，下方编辑区随之切换">
         <button class="dd-btn"><span class="dd-label">${esc(activePreset.name)}</span>${ddArrow()}</button>
         <div class="dd-panel">
-          ${presets.map(p => `<div class="dd-opt${p.id === activePreset.id ? ' active' : ''}${p.id === state.active_preset_id ? ' is-current' : ''}" data-value="${esc(p.id)}">${esc(p.name)}</div>`).join('')}
+          ${presets.map(p => `<div class="dd-opt${p.id === activePreset.id ? ' active' : ''}" data-value="${esc(p.id)}">${esc(p.name)}</div>`).join('')}
         </div>
       </div>
       <span class="preset-bar-actions">
-        <button class="btn sm" id="btn-activate-preset">启用</button>
         <button class="btn sm" id="btn-save-preset" ${canSave ? '' : 'disabled'} data-tip="${canSave ? '保存对该模板的修改' : '内置模板不可保存，请「保存为新模板」'}">保存</button>
         <button class="btn sm" id="btn-save-as-preset">保存为新模板</button>
-        <button class="btn sm" id="btn-delete-preset" ${canDelete ? '' : 'disabled'}>删除</button>
+        <button class="btn sm" id="btn-delete-preset" ${canSave ? '' : 'disabled'}>删除</button>
       </span>
     </div>
 
@@ -89,20 +86,14 @@ function renderPromptsTab(presets, activePreset) {
   updatePreview();
 
   initDropdown($('#preset-select'), async (val) => {
+    if (val === state.active_preset_id) return;
+    const r = await callApi('set_active_preset', val);
+    if (!r) return;
+    if (!r.ok) { toast(r.error || '启用失败', 'err'); return; }
+    state.active_preset_id = val;
     const p = await callApi('get_preset', val);
     if (p && !p.error) renderPromptsTab(presets, p);
   });
-  $('#btn-activate-preset').onclick = async () => {
-    const sel = getDropdownValue($('#preset-select'));
-    const r = await callApi('set_active_preset', sel);
-    if (!r) return;
-    if (r.ok) {
-      toast('已启用', 'ok');
-      state.active_preset_id = sel;
-      $$('#preset-select .dd-opt').forEach(o => o.classList.toggle('is-current', o.dataset.value === sel));
-    }
-    else toast(r.error || '失败', 'err');
-  };
   $('#btn-save-as-preset').onclick = async () => {
     const name = await showPrompt('新模板将包含当前编辑的全部内容。', {
       title: '保存为新模板',
@@ -138,8 +129,12 @@ function renderPromptsTab(presets, activePreset) {
   $('#btn-delete-preset').onclick = async () => {
     const sel = getDropdownValue($('#preset-select'));
     if (sel === 'default') { toast('内置模板不允许删除', 'err'); return; }
-    if (sel === state.active_preset_id) { toast('已启用的模板不允许删除，请先启用其他模板', 'err'); return; }
     if (!await showConfirm('确定删除该模板？', { okText: '删除' })) return;
+    if (sel === state.active_preset_id) {
+      const ra = await callApi('set_active_preset', 'default');
+      if (!ra || !ra.ok) { toast((ra && ra.error) || '回退默认模板失败', 'err'); return; }
+      state.active_preset_id = 'default';
+    }
     const r = await callApi('delete_preset', sel);
     if (!r) return;
     if (r.ok) {

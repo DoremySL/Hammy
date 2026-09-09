@@ -609,9 +609,6 @@
   .preset-bar .dd.open .dd-btn{border-color:var(--accent)}
   .preset-bar .dd-panel{min-width:280px}
   .preset-bar .dd-opt{display:flex;align-items:center;justify-content:space-between;gap:14px}
-  .preset-bar .dd-opt.is-current::after{content:'启用';flex-shrink:0;font-size:10px;font-weight:700;
-    line-height:1;padding:3px 7px;border-radius:var(--r-full);background:var(--ok-soft);color:var(--ok);
-    border:1px solid color-mix(in srgb,var(--ok) 35%,transparent)}
   .preset-bar-actions{display:flex;gap:6px;margin-left:auto}
   .prompt-preview{background:var(--bg);color:var(--log-text);padding:12px 14px;border-radius:var(--r-md);
     font-family:var(--mono);font-size:11.5px;line-height:1.55;white-space:pre-wrap;

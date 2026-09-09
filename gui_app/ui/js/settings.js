@@ -27,6 +27,9 @@ async function openSettings(tab) {
 }
 async function closeSettings() {
   if (state.settings_tab === 'tags' && window.ptLeaveGuard && !await ptLeaveGuard()) return;
+  flushPendingConfigSave();
+  flushPendingExperimentalSave();
+  flushPendingLlamaSave();
   state.settingsOpen.clear();
   state.settingsScroll = 0;
   $('#modal-body').innerHTML = '';
@@ -34,7 +37,6 @@ async function closeSettings() {
 }
 $('#btn-settings').addEventListener('click', () => openSettings());
 $('#btn-closemodal').addEventListener('click', closeSettings);
-$('#btn-cancelcfg').addEventListener('click', closeSettings);
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && $('#modal').classList.contains('show')) closeSettings();
 });
@@ -43,6 +45,9 @@ $$('#settings-tabs .tab').forEach(t => {
   t.addEventListener('click', async () => {
     if (t.dataset.settingsTab === state.settings_tab) return;
     if (state.settings_tab === 'tags' && window.ptLeaveGuard && !await ptLeaveGuard()) return;
+    flushPendingConfigSave();
+    flushPendingExperimentalSave();
+    flushPendingLlamaSave();
     state.settings_tab = t.dataset.settingsTab;
     state.settings_scroll_to = null;
     $$('#settings-tabs .tab').forEach(x => x.classList.toggle('active', x === t));
@@ -53,7 +58,6 @@ $$('#settings-tabs .tab').forEach(t => {
 async function renderSettings() {
   const seq = ++_settingsSeq;
   const body = $('#modal-body');
-  const foot = $('#modal-foot-note');
   state.settingsScroll = body.scrollTop;
   let cfg;
   if (state.settings_tab === 'config') {
@@ -71,27 +75,21 @@ async function renderSettings() {
   try {
     switch (state.settings_tab) {
       case 'config':
-        foot.textContent = '修改后点击应用生效。';
         renderConfigTab(cfg);
         break;
       case 'prompts':
-        foot.textContent = '编辑后点击「应用」生效。';
         await renderPromptsTabWrapper();
         break;
       case 'tags':
-        foot.textContent = '此页修改即时保存。';
         await renderTagsTabWrapper();
         break;
       case 'experimental':
-        foot.textContent = '总开关需点「应用」才生效。';
         await renderExperimentalTabWrapper();
         break;
       case 'llama':
-        foot.textContent = '参数修改后点「应用」保存生效；启动/停止/聊天界面为即时操作。';
         await renderLlamaTabWrapper();
         break;
       case 'workspace':
-        foot.textContent = '仅删除缓存数据，不影响视频文件；「失效记录」会连同对应缩略图 / NFO 一并清除。';
         await renderWorkspaceTabWrapper();
         break;
     }
@@ -102,7 +100,6 @@ async function renderSettings() {
     body.querySelector('button').onclick = () => renderSettings();
   }
   if (seq !== _settingsSeq) return;
-  updateSaveButtonState();
   updateLlamaTabVisibility();
   if (state.settings_tab === 'config') {
     animateModalBody();
@@ -189,20 +186,14 @@ async function saveConfigAndTest() {
     aiTestToken++;
     btn.disabled = false;
     btn.dataset.testing = '';
-    btn.textContent = '应用并测试连接';
+    btn.textContent = '测试连接';
     toast('已停止连接测试', 'ok');
     return;
   }
   const token = ++aiTestToken;
-  btn.disabled = true; btn.textContent = '应用中…';
+  btn.disabled = true; btn.textContent = '正在保存…';
   try {
-    const data = collectConfigData();
-    const res = await apiCall('save_config', data);
-    if (!res || !res.ok) {
-      toast('应用失败: ' + ((res && res.error) || ''), 'err');
-      return;
-    }
-    state.thumbOptimize = Number((data.video || {}).frame_time_tags) === 2;
+    await _saveConfigNow();
     btn.textContent = '正在测试连接…';
     btn.disabled = false;
     btn.dataset.testing = '1';
@@ -210,7 +201,7 @@ async function saveConfigAndTest() {
     if (token !== aiTestToken) return;
     btn.dataset.testing = '';
     const addr = r.base_url ? '（' + r.base_url + '）' : '';
-    toast(r.ok ? '已应用 · ' + r.message : '已应用 · 连接失败: ' + (r.message || '') + addr, r.ok ? 'ok' : 'err');
+    toast(r.ok ? r.message : '连接失败: ' + (r.message || '') + addr, r.ok ? 'ok' : 'err');
     updateConnectionUI(r);
   } catch (e) {
     if (token !== aiTestToken) return;
@@ -218,7 +209,7 @@ async function saveConfigAndTest() {
     toast('测试失败: ' + e, 'err');
   } finally {
     if (token === aiTestToken && btn.isConnected) {
-      btn.disabled = false; btn.textContent = '应用并测试连接';
+      btn.disabled = false; btn.textContent = '测试连接';
       btn.dataset.testing = '';
     }
   }
@@ -236,7 +227,7 @@ function renderConfigTab(cfg) {
     const saveTestBtn = document.createElement('button');
     saveTestBtn.className = 'btn';
     saveTestBtn.id = 'btn-save-and-test';
-    saveTestBtn.textContent = '应用并测试连接';
+    saveTestBtn.textContent = '测试连接';
     saveTestBtn.style.width = '100%';
     saveTestBtn.onclick = saveConfigAndTest;
     btnField.appendChild(saveTestBtn);
@@ -331,7 +322,7 @@ function renderCfgGroup(g, cfg) {
         `<button class="dd-btn" type="button"><span class="dd-label">${esc(curLabel)}</span>${ddArrow()}</button>` +
         `<div class="dd-panel">${opts}</div></div>`;
       const dd = field.querySelector('.dd');
-      initDropdown(dd, v => { dd.dataset.value = v; });
+      initDropdown(dd, v => { dd.dataset.value = v; scheduleConfigSave(true); });
     } else {
       const ph = f.default != null ? ` placeholder="${esc(String(f.default))}"` : '';
       const a = `type="${f.type}" data-sec="${f.sec}" data-key="${f.key}" value="${esc(val == null ? '' : val)}"` +
@@ -423,129 +414,47 @@ async function renderTagsTabWrapper() {
   );
 }
 
-$('#btn-savecfg').addEventListener('click', async () => {
+let _cfgSaveTimer = null;
+let _cfgSaveToken = 0;
+
+async function _saveConfigNow() {
+  clearTimeout(_cfgSaveTimer);
+  _cfgSaveTimer = null;
+  if (!$('#modal-body [data-key]')) return;
+  const token = ++_cfgSaveToken;
+  const data = collectConfigData();
   try {
-    if (state.settings_tab === 'config') {
-      const data = collectConfigData();
-      const res = await apiCall('save_config', data);
-      if (res && res.ok) {
-        state.thumbOptimize = Number((data.video || {}).frame_time_tags) === 2;
-        toast('配置已应用', 'ok');
-        if ('force_animation' in data) applyForceAnimation(data.force_animation !== false);
-        if (state.settings_tab === 'config') checkConnection();
-        renderSettings();
-      } else toast('应用失败: ' + ((res && res.error) || ''), 'err');
-    } else if (state.settings_tab === 'prompts') {
-      const editingId = $('#preset-editing-id') ? $('#preset-editing-id').value : '';
-      if (!editingId.startsWith('custom_')) {
-        toast('内置模板不可保存，请「保存为新模板」', 'err');
-        return;
-      }
-      const nameLabel = $('#preset-select .dd-label');
-      const res = await apiCall('save_preset', collectPresetData(nameLabel ? nameLabel.textContent : ''));
-      if (res && res.ok) {
-        toast('模板已保存', 'ok');
-        await apiCall('set_active_preset', res.id);
-        state.active_preset_id = res.id;
-        renderSettings();
-      } else toast('保存失败: ' + ((res && res.error) || ''), 'err');
-    } else if (state.settings_tab === 'tags') {
-      const d = collectTagsData();
-      const res2 = await apiCall('save_priority_tags', d.items, d.mode);
-      if (res2 && res2.ok) {
-        toast('标签检索已保存', 'ok');
-        renderSettings();
-      } else toast('保存失败: ' + ((res2 && res2.error) || ''), 'err');
-    } else if (state.settings_tab === 'experimental') {
-      if (!$('#pixai-frames') || !$('#whisper-vad') || !$('#llama-enable-toggle')
-          || !$('#ragvec-enable-toggle')) {
-        toast('页面尚未加载完成，请稍候再试', 'err');
-        return;
-      }
-      let thr = Number($('#pixai-threshold').value) || 0.9;
-      if (thr > 1) thr = 0.99;
-      if (thr < 0.5) thr = 0.5;
-      let rvThr = Number($('#ragvec-threshold').value);
-      if (!Number.isFinite(rvThr)) rvThr = 0.45;
-      rvThr = Math.min(0.8, Math.max(0.3, rvThr));
-      const wv = Number($('#whisper-workers').value);
-      const expData = { experimental: {
-        rag_vec_enabled: $('#ragvec-enable-toggle').checked,
-        rag_vec_device: getDropdownValue($('#ragvec-device-dd')) || 'auto',
-        rag_vec_threshold: rvThr,
-        rag_vec_top_n: Math.min(100, Math.max(1, Number($('#ragvec-topn').value) || 20)),
-        rag_vec_model: getDropdownValue($('#ragvec-model-dd')) || '',
-        pixai_classify: $('#pixai-classify').checked,
-        pixai_frames: Math.max(1, Number($('#pixai-frames').value) || 15),
-        pixai_short_side: Math.max(64, Number($('#pixai-short-side').value) || 448),
-        pixai_crop_square: $('#pixai-crop-square').checked,
-        pixai_crop_portrait: $('#pixai-crop-portrait').checked,
-        pixai_threshold: thr,
-        pixai_tagger_enabled: $('#pixai-enable-toggle').checked,
-        whisper_vad: $('#whisper-vad').checked,
-        whisper_language: $('#whisper-language').value.trim(),
-        whisper_max_chars: Math.max(100, Number($('#whisper-max-chars').value) || 800),
-        whisper_inject_timestamps: $('#whisper-inject-ts').checked,
-        whisper_batch: $('#whisper-batch').checked,
-        whisper_workers: Math.min(16, Math.max(0, Number.isFinite(wv) ? wv : 4)),
-        whisper_enabled: $('#whisper-enable-toggle').checked,
-      }};
-      const wmv = getDropdownValue($('#whisper-model-dd'));
-      if (wmv) expData.experimental.whisper_model = wmv;
-      const llamaToggle = $('#llama-enable-toggle');
-      let llamaError = null;
-      if (llamaToggle) {
-        const ll = {
-          models_dir: (($('#llama-models-dir') && $('#llama-models-dir').value) || '').trim(),
-          auto_run: !!($('#llama-autorun') && $('#llama-autorun').checked),
-          integrate: !!($('#llama-integrate') && $('#llama-integrate').checked),
-          show_logs: !!($('#llama-showlogs') && $('#llama-showlogs').checked),
-        };
-        await apiCall('set_llama_config', ll);
-        const resEn = await apiCall('set_llama_enabled', llamaToggle.checked);
-        if (resEn && resEn.ok === false) {
-          llamaError = resEn.error || '停止本地推理服务出错';
-        }
-      }
-      let ok = true;
-      if (Object.keys(expData.experimental).length) {
-        const res3 = await apiCall('save_config', expData);
-        ok = !!(res3 && res3.ok);
-      }
-      if (ok) {
-        if (!$('#ragvec-enable-toggle').checked) {
-          try { await apiCall('stop_rag_vec'); } catch (e) { /* 后台未运行时忽略 */ }
-        }
-        if (llamaError) {
-          toast('扩展功能参数已保存（但 llama 停用失败: ' + llamaError + '）', 'err');
-        } else {
-          toast('扩展功能参数已保存', 'ok');
-        }
-        state.llamaSynced = false;
-        await ensureLlamaStateKnown();
-        renderSettings();
-        updateSortDropdown();
-      } else toast('保存失败', 'err');
-    } else if (state.settings_tab === 'llama') {
-      const res4 = await apiCall('set_llama_config', _collectLlamaParams());
-      if (res4 && res4.ok) {
-        toast('本地推理参数已保存', 'ok');
-        renderSettings();
-      } else toast('保存失败: ' + ((res4 && res4.error) || ''), 'err');
-    } else {
-      toast('此页面无需保存', 'dim');
+    const res = await apiCall('save_config', data);
+    if (res && res.ok) {
+      state.thumbOptimize = Number((data.video || {}).frame_time_tags) === 2;
+      if ('force_animation' in data) applyForceAnimation(data.force_animation !== false);
+    } else if (token === _cfgSaveToken) {
+      toast('保存失败: ' + ((res && res.error) || ''), 'err');
     }
   } catch (e) {
-    toast('保存失败: ' + ((e && e.message) || e), 'err');
-  }
-});
-
-function updateSaveButtonState() {
-  const btnSave = $('#btn-savecfg');
-  const hide = ['workspace', 'tags'].includes(state.settings_tab);
-  btnSave.style.display = hide ? 'none' : '';
-  if (!hide) {
-    btnSave.disabled = false;
-    btnSave.textContent = '应用';
+    if (token === _cfgSaveToken) toast('保存失败: ' + e, 'err');
   }
 }
+
+function scheduleConfigSave(immediate) {
+  if (immediate) { _saveConfigNow(); return; }
+  clearTimeout(_cfgSaveTimer);
+  _cfgSaveTimer = setTimeout(_saveConfigNow, 600);
+}
+
+function flushPendingConfigSave() {
+  if (_cfgSaveTimer) _saveConfigNow();
+}
+
+$('#modal-body').addEventListener('input', e => {
+  const el = e.target;
+  if (state.settings_tab !== 'config' || !el.matches || !el.matches('[data-sec][data-key]')) return;
+  if (el.type === 'checkbox') return;
+  scheduleConfigSave();
+});
+
+$('#modal-body').addEventListener('change', e => {
+  const el = e.target;
+  if (state.settings_tab !== 'config' || !el.matches || !el.matches('[data-sec][data-key]')) return;
+  if (el.type === 'checkbox') scheduleConfigSave(true);
+});

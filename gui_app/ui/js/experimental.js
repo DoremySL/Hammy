@@ -37,6 +37,117 @@ function syncLlamaState(llamaStatus) {
   if (typeof updateLlamaTabVisibility === 'function') updateLlamaTabVisibility();
 }
 
+let _expSaveTimer = null;
+let _expSaveToken = 0;
+
+function _collectExperimentalData() {
+  const chk = id => { const el = $(id); return el ? el.checked : null; };
+  const num = id => {
+    const el = $(id);
+    if (!el || el.value === '') return null;
+    const n = Number(el.value);
+    return Number.isFinite(n) ? n : null;
+  };
+  const ddl = id => { const el = $(id); return el ? getDropdownValue(el) : null; };
+  const e = {};
+  const put = (k, v) => { if (v !== null && v !== undefined) e[k] = v; };
+  put('rag_vec_enabled', chk('#ragvec-enable-toggle'));
+  put('rag_vec_device', ddl('#ragvec-device-dd') || 'auto');
+  let rvThr = num('#ragvec-threshold');
+  if (rvThr !== null) rvThr = Math.min(0.8, Math.max(0.3, rvThr));
+  put('rag_vec_threshold', rvThr);
+  let topN = num('#ragvec-topn');
+  if (topN !== null) topN = Math.min(100, Math.max(1, topN));
+  put('rag_vec_top_n', topN);
+  put('rag_vec_model', ddl('#ragvec-model-dd') || '');
+  put('pixai_classify', chk('#pixai-classify'));
+  let frames = num('#pixai-frames');
+  if (frames !== null) frames = Math.max(1, frames);
+  put('pixai_frames', frames);
+  let ss = num('#pixai-short-side');
+  if (ss !== null) ss = Math.max(64, ss);
+  put('pixai_short_side', ss);
+  put('pixai_crop_square', chk('#pixai-crop-square'));
+  put('pixai_crop_portrait', chk('#pixai-crop-portrait'));
+  let thr = num('#pixai-threshold');
+  if (thr !== null) thr = Math.min(0.99, Math.max(0.5, thr));
+  put('pixai_threshold', thr);
+  put('pixai_tagger_enabled', chk('#pixai-enable-toggle'));
+  put('whisper_vad', chk('#whisper-vad'));
+  const lang = $('#whisper-language');
+  put('whisper_language', lang ? lang.value.trim() : null);
+  let mc = num('#whisper-max-chars');
+  if (mc !== null) mc = Math.max(100, mc);
+  put('whisper_max_chars', mc);
+  put('whisper_inject_timestamps', chk('#whisper-inject-ts'));
+  put('whisper_batch', chk('#whisper-batch'));
+  let wv = num('#whisper-workers');
+  if (wv !== null) wv = Math.min(16, Math.max(0, wv));
+  put('whisper_workers', wv);
+  put('whisper_enabled', chk('#whisper-enable-toggle'));
+  const wmv = ddl('#whisper-model-dd');
+  if (wmv) e.whisper_model = wmv;
+  return { experimental: e };
+}
+
+async function _saveExperimentalNow() {
+  clearTimeout(_expSaveTimer);
+  _expSaveTimer = null;
+  if (!$('#pixai-enable-toggle')) return;
+  const token = ++_expSaveToken;
+  const data = _collectExperimentalData();
+  try {
+    const res = await apiCall('save_config', data);
+    if (res && res.ok) {
+      if (data.experimental.pixai_tagger_enabled != null) state.pixaiTaggerEnabled = !!data.experimental.pixai_tagger_enabled;
+      if (data.experimental.whisper_enabled != null) state.whisperEnabled = !!data.experimental.whisper_enabled;
+      if (data.experimental.rag_vec_enabled != null) state.ragVecEnabled = !!data.experimental.rag_vec_enabled;
+    } else if (token === _expSaveToken) {
+      toast('保存失败: ' + ((res && res.error) || ''), 'err');
+    }
+  } catch (e) {
+    if (token === _expSaveToken) toast('保存失败: ' + ((e && e.message) || e), 'err');
+  }
+}
+
+function scheduleExperimentalSave(immediate) {
+  if (immediate) { _saveExperimentalNow(); return; }
+  clearTimeout(_expSaveTimer);
+  _expSaveTimer = setTimeout(_saveExperimentalNow, 600);
+}
+
+function flushPendingExperimentalSave() {
+  if (_expSaveTimer) _saveExperimentalNow();
+}
+
+let _llamaSaveTimer = null;
+let _llamaSaveToken = 0;
+
+async function _saveLlamaParamsNow() {
+  clearTimeout(_llamaSaveTimer);
+  _llamaSaveTimer = null;
+  if (!$('#llama-sliders-wrap')) return;
+  const token = ++_llamaSaveToken;
+  try {
+    const res = await apiCall('set_llama_config', _collectLlamaParams());
+    if (res && res.ok === false && token === _llamaSaveToken) {
+      toast('保存失败: ' + (res.error || ''), 'err');
+    }
+  } catch (e) {
+    if (token === _llamaSaveToken) toast('保存失败: ' + ((e && e.message) || e), 'err');
+  }
+}
+
+function scheduleLlamaSave(immediate) {
+  if (immediate) { _saveLlamaParamsNow(); return; }
+  clearTimeout(_llamaSaveTimer);
+  _llamaSaveTimer = setTimeout(_saveLlamaParamsNow, 800);
+}
+
+function flushPendingLlamaSave() {
+  if (_llamaSaveTimer) _saveLlamaParamsNow();
+}
+
 function renderExperimentalPage(cfg, uvStatus, llamaStatus, pStatus, wStatus, rvStatus) {
   const body = $('#modal-body');
   const exp = (cfg && cfg.experimental) || {};
@@ -355,10 +466,10 @@ function _renderLlamaSection(llamaStatus) {
         <div class="field">
           <label>模型文件夹位置</label>
           <div class="ws-actions" style="justify-content:flex-start;gap:8px;margin-top:0;flex-wrap:nowrap">
-            <input type="text" id="llama-models-dir" style="flex:1;min-width:0"
+            <input type="text" id="llama-models-dir" style="flex:1;min-width:0" readonly
                    value="${esc(cfg.models_dir || '')}"
                    placeholder="${esc(curDir)}"
-                   data-tip="留空则使用与 llama.cpp 同级的 models/；悬停可查看当前扫描目录"/>
+                   data-tip="通过「选择文件夹」更改；留空使用与 llama.cpp 同级的 models/"/>
             <button class="ws-btn" id="btn-llama-pickdir">选择文件夹</button>
             <button class="ws-btn" id="btn-llama-resetdir">恢复默认</button>
           </div>
@@ -372,26 +483,63 @@ function _renderLlamaSection(llamaStatus) {
     </div>`;
 }
 
+async function _saveLlamaGlobals(cfg) {
+  try {
+    const res = await apiCall('set_llama_config', cfg);
+    if (res && res.ok === false) toast('保存失败: ' + (res.error || ''), 'err');
+    return res;
+  } catch (e) {
+    toast('保存失败: ' + ((e && e.message) || e), 'err');
+    return null;
+  }
+}
+
 function _bindLlamaEvents(llamaStatus) {
   const llamaToggle = $('#llama-enable-toggle');
-  if (llamaToggle) llamaToggle.addEventListener('change', () => {
-    toast(llamaToggle.checked ? '已启用 llama.cpp 模块（点击「应用」保存）' : '已禁用 llama.cpp 模块（点击「应用」保存）', 'dim');
+  if (llamaToggle) llamaToggle.addEventListener('change', async () => {
+    const r = await apiCall('set_llama_enabled', llamaToggle.checked);
+    if (r && r.ok === false) {
+      toast('停用本地推理服务出错: ' + (r.error || ''), 'err');
+      llamaToggle.checked = !llamaToggle.checked;
+      return;
+    }
+    const card = llamaToggle.closest('.exp-card');
+    if (card) card.classList.toggle('is-disabled', !llamaToggle.checked);
+    state.llamaSynced = false;
+    await ensureLlamaStateKnown();
+    updateSortDropdown();
   });
 
   _bindCardToggle('llama', !!llamaStatus.enabled);
+
+  const autorun = $('#llama-autorun');
+  if (autorun) autorun.addEventListener('change', () => _saveLlamaGlobals({ auto_run: autorun.checked }));
+  const integrate = $('#llama-integrate');
+  if (integrate) integrate.addEventListener('change', async () => {
+    await _saveLlamaGlobals({ integrate: integrate.checked });
+    state.llamaSynced = false;
+    await ensureLlamaStateKnown();
+  });
+  const showlogs = $('#llama-showlogs');
+  if (showlogs) showlogs.addEventListener('change', () => _saveLlamaGlobals({ show_logs: showlogs.checked }));
 
   const pickBtn = $('#btn-llama-pickdir');
   if (pickBtn) pickBtn.addEventListener('click', async () => {
     const folders = await callApi('pick_folders');
     if (!folders || !folders.length) return;
     $('#llama-models-dir').value = folders[0];
-    toast('已选择模型文件夹（点击「应用」保存）', 'dim');
+    await _saveLlamaGlobals({ models_dir: folders[0] });
+    flushPendingExperimentalSave();
+    renderSettings();
   });
 
   const resetBtn = $('#btn-llama-resetdir');
-  if (resetBtn) resetBtn.addEventListener('click', () => {
-    $('#llama-models-dir').value = llamaStatus.default_models_dir || '';
-    toast('已恢复默认模型文件夹（点击「应用」保存）', 'dim');
+  if (resetBtn) resetBtn.addEventListener('click', async () => {
+    const dir = llamaStatus.default_models_dir || '';
+    $('#llama-models-dir').value = dir;
+    await _saveLlamaGlobals({ models_dir: dir });
+    flushPendingExperimentalSave();
+    renderSettings();
   });
 }
 
@@ -441,10 +589,24 @@ function _bindPixaiEvents(pStatus) {
   const toggle = $('#pixai-enable-toggle');
   if (toggle) toggle.addEventListener('change', () => {
     state.pixaiTaggerEnabled = toggle.checked;
-    toast(`PixAI Tagger 开关已${toggle.checked ? '启用' : '禁用'}（点击「应用」保存）`, 'dim');
+    const card = toggle.closest('.exp-card');
+    if (card) card.classList.toggle('is-disabled', !toggle.checked);
+    const clearBtn = $('#btn-pixai-clear-tags');
+    if (clearBtn) clearBtn.style.display = toggle.checked ? '' : 'none';
+    scheduleExperimentalSave(true);
+    updateSortDropdown();
   });
 
   _bindCardToggle('pixai', state.pixaiTaggerEnabled);
+
+  ['#pixai-frames', '#pixai-short-side', '#pixai-threshold'].forEach(sel => {
+    const el = $(sel);
+    if (el) el.addEventListener('input', () => scheduleExperimentalSave());
+  });
+  ['#pixai-classify', '#pixai-crop-square', '#pixai-crop-portrait'].forEach(sel => {
+    const el = $(sel);
+    if (el) el.addEventListener('change', () => scheduleExperimentalSave(true));
+  });
 
   const clearBtn = $('#btn-pixai-clear-tags');
   if (clearBtn) clearBtn.addEventListener('click', async () => {
@@ -505,7 +667,7 @@ function _renderWhisperSection(exp, wStatus) {
   const hasInstalled = wModels.some(m => installed[m.key]);
   const modelSel = hasInstalled ? `
     <div class="dd whisper-model-dd" id="whisper-model-dd">
-      <button class="dd-btn" type="button" data-tip="切换转录模型，点底部「应用」保存">
+      <button class="dd-btn" type="button" data-tip="切换转录模型，选择后立即保存">
         <span class="dd-label">${esc((wModels.find(m => m.key === current) || {}).title || '请选择模型')}</span>
         ${ddArrow()}
       </button>
@@ -543,7 +705,7 @@ function _renderWhisperSection(exp, wStatus) {
       <div id="whisper-cfg-panel" class="exp-cfg-panel" style="display:${state.settingsOpen.has('whisper-cfg') ? 'block' : 'none'}">
         <div class="whisper-model-row">
           <div class="field">
-            <label data-tip="转录使用的模型；切换后点击底部「应用」生效，点击未下载的模型可直接下载">当前模型</label>
+            <label data-tip="转录使用的模型；选择后立即保存，点击未下载的模型可直接下载">当前模型</label>
             ${modelSel}
           </div>
           <div class="whisper-switches">
@@ -574,13 +736,26 @@ function _bindWhisperEvents(wStatus) {
   const toggle = $('#whisper-enable-toggle');
   if (toggle) toggle.addEventListener('change', () => {
     state.whisperEnabled = toggle.checked;
-    toast(`Faster-Whisper 开关已${toggle.checked ? '启用' : '禁用'}（点击「应用」保存）`, 'dim');
+    const card = toggle.closest('.exp-card');
+    if (card) card.classList.toggle('is-disabled', !toggle.checked);
+    const clearBtn = $('#btn-whisper-clear');
+    if (clearBtn) clearBtn.style.display = toggle.checked ? '' : 'none';
+    scheduleExperimentalSave(true);
   });
 
   _bindCardToggle('whisper', state.whisperEnabled);
 
+  ['#whisper-language', '#whisper-workers', '#whisper-max-chars'].forEach(sel => {
+    const el = $(sel);
+    if (el) el.addEventListener('input', () => scheduleExperimentalSave());
+  });
+  ['#whisper-vad', '#whisper-inject-ts', '#whisper-batch'].forEach(sel => {
+    const el = $(sel);
+    if (el) el.addEventListener('change', () => scheduleExperimentalSave(true));
+  });
+
   const modelDD = $('#whisper-model-dd');
-  if (modelDD) initDropdown(modelDD, () => toast('模型已选择（点击「应用」保存）', 'dim'));
+  if (modelDD) initDropdown(modelDD, () => scheduleExperimentalSave(true));
 
   if (modelDD) modelDD.querySelectorAll('.dd-opt.disabled').forEach(opt => {
     opt.addEventListener('click', (e) => {
@@ -831,7 +1006,7 @@ const _wDlApi = _makeModelDownloader({
   progressKey: '__onWhisperModelProgress', doneKey: '__onWhisperModelDone',
   cancelledMsg: () => '未完成的文件已清理，再次下载将从零开始。',
   successMsg: r => `<div class="ok">已下载 ${r.downloaded} 个文件到模型目录</div>
-      <div class="hf-files-hint" style="margin-top:4px">关闭弹窗后，在卡片「当前模型」下拉中选择该模型并点「应用」即可切换。</div>`,
+      <div class="hf-files-hint" style="margin-top:4px">关闭弹窗后，在卡片「当前模型」下拉中选择该模型即可切换。</div>`,
   afterDone: _wRefresh,
   onClose: () => {
     _wData = null;
@@ -1833,11 +2008,15 @@ function _setValDisplay(el, v) {
   if (el.tagName === 'INPUT') el.value = v; else el.textContent = v;
 }
 
-function _wireSlider(rangeId, hiddenId, valId) {
+function _wireSlider(rangeId, hiddenId, valId, onApply) {
   const range = $(rangeId), hidden = $(hiddenId), val = $(valId);
   if (!range || !hidden || !val) return;
-  const apply = () => { hidden.value = range.value; _setValDisplay(val, range.value); };
-  range.addEventListener('input', apply);
+  const apply = (notify) => {
+    hidden.value = range.value;
+    _setValDisplay(val, range.value);
+    if (notify && onApply) onApply();
+  };
+  range.addEventListener('input', () => apply(true));
   val.addEventListener('change', () => {
     const min = parseInt(range.min, 10) || 0;
     const max = parseInt(range.max, 10) || 0;
@@ -1849,8 +2028,9 @@ function _wireSlider(rangeId, hiddenId, valId) {
     range.value = v;
     hidden.value = v;
     _setValDisplay(val, v);
+    if (onApply) onApply();
   });
-  apply();
+  apply(false);
 }
 
 function _setSliderVal(rangeId, hiddenId, valId, v) {
@@ -1944,6 +2124,7 @@ function _editXarg(idx) {
     state.llamaXargs[idx] = group;
     bg.remove();
     renderLlamaXargsList();
+    scheduleLlamaSave(true);
   }
 }
 async function _deleteXargAt(idx) {
@@ -1955,6 +2136,7 @@ async function _deleteXargAt(idx) {
   }
   state.xargSelected = new Set(); state.xargSelAnchor = null;
   renderLlamaXargsList();
+  scheduleLlamaSave(true);
 }
 function renderLlamaXargsList() {
   const list = $('#llama-xargs-list');
@@ -1981,6 +2163,7 @@ function addLlamaXarg() {
   state.llamaXargs.push(group);
   inp.value = ''; inp.focus();
   renderLlamaXargsList();
+  scheduleLlamaSave(true);
   const list = $('#llama-xargs-list');
   if (list && list.lastElementChild) {
     list.scrollTop = list.scrollHeight;
@@ -2241,9 +2424,9 @@ function _bindLlamaTabEvents(llamaStatus) {
   const dlBtn = $('#btn-llama-download');
   if (dlBtn) dlBtn.addEventListener('click', () => openHfDownloadDialog());
 
-  _wireSlider('#llama-ctx-range', '#llama-ctx', '#llama-ctx-val');
-  _wireSlider('#llama-ngl-range', '#llama-ngl', '#llama-ngl-val');
-  _wireSlider('#llama-moe-range', '#llama-moe', '#llama-moe-val');
+  _wireSlider('#llama-ctx-range', '#llama-ctx', '#llama-ctx-val', () => scheduleLlamaSave());
+  _wireSlider('#llama-ngl-range', '#llama-ngl', '#llama-ngl-val', () => scheduleLlamaSave());
+  _wireSlider('#llama-moe-range', '#llama-moe', '#llama-moe-val', () => scheduleLlamaSave());
 
   _applyModelLimits(_selectModelData(cfg, llamaStatus.models || []));
 
@@ -2264,25 +2447,32 @@ function _bindLlamaTabEvents(llamaStatus) {
       }
       _applyModelLimits((llamaStatus.models || []).find(x => x.path === path) || null);
       _applyModelParams(path, cfg, llamaStatus.model_configs || {}, defaults);
+      scheduleLlamaSave(true);
     });
   }
 
+  ['#llama-host', '#llama-port', '#llama-threads', '#llama-tb', '#llama-batch',
+   '#llama-ubatch', '#llama-parallel', '#llama-npredict', '#llama-timeout', '#llama-alias'].forEach(sel => {
+    const el = $(sel);
+    if (el) el.addEventListener('input', () => scheduleLlamaSave());
+  });
+
   const mmprojDD = $('#llama-mmproj');
-  if (mmprojDD) initDropdown(mmprojDD);
+  if (mmprojDD) initDropdown(mmprojDD, () => scheduleLlamaSave(true));
   const kvDD = $('#llama-kv');
-  if (kvDD) initDropdown(kvDD);
+  if (kvDD) initDropdown(kvDD, () => scheduleLlamaSave(true));
   const lmDD = $('#llama-loadmode');
-  if (lmDD) initDropdown(lmDD);
+  if (lmDD) initDropdown(lmDD, () => scheduleLlamaSave(true));
   const reasonDD = $('#llama-reasoning-dd');
-  if (reasonDD) initDropdown(reasonDD);
+  if (reasonDD) initDropdown(reasonDD, () => scheduleLlamaSave(true));
   const specDD = $('#llama-spec');
-  if (specDD) initDropdown(specDD);
+  if (specDD) initDropdown(specDD, () => scheduleLlamaSave(true));
   const presetDD = $('#llama-kv-preset');
-  if (presetDD) initDropdown(presetDD);
+  if (presetDD) initDropdown(presetDD, () => scheduleLlamaSave(true));
   const imgMinDD = $('#llama-image-min');
   const imgMaxDD = $('#llama-image-max');
-  if (imgMinDD) initDropdown(imgMinDD, () => _syncImgTokenLimits());
-  if (imgMaxDD) initDropdown(imgMaxDD, () => _syncImgTokenLimits());
+  if (imgMinDD) initDropdown(imgMinDD, () => { _syncImgTokenLimits(); scheduleLlamaSave(true); });
+  if (imgMaxDD) initDropdown(imgMaxDD, () => { _syncImgTokenLimits(); scheduleLlamaSave(true); });
   _syncImgTokenLimits();
 
   const advToggle = $('#llama-adv-toggle');
@@ -2381,7 +2571,7 @@ function _renderRagVecSection(exp, rvStatus) {
       <div id="ragvec-cfg-panel" class="exp-cfg-panel" style="display:${state.settingsOpen.has('ragvec-cfg') ? 'block' : 'none'}">
         <div class="exp-input-row">
           <div class="field">
-            <label data-tip="嵌入模型运行设备：自动 = 有 N 卡用 CUDA，否则 CPU；切换后点「应用」生效">运行设备</label>
+            <label data-tip="嵌入模型运行设备：自动 = 有 N 卡用 CUDA，否则 CPU；选择后立即保存">运行设备</label>
             <div class="dd" id="ragvec-device-dd">
               <button class="dd-btn" type="button"><span class="dd-label">${deviceNames[device] || '自动'}</span>${ddArrow()}</button>
               <div class="dd-panel">${deviceOpts}</div>
@@ -2412,15 +2602,24 @@ function _renderRagVecSection(exp, rvStatus) {
 
 function _bindRagVecEvents(rvStatus) {
   const toggle = $('#ragvec-enable-toggle');
-  if (toggle) toggle.addEventListener('change', () => {
+  if (toggle) toggle.addEventListener('change', async () => {
     state.ragVecEnabled = toggle.checked;
-    toast(`标签向量检索已${toggle.checked ? '启用' : '禁用'}（点击「应用」保存）`, 'dim');
+    const card = toggle.closest('.exp-card');
+    if (card) card.classList.toggle('is-disabled', !toggle.checked);
+    scheduleExperimentalSave(true);
+    if (!toggle.checked) {
+      try { await apiCall('stop_rag_vec'); } catch (e) {}
+    }
   });
   _bindCardToggle('ragvec', state.ragVecEnabled);
+  ['#ragvec-threshold', '#ragvec-topn'].forEach(sel => {
+    const el = $(sel);
+    if (el) el.addEventListener('input', () => scheduleExperimentalSave());
+  });
   const dd = $('#ragvec-device-dd');
-  if (dd) initDropdown(dd, () => toast('设备已选择（点击「应用」保存）', 'dim'));
+  if (dd) initDropdown(dd, () => scheduleExperimentalSave(true));
   const modelDD = $('#ragvec-model-dd');
-  if (modelDD) initDropdown(modelDD, () => toast('模型已选择（点击「应用」保存）', 'dim'));
+  if (modelDD) initDropdown(modelDD, () => scheduleExperimentalSave(true));
   if (modelDD) modelDD.querySelectorAll('.dd-opt.disabled').forEach(opt => {
     opt.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -2490,7 +2689,7 @@ const _rvDlApi = _makeModelDownloader({
   progressKey: '__onRagVecModelProgress', doneKey: '__onRagVecModelDone',
   cancelledMsg: () => '未完成的文件已清理，再次下载将从零开始。',
   successMsg: r => `<div class="ok">已下载 ${r.downloaded} 个文件到模型目录</div>
-      <div class="hf-files-hint" style="margin-top:4px">关闭弹窗后，在卡片「嵌入模型」下拉中选择该模型并点「应用」即可切换。</div>`,
+      <div class="hf-files-hint" style="margin-top:4px">关闭弹窗后，在卡片「嵌入模型」下拉中选择该模型即可切换。</div>`,
   afterDone: _rvRefresh,
   onClose: () => {
     _rvData = null;
