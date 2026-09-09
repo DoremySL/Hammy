@@ -185,12 +185,13 @@ function _installBtns(prefix, st) {
   return `${install}<button class="ws-btn danger" id="btn-${prefix}-remove" ${!st.dir_exists ? 'disabled' : ''}>卸载</button>`;
 }
 
-function _bindCardToggle(prefix, enabled) {
+function _bindCardToggle(prefix) {
   const panel = $(`#${prefix}-cfg-panel`);
   const card = panel && panel.closest('.exp-card');
   if (!card) return;
   card.addEventListener('click', (e) => {
-    if (!enabled || e.target.closest('button, .switch, .exp-cfg-panel')) return;
+    const master = card.querySelector('.master-switch input');
+    if (!master || !master.checked || e.target.closest('button, .switch, .exp-cfg-panel')) return;
     const shown = panel.style.display !== 'none';
     panel.style.display = shown ? 'none' : 'block';
     if (shown) state.settingsOpen.delete(`${prefix}-cfg`);
@@ -510,7 +511,7 @@ function _bindLlamaEvents(llamaStatus) {
     updateSortDropdown();
   });
 
-  _bindCardToggle('llama', !!llamaStatus.enabled);
+  _bindCardToggle('llama');
 
   const autorun = $('#llama-autorun');
   if (autorun) autorun.addEventListener('change', () => _saveLlamaGlobals({ auto_run: autorun.checked }));
@@ -597,7 +598,7 @@ function _bindPixaiEvents(pStatus) {
     updateSortDropdown();
   });
 
-  _bindCardToggle('pixai', state.pixaiTaggerEnabled);
+  _bindCardToggle('pixai');
 
   ['#pixai-frames', '#pixai-short-side', '#pixai-threshold'].forEach(sel => {
     const el = $(sel);
@@ -743,7 +744,7 @@ function _bindWhisperEvents(wStatus) {
     scheduleExperimentalSave(true);
   });
 
-  _bindCardToggle('whisper', state.whisperEnabled);
+  _bindCardToggle('whisper');
 
   ['#whisper-language', '#whisper-workers', '#whisper-max-chars'].forEach(sel => {
     const el = $(sel);
@@ -2611,7 +2612,7 @@ function _bindRagVecEvents(rvStatus) {
       try { await apiCall('stop_rag_vec'); } catch (e) {}
     }
   });
-  _bindCardToggle('ragvec', state.ragVecEnabled);
+  _bindCardToggle('ragvec');
   ['#ragvec-threshold', '#ragvec-topn'].forEach(sel => {
     const el = $(sel);
     if (el) el.addEventListener('input', () => scheduleExperimentalSave());
