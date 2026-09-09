@@ -3,8 +3,16 @@
    ════════════════════════════════════════════════════════════ */
 let _pvTimer = null, _pvSeq = 0;
 
+async function pvLeaveGuard() {
+  if (!state.pvDirty) return true;
+  if (!await showConfirm('当前模板有未保存的修改，确定丢弃？', { okText: '丢弃修改' })) return false;
+  state.pvDirty = false;
+  return true;
+}
+
 function renderPromptsTab(presets, activePreset) {
   const body = $('#modal-body');
+  state.pvDirty = false;
   const isCustom = activePreset.id.startsWith('custom_');
   const canSave = isCustom;
   body.innerHTML = `
@@ -82,11 +90,18 @@ function renderPromptsTab(presets, activePreset) {
       });
     }, 250);
   }
-  body.querySelectorAll('[data-field]').forEach(el => el.addEventListener('input', updatePreview));
+  body.querySelectorAll('[data-field]').forEach(el => el.addEventListener('input', () => {
+    state.pvDirty = true;
+    updatePreview();
+  }));
   updatePreview();
 
   initDropdown($('#preset-select'), async (val) => {
     if (val === state.active_preset_id) return;
+    if (!await pvLeaveGuard()) {
+      setDropdownValue($('#preset-select'), state.active_preset_id);
+      return;
+    }
     const r = await callApi('set_active_preset', val);
     if (!r) return;
     if (!r.ok) { toast(r.error || '启用失败', 'err'); return; }
@@ -106,6 +121,7 @@ function renderPromptsTab(presets, activePreset) {
     const res = await callApi('save_preset', data);
     if (!res) return;
     if (res.ok) {
+      state.pvDirty = false;
       toast('已保存为新模板', 'ok');
       await callApi('set_active_preset', res.id);
       state.active_preset_id = res.id;
@@ -118,6 +134,7 @@ function renderPromptsTab(presets, activePreset) {
     const res = await callApi('save_preset', collectPresetData(activePreset.name));
     if (!res) return;
     if (res.ok) {
+      state.pvDirty = false;
       toast('模板已保存', 'ok');
       await callApi('set_active_preset', res.id);
       state.active_preset_id = res.id;
@@ -138,6 +155,7 @@ function renderPromptsTab(presets, activePreset) {
     const r = await callApi('delete_preset', sel);
     if (!r) return;
     if (r.ok) {
+      state.pvDirty = false;
       const presets2 = await callApi('list_presets');
       const active2 = await callApi('get_active_preset');
       if (presets2 && active2) renderPromptsTab(presets2, active2.preset);

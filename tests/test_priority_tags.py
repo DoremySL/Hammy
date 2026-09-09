@@ -7,7 +7,8 @@ import unittest
 from unittest import mock
 
 from gui_app import prompts
-from gui_app.prompts import normalize_priority_items, load_priority_tags, save_priority_tags
+from gui_app.prompts import (normalize_priority_items, load_priority_tags,
+                             save_priority_tags, normalize_disabled_groups)
 
 
 class TestNormalizePriorityItems(unittest.TestCase):
@@ -27,6 +28,57 @@ class TestNormalizePriorityItems(unittest.TestCase):
 
     def test_non_list(self):
         self.assertEqual(normalize_priority_items("nope"), [])
+
+
+class TestNormalizeDisabledGroups(unittest.TestCase):
+    def test_dedup_and_strip(self):
+        self.assertEqual(normalize_disabled_groups([" a ", "a", "", None, "b"]),
+                         ["a", "", "b"])
+
+    def test_non_list(self):
+        self.assertEqual(normalize_disabled_groups("a"), [])
+        self.assertEqual(normalize_disabled_groups(None), [])
+
+
+class TestDisabledGroupsRoundtrip(unittest.TestCase):
+    """黑名单往返：空串代表默认分组；残留组名在保存时清理。"""
+
+    def _save_and_load(self, items, disabled):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        pt_file = Path(tmp.name) / "priority_tags.json"
+        with mock.patch.object(prompts, "PRIORITY_TAGS_FILE", pt_file):
+            save_priority_tags(items, "enhanced", disabled)
+            disk = json.loads(pt_file.read_text(encoding="utf-8"))
+            loaded = load_priority_tags()
+        return disk, loaded
+
+    def test_roundtrip_keeps_live_groups(self):
+        items = [{"keyword": "a", "group": "画质"}, {"keyword": "b", "group": ""}]
+        disk, loaded = self._save_and_load(items, ["画质", ""])
+        self.assertEqual(disk["disabled_groups"], ["画质", ""])
+        self.assertEqual(loaded["disabled_groups"], ["画质", ""])
+
+    def test_stale_groups_pruned_on_save(self):
+        items = [{"keyword": "a", "group": "画质"}]
+        disk, loaded = self._save_and_load(items, ["画质", "已删组", ""])
+        self.assertEqual(disk["disabled_groups"], ["画质"])
+        self.assertEqual(loaded["disabled_groups"], ["画质"])
+
+    def test_default_param_empty(self):
+        disk, _ = self._save_and_load([{"keyword": "a", "group": ""}], "on")
+        self.assertEqual(disk["disabled_groups"], [])
+
+    def test_load_legacy_file_without_field(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        pt_file = Path(tmp.name) / "priority_tags.json"
+        pt_file.write_text(json.dumps({"mode": "on", "items": [{"keyword": "a"}]}),
+                           encoding="utf-8")
+        with mock.patch.object(prompts, "PRIORITY_TAGS_FILE", pt_file):
+            loaded = load_priority_tags()
+        self.assertEqual(loaded["disabled_groups"], [])
+        self.assertEqual(loaded["items"][0]["keyword"], "a")
 
 
 class TestSaveLoadRoundtrip(unittest.TestCase):
@@ -82,7 +134,8 @@ class TestSaveLoadRoundtrip(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         with mock.patch.object(prompts, "PRIORITY_TAGS_FILE",
                                Path(tmp.name) / "absent.json"):
-            self.assertEqual(load_priority_tags(), {"mode": "off", "items": []})
+            self.assertEqual(load_priority_tags(),
+                             {"mode": "off", "disabled_groups": [], "items": []})
 
     def test_corrupt_file_defaults_off(self):
         tmp = tempfile.TemporaryDirectory()
@@ -90,7 +143,8 @@ class TestSaveLoadRoundtrip(unittest.TestCase):
         pt_file = Path(tmp.name) / "priority_tags.json"
         pt_file.write_text("not json", encoding="utf-8")
         with mock.patch.object(prompts, "PRIORITY_TAGS_FILE", pt_file):
-            self.assertEqual(load_priority_tags(), {"mode": "off", "items": []})
+            self.assertEqual(load_priority_tags(),
+                             {"mode": "off", "disabled_groups": [], "items": []})
 
 
 if __name__ == "__main__":

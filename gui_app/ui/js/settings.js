@@ -25,8 +25,14 @@ async function openSettings(tab) {
   $('#modal').classList.add('show');
   renderSettings();
 }
+async function settingsLeaveGuard() {
+  if (state.settings_tab === 'tags' && !await ptLeaveGuard()) return false;
+  if (state.settings_tab === 'prompts' && !await pvLeaveGuard()) return false;
+  return true;
+}
+
 async function closeSettings() {
-  if (state.settings_tab === 'tags' && window.ptLeaveGuard && !await ptLeaveGuard()) return;
+  if (!await settingsLeaveGuard()) return;
   flushPendingConfigSave();
   flushPendingExperimentalSave();
   flushPendingLlamaSave();
@@ -44,7 +50,7 @@ document.addEventListener('keydown', e => {
 $$('#settings-tabs .tab').forEach(t => {
   t.addEventListener('click', async () => {
     if (t.dataset.settingsTab === state.settings_tab) return;
-    if (state.settings_tab === 'tags' && window.ptLeaveGuard && !await ptLeaveGuard()) return;
+    if (!await settingsLeaveGuard()) return;
     flushPendingConfigSave();
     flushPendingExperimentalSave();
     flushPendingLlamaSave();

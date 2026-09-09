@@ -392,6 +392,10 @@ class PipelineRunner:
                     else:
                         extra_meta_map[vp] = txt
                 pt = prompts.load_priority_tags()
+                # 停用组过滤：黑名单命中组的条目不进入检索（"" 为默认分组）
+                pt_disabled = set(pt["disabled_groups"])
+                pt_items = [it for it in pt["items"] if it["group"] not in pt_disabled]
+                pt_skipped = len(pt["items"]) - len(pt_items)
                 dense = None
                 pt_mode = pt["mode"]
                 if engine_cfg.rag_vec_enabled and pt_mode == "enhanced":
@@ -404,7 +408,7 @@ class PipelineRunner:
                     else:
                         engine_logger.info("[RAG] 向量检索已启用但 st-embedding 未就绪，"
                                            "本次仅词面召回")
-                tag_recall = TagRecall(items=pt["items"],
+                tag_recall = TagRecall(items=pt_items,
                                        # GUI 三档值 → TagRecall 内部模式（on=全量注入，enhanced=两轮召回）
                                        mode={"off": "off", "on": "full",
                                              "enhanced": "rag"}[pt_mode],
@@ -422,8 +426,11 @@ class PipelineRunner:
                 if tag_recall.mode != "off":
                     mode_label = {"full": "开启（单轮全量注入）",
                                   "rag": "增强（两轮+召回）"}[tag_recall.mode]
+                    skip_note = f"（停用组跳过 {pt_skipped} 条）" if pt_skipped else ""
                     engine_logger.info(
-                        f"[RAG] 标签检索模式: {mode_label} | 标签库 {tag_recall.total_items} 条")
+                        f"[RAG] 标签检索模式: {mode_label} | 标签库 {tag_recall.total_items} 条{skip_note}")
+                elif pt_mode != "off":
+                    engine_logger.info("[RAG] 标签检索已开启但启用组内无标签，本次不注入")
                 pipeline = BatchPipeline(
                     paths, engine_cfg, self._client, self._stop,
                     on_file_done=_emit_file_done,

@@ -500,7 +500,7 @@ function _bindLlamaEvents(llamaStatus) {
   if (llamaToggle) llamaToggle.addEventListener('change', async () => {
     const r = await apiCall('set_llama_enabled', llamaToggle.checked);
     if (r && r.ok === false) {
-      toast('停用本地推理服务出错: ' + (r.error || ''), 'err');
+      toast((llamaToggle.checked ? '启用' : '停用') + '本地推理服务出错: ' + (r.error || ''), 'err');
       llamaToggle.checked = !llamaToggle.checked;
       return;
     }

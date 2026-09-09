@@ -225,7 +225,7 @@ def normalize_priority_items(items: Any) -> List[Dict[str, str]]:
     """规范化标签检索列表：剔除非 dict 与空关键词；其余字段去首尾空格。
 
     related 为逗号分隔的关联词字符串（供字面与向量检索，不注入提示词）；
-    group 为显示分组（仅供展示与筛选，不参与检索召回）。
+    group 为显示分组（仅供展示与筛选；停用组的过滤在 runner 层做）。
     """
     out: List[Dict[str, str]] = []
     if not isinstance(items, list):
@@ -245,27 +245,50 @@ def normalize_priority_items(items: Any) -> List[Dict[str, str]]:
     return out
 
 
+def normalize_disabled_groups(value: Any) -> List[str]:
+    """分组停用黑名单：去重去空格；空串条目代表默认分组。"""
+    if not isinstance(value, list):
+        return []
+    out: List[str] = []
+    for g in value:
+        g = str(g if g is not None else "").strip()
+        if g not in out:
+            out.append(g)
+    return out
+
+
 def load_priority_tags() -> Dict[str, Any]:
     """读取 _workspace/priority_tags.json；不存在/结构非法返回默认。
 
-    mode ∈ off/on/enhanced（关闭 / 开启=单轮全量注入 / 增强=两轮召回）。
+    mode ∈ off/on/enhanced（关闭 / 开启=单轮全量注入 / 增强=两轮召回）；
+    disabled_groups 为停用分组黑名单（命中组的条目不参与检索）。
     """
     data = read_json(PRIORITY_TAGS_FILE, None)
     mode = ""
     items: List[Dict[str, str]] = []
+    disabled_groups: List[str] = []
     if isinstance(data, dict):
         mode = str(data.get("mode") or "").strip().lower()
         items = normalize_priority_items(data.get("items", []))
+        disabled_groups = normalize_disabled_groups(data.get("disabled_groups", []))
     if mode not in ("off", "on", "enhanced"):
         mode = "off"
-    return {"mode": mode, "items": items}
+    return {"mode": mode, "disabled_groups": disabled_groups, "items": items}
 
 
-def save_priority_tags(items: Any, mode: Any) -> Dict[str, Any]:
-    """保存标签检索到 _workspace/priority_tags.json（mode ∈ off/on/enhanced）。"""
+def save_priority_tags(items: Any, mode: Any,
+                       disabled_groups: Any = None) -> Dict[str, Any]:
+    """保存标签检索到 _workspace/priority_tags.json（mode ∈ off/on/enhanced）。
+
+    黑名单只保留现存分组（含默认分组 ""），组被删空/改名后的残留条目顺手清理。
+    """
     m = str(mode or "").strip().lower()
+    norm_items = normalize_priority_items(items)
+    live = {it["group"] for it in norm_items}
+    dg = [g for g in normalize_disabled_groups(disabled_groups) if g in live]
     data = {"mode": m if m in ("off", "on", "enhanced") else "off",
-            "items": normalize_priority_items(items)}
+            "disabled_groups": dg,
+            "items": norm_items}
     write_json(PRIORITY_TAGS_FILE, data)
     return {"ok": True}
 

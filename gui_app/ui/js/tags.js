@@ -2,7 +2,7 @@
    设置 Modal - 标签检索页（双栏管理器，修改即时写盘）
    ════════════════════════════════════════════════════════════ */
 const _PT_MODE_HINT = {
-  off: '标签库不参与分析：不写入提示词，也不做检索。开启后会降低处理速度，增加 token 消耗。',
+  off: '关闭时标签库不参与分析：不写入提示词，也不做检索。开启后会降低处理速度，增加 token 消耗。',
   on: '全部标签一次性写入提示词，一次分析完成；标签很多时会撑大提示词、引入幻觉，拖慢分析，适合小标签库。',
   enhanced: '先做一轮不带标签的分析，再按结果从标签库挑出候选标签，让 AI 第二轮修订，适合大标签库。',
 };
@@ -21,7 +21,7 @@ function ptAllGroups(items) {
 }
 
 async function persistPriorityTags() {
-  const r = await callApi('save_priority_tags', state.ptItems, state.ptMode);
+  const r = await callApi('save_priority_tags', state.ptItems, state.ptMode, [...state.ptDisabled]);
   if (!r || !r.ok) {
     toast('保存失败: ' + ((r && r.error) || '未知错误'), 'err');
     return false;
@@ -39,6 +39,7 @@ async function ptLeaveGuard() {
 function renderTagsTab(pt) {
   state.ptItems = ptNormItems(pt.items);
   state.ptMode = ['off', 'on', 'enhanced'].includes(pt.mode) ? pt.mode : 'off';
+  state.ptDisabled = new Set(pt.disabled_groups || []);
   state.ptSelected = new Set();
   state.ptSelAnchor = null;
   state.ptSearch = '';
@@ -88,29 +89,81 @@ function renderTagsTab(pt) {
     renderTagRows();
   });
   ptRenderGroupDd();
+  ptBindGroupDd($('#pt-group-dd'));
   $('#btn-pt-import').onclick = importTags;
   $('#btn-pt-export').onclick = exportTags;
   renderTagRows();
   ptRenderEditor();
 }
 
+function ptGroupDdRow(val, label, group) {
+  const off = state.ptDisabled.has(group);
+  return `<div class="dd-opt${state.ptGroupFilter === val ? ' active' : ''}${off ? ' grp-off' : ''}"` +
+    ` data-value="${esc(val)}" data-toggle-group="${esc(group)}" title="右键启用/停用该分组">` +
+    `<span class="pt-g-label">${esc(label)}</span><span class="pt-g-dot${off ? ' off' : ''}"></span></div>`;
+}
+
+function ptGroupDdOptions() {
+  return ['<div class="dd-opt' + (state.ptGroupFilter === '' ? ' active' : '') + '" data-value="">全部标签</div>',
+    ptGroupDdRow('__default__', '默认分组', ''),
+    ...ptAllGroups(state.ptItems).map(g => ptGroupDdRow(g, g, g)),
+    '<div class="dd-hint">右键分组行：启用 / 停用（停用组不参与检索）</div>'].join('');
+}
+
 function ptRenderGroupDd() {
   const dd = $('#pt-group-dd');
   if (!dd) return;
-  const groups = ptAllGroups(state.ptItems);
-  const opts = ['<div class="dd-opt active" data-value="">全部标签</div>',
-    `<div class="dd-opt" data-value="__default__">默认分组</div>`,
-    ...groups.map(g => `<div class="dd-opt" data-value="${esc(g)}">${esc(g)}</div>`)].join('');
   const curLabel = state.ptGroupFilter === '' ? '全部标签'
     : state.ptGroupFilter === '__default__' ? '默认分组' : state.ptGroupFilter;
   dd.innerHTML = `<button class="dd-btn" type="button"><span class="dd-label">${esc(curLabel)}</span>${ddArrow()}</button>
-    <div class="dd-panel">${opts}</div>`;
-  initDropdown(dd, v => {
-    state.ptGroupFilter = v;
+    <div class="dd-panel">${ptGroupDdOptions()}</div>`;
+}
+
+function ptBindGroupDd(dd) {
+  if (!dd) return;
+  dd.addEventListener('click', e => {
+    if (e.target.closest('.dd-btn')) {
+      e.stopPropagation();
+      const wasOpen = dd.classList.contains('open');
+      $$('.dd.open').forEach(d => d.classList.remove('open'));
+      if (!wasOpen) {
+        _positionPanel(dd);
+        dd.classList.add('open');
+      }
+      return;
+    }
+    const opt = e.target.closest('.dd-opt');
+    if (!opt || !dd.contains(opt) || opt.classList.contains('disabled')) return;
+    e.stopPropagation();
+    state.ptGroupFilter = opt.dataset.value;
     dd.querySelector('.dd-label').textContent =
-      v === '' ? '全部标签' : v === '__default__' ? '默认分组' : v;
+      opt.dataset.value === '' ? '全部标签'
+        : opt.dataset.value === '__default__' ? '默认分组' : opt.dataset.value;
+    dd.querySelectorAll('.dd-opt').forEach(o => o.classList.toggle('active', o === opt));
+    dd.classList.remove('open');
     renderTagRows();
   });
+  dd.addEventListener('contextmenu', e => {
+    const opt = e.target.closest('.dd-opt[data-toggle-group]');
+    if (!opt || !dd.contains(opt)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    ptToggleGroup(opt.dataset.toggleGroup);
+  });
+}
+
+async function ptToggleGroup(g) {
+  const old = new Set(state.ptDisabled);
+  const next = new Set(old);
+  next.has(g) ? next.delete(g) : next.add(g);
+  state.ptDisabled = next;
+  if (!await persistPriorityTags()) {
+    state.ptDisabled = old;
+    return;
+  }
+  const dd = $('#pt-group-dd');
+  if (dd) dd.querySelector('.dd-panel').innerHTML = ptGroupDdOptions();
+  renderTagRows();
 }
 
 function ptFilteredIndices() {
@@ -144,7 +197,7 @@ function renderTagRows() {
         const next = p + 1 < idxs.length && selFlags[p + 1];
         runCls = prev && next ? ' sel-mid' : next ? ' sel-start' : prev ? ' sel-end' : '';
       }
-      return `<div class="pt-item${selFlags[p] ? ' selected' : ''}${runCls}${i === state.ptEditIdx && !state.ptAddMode ? ' editing' : ''}" data-i="${i}">` +
+      return `<div class="pt-item${selFlags[p] ? ' selected' : ''}${runCls}${i === state.ptEditIdx && !state.ptAddMode ? ' editing' : ''}${state.ptDisabled.has(it.group) ? ' grp-off' : ''}" data-i="${i}">` +
         `<span class="pt-kw">${esc(it.keyword)}</span>` +
         (sub ? `<span class="pt-desc" data-tip="${esc(sub)}">${esc(sub)}</span>` : '') +
         `</div>`;
@@ -156,7 +209,15 @@ function renderTagRows() {
     });
   }
   const cnt = $('#pt-count');
-  if (cnt) cnt.textContent = state.ptItems.length ? `共 ${state.ptItems.length} 个` : '';
+  if (cnt) {
+    let txt = state.ptItems.length ? `共 ${state.ptItems.length} 个` : '';
+    const gs = new Set(state.ptItems.map(x => x.group));
+    if (gs.size > 1 || state.ptDisabled.size) {
+      const on = [...gs].filter(g => !state.ptDisabled.has(g)).length;
+      txt += (txt ? ' · ' : '') + `${on}/${gs.size} 组启用`;
+    }
+    cnt.textContent = txt;
+  }
 }
 
 function ptRowClick(e, idx) {
@@ -245,16 +306,20 @@ function ptSyncEditorGroupDd(group) {
 function ptBuildFields(container, it) {
   container.innerHTML = `
     <div class="field"><label>关键词</label><input type="text" id="pt-f-kw" value="${esc(it.keyword || '')}" spellcheck="false"/></div>
-    <div class="field"><label>描述 <span class="pt-lbl-hint">增强模式下作为候选标签的判断依据</span></label><textarea id="pt-f-desc" rows="6">${esc(it.description || '')}</textarea></div>
+    <div class="field"><label>描述 <span class="pt-lbl-hint">将连同关键词一起发送给AI</span></label><textarea id="pt-f-desc" rows="6">${esc(it.description || '')}</textarea></div>
     <div class="field"><label>关联 <span class="pt-lbl-hint">不开启嵌入模型时的字面检索，逗号分隔；向量检索同样生效</span></label><input type="text" id="pt-f-related" value="${esc(it.related || '')}" spellcheck="false"/></div>
     <div class="tag-ed-group">
-      <div class="field"><label>分组 <span class="pt-lbl-hint">仅供显示，不参与检索</span></label>
+      <div class="field"><label>分组</label>
         <div class="dd" id="pt-f-group"><button class="dd-btn" type="button"><span class="dd-label">${esc(it.group || '默认分组')}</span>${ddArrow()}</button>
           <div class="dd-panel">${ptGroupOptions(it.group || '')}</div></div>
       </div>
       <div class="field"><label>新分组</label><input type="text" id="pt-f-newgroup" placeholder="输入即新建分组" spellcheck="false"/></div>
     </div>`;
-  initDropdown(container.querySelector('#pt-f-group'), () => ptMarkDirty(container));
+  initDropdown(container.querySelector('#pt-f-group'), () => {
+    const ng = container.querySelector('#pt-f-newgroup');
+    if (ng && ng.value) ng.value = '';
+    ptMarkDirty(container);
+  });
   ['input', 'change'].forEach(ev => container.addEventListener(ev, e => {
     if (e.target.closest('#pt-editor, .pt-editor')) ptMarkDirty(container);
   }));
@@ -366,34 +431,42 @@ async function ptApplyEdit() {
   toast(`已保存: ${f.keyword}`, 'ok');
 }
 
-function collectTagsData() {
-  return { mode: state.ptMode || 'off', items: ptNormItems(state.ptItems) };
-}
-
 async function importTags() {
   const res = await callApi('import_priority_tags');
   if (!res || res.cancelled) return;
   if (!res.ok) { toast('导入失败: ' + (res.error || ''), 'err'); return; }
+  const incoming = ptNormItems(res.items);
+  const existing = new Set(state.ptItems.map(x => x.keyword.toLowerCase()));
+  const fresh = [];
+  for (const it of incoming) {
+    const key = it.keyword.toLowerCase();
+    if (existing.has(key)) continue;
+    existing.add(key);
+    fresh.push(it);
+  }
+  if (!fresh.length) { toast('没有可导入的新标签（关键词均已存在）', 'err'); return; }
+  const skipped = incoming.length - fresh.length;
   if (state.ptItems.length &&
-      !await showConfirm(`导入将覆盖当前 ${state.ptItems.length} 个标签，确定继续？`, { okText: '覆盖导入' })) return;
+      !await showConfirm(`将追加 ${fresh.length} 个新标签${skipped ? `（跳过已存在 ${skipped} 个）` : ''}，确定继续？`, { okText: '追加导入' })) return;
   const before = state.ptItems;
-  state.ptItems = ptNormItems(res.items);
+  state.ptItems = [...fresh, ...before];
   if (!await persistPriorityTags()) {
     state.ptItems = before;
     return;
   }
+  state.ptSelected.clear();
+  state.ptSelAnchor = null;
   state.ptEditIdx = -1;
   state.ptAddMode = true;
   state.ptDirty = false;
   ptRenderGroupDd();
   renderTagRows();
   ptRenderEditor();
-  toast(`已导入 ${state.ptItems.length} 个标签`, 'ok');
+  toast(`已导入 ${fresh.length} 个新标签`, 'ok');
 }
 
 async function exportTags() {
-  const d = collectTagsData();
-  const res = await callApi('export_priority_tags', d.mode, d.items);
+  const res = await callApi('export_priority_tags', ptNormItems(state.ptItems));
   if (!res || res.cancelled) return;
   if (res.ok) toast('已导出到: ' + (res.path || ''), 'ok');
   else toast('导出失败: ' + (res.error || ''), 'err');
@@ -449,7 +522,7 @@ async function openTagAddToSearch(name, asRelated) {
     items.unshift({ keyword: f.keyword, description: f.description, related: f.related, group: f.group });
     const saveBtn = bg.querySelector('#pt-add-save');
     saveBtn.disabled = true;
-    const r = await callApi('save_priority_tags', items, cur.mode || 'off');
+    const r = await callApi('save_priority_tags', items, cur.mode || 'off', cur.disabled_groups || []);
     if (r && r.ok) {
       bg.remove();
       toast(`已加入标签检索: ${f.keyword}`, 'ok');

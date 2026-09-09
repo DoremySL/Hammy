@@ -676,6 +676,13 @@
   .tag-left-bar .dd-btn:hover,.tag-left-bar .dd.open .dd-btn{border-color:var(--accent)}
   .tag-left-bar .dd-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .tag-left-bar .dd-panel{min-width:130px}
+  .tag-left-bar .dd-opt[data-toggle-group]{display:flex;align-items:center;justify-content:space-between;gap:14px}
+  .pt-g-dot{width:8px;height:8px;border-radius:50%;background:var(--ok);flex-shrink:0}
+  .pt-g-dot.off{background:var(--border-strong)}
+  .dd-opt.grp-off .pt-g-label{color:var(--faint);text-decoration:line-through}
+  .dd-hint{padding:5px 12px 4px;font-size:10.5px;color:var(--faint);border-top:1px solid var(--border);
+    margin-top:4px;white-space:nowrap}
+  .pt-item.grp-off .pt-kw,.pt-item.grp-off .pt-desc{opacity:.45}
   .tag-seg{flex:1;display:flex;align-items:stretch;border:1px solid var(--border-strong);
     border-radius:var(--r-md);background:var(--panel-2);overflow:hidden}
   .tag-seg button{flex:1;border:none;background:transparent;color:var(--muted);
