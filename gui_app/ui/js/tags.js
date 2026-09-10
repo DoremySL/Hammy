@@ -1,12 +1,6 @@
 /* ════════════════════════════════════════════════════════════
    设置 Modal - 标签检索页（双栏管理器，修改即时写盘）
    ════════════════════════════════════════════════════════════ */
-const _PT_MODE_HINT = {
-  off: '关闭时标签库不参与分析：不写入提示词，也不做检索。开启后会降低处理速度，增加 token 消耗。',
-  on: '全部标签一次性写入提示词，一次分析完成；标签很多时会撑大提示词、引入幻觉，拖慢分析，适合小标签库。',
-  enhanced: '先做一轮不带标签的分析，再按结果从标签库挑出候选标签，让 AI 第二轮修订，适合大标签库。',
-};
-
 function ptNormItems(items) {
   return (items || []).map(x => ({
     keyword: x.keyword || '',
@@ -50,26 +44,26 @@ function renderTagsTab(pt) {
   const body = $('#modal-body');
   body.innerHTML = `
     <div class="tag-mgr">
-      <div class="tag-head">
-        <span id="pt-mode-seg" class="mode-switch">
-          <button type="button" class="pill clickable${state.ptMode === 'off' ? ' active' : ''}" data-mode="off">关闭</button>
-          <span class="pill-sep"></span>
-          <button type="button" class="pill clickable${state.ptMode === 'on' ? ' active' : ''}" data-mode="on">开启</button>
-          <span class="pill-sep"></span>
-          <button type="button" class="pill clickable${state.ptMode === 'enhanced' ? ' active' : ''}" data-mode="enhanced">增强</button>
-        </span>
-        <span class="help" style="margin:0" id="pt-mode-hint">${_PT_MODE_HINT[state.ptMode]}</span>
-        <span class="tag-count" id="pt-count"></span>
-      </div>
       <div class="tag-cols">
         <div class="tag-left">
-          <input type="text" id="pt-search" placeholder="搜索标签、描述或关联词…" spellcheck="false"/>
-          <div class="tag-left-bar">
-            <div class="dd" id="pt-group-dd"></div>
+          <div class="tag-left-top">
+            <span id="pt-mode-seg" class="mode-switch">
+              <button type="button" class="pill clickable${state.ptMode === 'off' ? ' active' : ''}" data-mode="off">关闭</button>
+              <span class="pill-sep"></span>
+              <button type="button" class="pill clickable${state.ptMode === 'on' ? ' active' : ''}" data-mode="on">开启</button>
+              <span class="pill-sep"></span>
+              <button type="button" class="pill clickable${state.ptMode === 'enhanced' ? ' active' : ''}" data-mode="enhanced">增强</button>
+            </span>
             <div class="tag-seg">
               <button type="button" id="btn-pt-import">导入</button>
               <button type="button" id="btn-pt-export">导出</button>
             </div>
+          </div>
+          <div class="search-widget pt-search-widget" id="ptSearchWidget">
+            <div class="dd search-mode" id="pt-group-dd"></div>
+            <span class="search-sep"></span>
+            <input type="text" id="pt-search" placeholder="搜索标签、描述或关联词…" spellcheck="false"/>
+            <button type="button" id="btn-pt-clear-search" data-tip="清除"><svg class="ic"><use href="#ic-close"></use></svg></button>
           </div>
           <div class="tag-list-wrap"><div class="pt-list" id="pt-list"></div></div>
         </div>
@@ -80,13 +74,19 @@ function renderTagsTab(pt) {
     if (state.ptMode === p.dataset.mode) return;
     state.ptMode = p.dataset.mode;
     $$('#pt-mode-seg .pill').forEach(x => x.classList.toggle('active', x.dataset.mode === state.ptMode));
-    const hint = $('#pt-mode-hint');
-    if (hint) hint.textContent = _PT_MODE_HINT[state.ptMode] || '';
     await persistPriorityTags();
   }));
   $('#pt-search').addEventListener('input', e => {
     state.ptSearch = e.target.value.trim().toLowerCase();
+    $('#ptSearchWidget').classList.toggle('has-text', !!e.target.value);
     renderTagRows();
+  });
+  $('#btn-pt-clear-search').addEventListener('click', () => {
+    state.ptSearch = '';
+    $('#pt-search').value = '';
+    $('#ptSearchWidget').classList.remove('has-text');
+    renderTagRows();
+    $('#pt-search').focus();
   });
   ptRenderGroupDd();
   ptBindGroupDd($('#pt-group-dd'));
@@ -99,7 +99,7 @@ function renderTagsTab(pt) {
 function ptGroupDdRow(val, label, group) {
   const off = state.ptDisabled.has(group);
   return `<div class="dd-opt${state.ptGroupFilter === val ? ' active' : ''}${off ? ' grp-off' : ''}"` +
-    ` data-value="${esc(val)}" data-toggle-group="${esc(group)}" title="右键启用/停用该分组">` +
+    ` data-value="${esc(val)}" data-toggle-group="${esc(group)}" data-tip="右键启用/停用该分组">` +
     `<span class="pt-g-label">${esc(label)}</span><span class="pt-g-dot${off ? ' off' : ''}"></span></div>`;
 }
 
@@ -207,16 +207,6 @@ function renderTagRows() {
       el.addEventListener('click', e => ptRowClick(e, i));
       el.addEventListener('contextmenu', e => ptRowMenu(e, i));
     });
-  }
-  const cnt = $('#pt-count');
-  if (cnt) {
-    let txt = state.ptItems.length ? `共 ${state.ptItems.length} 个` : '';
-    const gs = new Set(state.ptItems.map(x => x.group));
-    if (gs.size > 1 || state.ptDisabled.size) {
-      const on = [...gs].filter(g => !state.ptDisabled.has(g)).length;
-      txt += (txt ? ' · ' : '') + `${on}/${gs.size} 组启用`;
-    }
-    cnt.textContent = txt;
   }
 }
 

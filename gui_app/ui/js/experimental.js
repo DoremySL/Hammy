@@ -1058,7 +1058,7 @@ function _wRowHtml(m) {
   return `<div class="wm-row">
     <div class="wm-main">
       <div class="wm-name">${esc(m.title)}${m.recommended ? '<span class="mirror-rec-badge">推荐</span>' : ''}</div>
-      <div class="wm-desc" title="${esc(m.repo || '')}">${esc(m.desc || '')} · ${esc(m.size_label || '')}${isInst ? '' : ' · ' + esc(m.repo || '')}</div>
+      <div class="wm-desc" data-tip="${esc(m.repo || '')}" data-tip-trunc>${esc(m.desc || '')} · ${esc(m.size_label || '')}${isInst ? '' : ' · ' + esc(m.repo || '')}</div>
     </div>
     <div class="wm-right">${badge}${action}</div>
   </div>`;
@@ -2740,7 +2740,7 @@ function _rvRowHtml(m) {
   return `<div class="wm-row">
     <div class="wm-main">
       <div class="wm-name">${esc(m.title)}${m.recommended ? '<span class="mirror-rec-badge">推荐</span>' : ''}</div>
-      <div class="wm-desc" title="${esc(m.repo || '')}">${esc(m.desc || '')} · ${esc(m.size_label || '')}${isInst ? '' : ' · ' + esc(m.repo || '')}</div>
+      <div class="wm-desc" data-tip="${esc(m.repo || '')}" data-tip-trunc>${esc(m.desc || '')} · ${esc(m.size_label || '')}${isInst ? '' : ' · ' + esc(m.repo || '')}</div>
     </div>
     <div class="wm-right">${badge}${action}</div>
   </div>`;

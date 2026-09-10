@@ -16,22 +16,24 @@ function renderPromptsTab(presets, activePreset) {
   const isCustom = activePreset.id.startsWith('custom_');
   const canSave = isCustom;
   body.innerHTML = `
-    <div class="preset-bar">
+    <div class="preset-wrap">
       <input type="hidden" id="preset-editing-id" value="${esc(activePreset.id)}"/>
-      <div class="dd" id="preset-select" data-tip="选择模板即启用，下方编辑区随之切换">
-        <button class="dd-btn"><span class="dd-label">${esc(activePreset.name)}</span>${ddArrow()}</button>
-        <div class="dd-panel">
-          ${presets.map(p => `<div class="dd-opt${p.id === activePreset.id ? ' active' : ''}" data-value="${esc(p.id)}">${esc(p.name)}</div>`).join('')}
+      <div class="preset-hero">
+        <div class="dd" id="preset-select" data-tip="选择模板即启用，下方编辑区随之切换">
+          <button class="dd-btn"><span class="dd-label">${esc(activePreset.name)}</span>${ddArrow()}</button>
+          <div class="dd-panel">
+            ${presets.map(p => `<div class="dd-opt${p.id === activePreset.id ? ' active' : ''}" data-value="${esc(p.id)}">${esc(p.name)}</div>`).join('')}
+          </div>
+        </div>
+        <span class="exp-badge warn" id="pv-dirty-badge" style="display:none">未保存</span>
+        <div class="preset-hero-actions">
+          <button class="ws-btn" id="btn-save-as-preset">保存为新模板</button>
+          <button class="ws-btn danger" id="btn-delete-preset" ${canSave ? '' : 'disabled'}>删除</button>
+          <button class="ws-btn primary" id="btn-save-preset" ${canSave ? '' : 'disabled'} data-tip="${canSave ? '保存对该模板的修改' : '内置模板不可保存，请「保存为新模板」'}">保存</button>
         </div>
       </div>
-      <span class="preset-bar-actions">
-        <button class="btn sm" id="btn-save-preset" ${canSave ? '' : 'disabled'} data-tip="${canSave ? '保存对该模板的修改' : '内置模板不可保存，请「保存为新模板」'}">保存</button>
-        <button class="btn sm" id="btn-save-as-preset">保存为新模板</button>
-        <button class="btn sm" id="btn-delete-preset" ${canSave ? '' : 'disabled'}>删除</button>
-      </span>
-    </div>
 
-    <div class="group">
+      <div class="group">
       <h3><span class="tip-text" data-tip="定义 AI 的角色与行为准则，作用于所有字段的生成。">系统提示词（System Prompt）</span></h3>
       <div class="field"><textarea id="preset-system_prompt" data-field="system_prompt" rows="5">${esc(activePreset.system_prompt || '')}</textarea></div>
     </div>
@@ -60,6 +62,7 @@ function renderPromptsTab(presets, activePreset) {
     <div class="group">
       <button class="disclosure" id="prompt-preview-toggle"><svg class="ic" style="width:12px;height:12px"><use href="#ic-play"/></svg> 预览：AI 收到的引导内容</button>
       <div class="prompt-preview" id="prompt-preview" style="display:none"><span class="readonly-tag">自动生成</span>...</div>
+    </div>
     </div>
   `;
 
@@ -92,6 +95,8 @@ function renderPromptsTab(presets, activePreset) {
   }
   body.querySelectorAll('[data-field]').forEach(el => el.addEventListener('input', () => {
     state.pvDirty = true;
+    const b = $('#pv-dirty-badge');
+    if (b) b.style.display = '';
     updatePreview();
   }));
   updatePreview();
