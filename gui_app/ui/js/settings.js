@@ -125,22 +125,19 @@ function animateModalBody() {
   body.classList.add('fade-in');
 }
 
-const CFG_FIELDS_BASIC = [
-  { group: 'AI 服务（基础）', noTitle: true, cols: 4, fields: [
+const CFG_FIELDS_AI = [
+  { group: 'AI 服务', noTitle: true, cols: 4, fields: [
     { sec: 'ai', key: 'model', label: '模型名称', type: 'text', span: 2, help: '需支持多模态', default: 'model' },
     { sec: 'ai', key: 'base_url', label: 'API 地址', type: 'url', span: 2, help: 'OpenAI 兼容 /v1', default: 'http://localhost:8080/v1' },
     { sec: 'ai', key: 'api_key', label: 'API 密钥', type: 'password', span: 2, help: '本地 AI 服务通常无需填写', default: 'not-needed' },
     { sec: 'ai', key: 'ai_workers', label: '并发数', type: 'number', min: 1, help: '同时发起的 AI 请求数，越大越快但更占内存/显存；开启本地推理集成后由「并发线程 -np」接管', default: 4 },
-  ]},
-];
-const CFG_FIELDS_AI_ADVANCED = [
-  { group: 'AI 服务（进阶）', noTitle: true, cols: 3, fields: [
+  ], divider: true, cols2: 3, fields2: [
     { sec: 'ai', key: 'max_tokens', label: '最大生成长度', type: 'number', min: 1, help: '单次 AI 输出的 Token 上限，改动提示词或开启思考时可按需加大', default: 3000 },
     { sec: 'ai', key: 'temperature', label: '温度', type: 'number', min: 0, max: 2, step: 0.1, help: '采样随机性，越高越有创意但可能偏离主题，越低越稳定', default: 0.6 },
     { sec: 'ai', key: 'top_p', label: 'Top-p', type: 'number', min: 0, max: 1, step: 0.05, help: '核采样阈值，与温度共同控制输出多样性', default: 0.8 },
     { sec: 'ai', key: 'retry_times', label: '重试次数', type: 'number', min: 0, help: '请求失败后的重试次数，重试之间会自动等待', default: 2 },
     { sec: 'ai', key: 'ai_timeout', label: '超时(秒)', type: 'number', min: 1, help: '单次 AI 请求的超时时间（秒），超时按失败重试', default: 300 },
-    { sec: 'ai', key: 'enforce_json_mode', label: 'JSON 模式', type: 'bool', help: '确保输出合法 JSON' },
+    { sec: 'ai', key: 'enforce_json_mode', label: 'JSON 模式', type: 'select', options: [['1', '开启'], ['0', '关闭']], default: '1', help: '确保输出合法 JSON' },
   ]},
 ];
 const CFG_FIELDS_PROCESSING = [
@@ -150,12 +147,10 @@ const CFG_FIELDS_PROCESSING = [
     { sec: 'video', key: 'frame_max_side', label: '长边像素', type: 'number', min: 64, help: '抽帧图片长边上限，仅缩小不放大', default: 640 },
     { sec: 'video', key: 'frame_time_tags', label: '时间标签', type: 'select', options: [['1', '添加时间标签'], ['2', '添加并用于优化缩略图'], ['0', '不添加标签']], default: '0', help: '每张截图前添加时间戳，帮助模型理解画面时间顺序；开启用于优化缩略图将提示模型给出最符合视频主题的截图时间戳，对模型能力有要求' },
   ]},
-  { group: '命名格式', noTitle: true, fields: [
+  { group: '命名与输出', noTitle: true, cols: 4, fields: [
     { sec: 'naming', key: 'include_date', label: '日期前缀', type: 'bool', help: '文件名前添加日期，降低重名几率' },
     { sec: 'naming', key: 'include_original', label: '初始文件名后缀', type: 'bool', help: '文件名末尾追加初始文件名，降低重名几率' },
-  ]},
-  { group: 'GUI 选项', noTitle: true, fields: [
-    { sec: '__gui', key: 'nfo_auto_export', label: '自动输出 NFO 至视频目录', type: 'bool', help: '开启后处理时直接写入视频目录；关闭则先存工作区，导出时再复制' },
+    { sec: '__gui', key: 'nfo_auto_export', label: '自动输出 NFO 至目录', type: 'bool', help: '开启后处理时直接写入视频目录；关闭则先存工作区，导出时再复制' },
     { sec: '__gui', key: 'force_animation', label: '默认启用动画', type: 'bool', help: '忽略系统「减弱动态效果」设置' },
   ]},
 ];
@@ -225,7 +220,7 @@ function renderConfigTab(cfg) {
   const body = $('#modal-body');
   body.innerHTML = '';
   const aiMasked = !!(state.llamaEnabled && state.llamaIntegration);
-  for (const g of CFG_FIELDS_BASIC) {
+  for (const g of CFG_FIELDS_AI) {
     const gd = renderCfgGroup(g, cfg);
     const btnField = document.createElement('div');
     btnField.className = 'field';
@@ -237,51 +232,31 @@ function renderConfigTab(cfg) {
     saveTestBtn.style.width = '100%';
     saveTestBtn.onclick = saveConfigAndTest;
     btnField.appendChild(saveTestBtn);
-    gd.querySelector('.grid-4').appendChild(btnField);
+    gd.querySelector('.grid-4, .grid-3, .grid-2').appendChild(btnField);
     if (aiMasked) {
       const w = gd.querySelector('input[data-key="ai_workers"]');
       if (w) {
         w.value = Math.max(1, Number(state.llamaParallel) || 1);
         w.disabled = true;
       }
+      const mainGrid = gd.querySelector('.grid-4, .grid-3, .grid-2');
       const wrap = document.createElement('div');
       wrap.className = 'ai-mask-wrap';
-      wrap.appendChild(gd);
+      gd.replaceChild(wrap, mainGrid);
+      wrap.appendChild(mainGrid);
       const mask = document.createElement('div');
       mask.className = 'ai-mask';
       mask.innerHTML =
         '<div class="ai-mask-title">' + icon('warning') + ' 已优先使用本地推理</div>' +
-        '<div class="ai-mask-sub">AI 请求改走本地服务，基础连接设置暂不生效，更多AI参数（温度、Top-p、生成长度等）依然生效。</div>';
+        '<div class="ai-mask-sub">AI 请求改走本地服务，基础连接设置暂不生效，下方的参数依然生效。</div>';
       wrap.appendChild(mask);
-      body.appendChild(wrap);
+      body.appendChild(gd);
     } else {
       body.appendChild(gd);
     }
   }
   for (const g of CFG_FIELDS_PROCESSING) {
     body.appendChild(renderCfgGroup(g, cfg));
-  }
-  const advWrap = document.createElement('div');
-  advWrap.className = 'group';
-  const advToggle = document.createElement('button');
-  advToggle.className = 'disclosure';
-  advToggle.innerHTML = '<svg class="ic" style="width:12px;height:12px"><use href="#ic-play"/></svg> 更多AI参数';
-  const advContent = document.createElement('div');
-  advContent.style.display = state.settingsOpen.has('cfg-adv') ? 'block' : 'none';
-  advContent.style.marginTop = '10px';
-  if (state.settingsOpen.has('cfg-adv')) advToggle.classList.add('open');
-  advToggle.onclick = () => {
-    const shown = advContent.style.display !== 'none';
-    advContent.style.display = shown ? 'none' : 'block';
-    advToggle.classList.toggle('open', !shown);
-    if (shown) state.settingsOpen.delete('cfg-adv');
-    else state.settingsOpen.add('cfg-adv');
-  };
-  advWrap.appendChild(advToggle);
-  advWrap.appendChild(advContent);
-  body.appendChild(advWrap);
-  for (const g of CFG_FIELDS_AI_ADVANCED) {
-    advContent.appendChild(renderCfgGroup(g, cfg));
   }
   if (state.settings_scroll_to === 'ai') {
     setTimeout(() => {
@@ -302,46 +277,56 @@ function renderCfgGroup(g, cfg) {
   const gd = document.createElement('div');
   gd.className = 'group';
   gd.innerHTML = g.noTitle ? '' : `<h3>${g.group}</h3>`;
-  const grid = document.createElement('div');
-  grid.className = g.cols === 4 ? 'grid-4' : (g.cols === 3 ? 'grid-3' : 'grid-2');
-  for (const f of g.fields) {
-    let val;
-    if (f.sec === '__gui') val = cfg[f.key];
-    else val = cfg[f.sec] ? cfg[f.sec][f.key] : '';
-    const field = document.createElement('div');
-    field.className = 'field';
-    if (f.full) field.style.gridColumn = '1 / -1';
-    else if (f.span) field.style.gridColumn = `span ${f.span}`;
-    if (f.type === 'bool') {
-      const on = (val === undefined || val === null || val === '') ? !!f.default : val;
-      const lbl = f.help ? `<span class="tip-text" data-tip="${esc(f.help)}">${f.label}</span>` : f.label;
-      field.innerHTML = `<label style="visibility:hidden" aria-hidden="true">.</label>` +
-        `<label class="switch" style="flex:1"><input type="checkbox" data-sec="${f.sec}" data-key="${f.key}" ${on ? 'checked' : ''}/> ${lbl}</label>`;
-    } else if (f.type === 'select') {
-      const raw = (val === undefined || val === null || val === '') ? f.default : val;
-      const cur = (raw === true || raw === '1') ? '1' : (raw === false || raw === '0') ? '0' : String(raw);
-      const opts = (f.options || []).map(([v, t]) =>
-        `<div class="dd-opt${cur === String(v) ? ' active' : ''}" data-value="${esc(v)}">${esc(t)}</div>`).join('');
-      const curLabel = ((f.options || []).find(([v]) => cur === String(v)) || [])[1] || '';
-      field.innerHTML = `<label ${f.help ? `data-tip="${esc(f.help)}"` : ''}>${f.label}</label>` +
-        `<div class="dd" data-bool="1" data-sec="${f.sec}" data-key="${f.key}" data-value="${esc(cur)}">` +
-        `<button class="dd-btn" type="button"><span class="dd-label">${esc(curLabel)}</span>${ddArrow()}</button>` +
-        `<div class="dd-panel">${opts}</div></div>`;
-      const dd = field.querySelector('.dd');
-      initDropdown(dd, v => { dd.dataset.value = v; scheduleConfigSave(true); });
-    } else {
-      const ph = f.default != null ? ` placeholder="${esc(String(f.default))}"` : '';
-      const a = `type="${f.type}" data-sec="${f.sec}" data-key="${f.key}" value="${esc(val == null ? '' : val)}"` +
-        (f.min != null ? ` min="${f.min}"` : '') + (f.max != null ? ` max="${f.max}"` : '') + (f.step != null ? ` step="${f.step}"` : '') + ph;
-      if (f.type === 'password') {
-        field.innerHTML = `<label ${f.help ? `data-tip="${esc(f.help)}"` : ''}>${f.label}</label><div class="input-wrap"><input ${a}/><button type="button" class="eye-btn" data-tip="显示/隐藏">${icon('eye')}</button></div>`;
+  const buildGrid = (fields, cols) => {
+    const grid = document.createElement('div');
+    grid.className = cols === 4 ? 'grid-4' : (cols === 3 ? 'grid-3' : 'grid-2');
+    for (const f of fields) {
+      let val;
+      if (f.sec === '__gui') val = cfg[f.key];
+      else val = cfg[f.sec] ? cfg[f.sec][f.key] : '';
+      const field = document.createElement('div');
+      field.className = 'field';
+      if (f.full) field.style.gridColumn = '1 / -1';
+      else if (f.span) field.style.gridColumn = `span ${f.span}`;
+      if (f.type === 'bool') {
+        const on = (val === undefined || val === null || val === '') ? !!f.default : val;
+        const lbl = f.help ? `<span class="tip-text" data-tip="${esc(f.help)}">${f.label}</span>` : f.label;
+        const align = fields.some(x => x.type !== 'bool') ? `<label style="visibility:hidden" aria-hidden="true">.</label>` : '';
+        field.innerHTML = align +
+          `<label class="switch" style="flex:1"><input type="checkbox" data-sec="${f.sec}" data-key="${f.key}" ${on ? 'checked' : ''}/> ${lbl}</label>`;
+      } else if (f.type === 'select') {
+        const raw = (val === undefined || val === null || val === '') ? f.default : val;
+        const cur = (raw === true || raw === '1') ? '1' : (raw === false || raw === '0') ? '0' : String(raw);
+        const opts = (f.options || []).map(([v, t]) =>
+          `<div class="dd-opt${cur === String(v) ? ' active' : ''}" data-value="${esc(v)}">${esc(t)}</div>`).join('');
+        const curLabel = ((f.options || []).find(([v]) => cur === String(v)) || [])[1] || '';
+        field.innerHTML = `<label ${f.help ? `data-tip="${esc(f.help)}"` : ''}>${f.label}</label>` +
+          `<div class="dd" data-bool="1" data-sec="${f.sec}" data-key="${f.key}" data-value="${esc(cur)}">` +
+          `<button class="dd-btn" type="button"><span class="dd-label">${esc(curLabel)}</span>${ddArrow()}</button>` +
+          `<div class="dd-panel">${opts}</div></div>`;
+        const dd = field.querySelector('.dd');
+        initDropdown(dd, v => { dd.dataset.value = v; scheduleConfigSave(true); });
       } else {
-        field.innerHTML = `<label ${f.help ? `data-tip="${esc(f.help)}"` : ''}>${f.label}</label><input ${a}/>`;
+        const ph = f.default != null ? ` placeholder="${esc(String(f.default))}"` : '';
+        const a = `type="${f.type}" data-sec="${f.sec}" data-key="${f.key}" value="${esc(val == null ? '' : val)}"` +
+          (f.min != null ? ` min="${f.min}"` : '') + (f.max != null ? ` max="${f.max}"` : '') + (f.step != null ? ` step="${f.step}"` : '') + ph;
+        if (f.type === 'password') {
+          field.innerHTML = `<label ${f.help ? `data-tip="${esc(f.help)}"` : ''}>${f.label}</label><div class="input-wrap"><input ${a}/><button type="button" class="eye-btn" data-tip="显示/隐藏">${icon('eye')}</button></div>`;
+        } else {
+          field.innerHTML = `<label ${f.help ? `data-tip="${esc(f.help)}"` : ''}>${f.label}</label><input ${a}/>`;
+        }
       }
+      grid.appendChild(field);
     }
-    grid.appendChild(field);
+    return grid;
+  };
+  gd.appendChild(buildGrid(g.fields, g.cols));
+  if (g.divider) {
+    const dv = document.createElement('div');
+    dv.className = 'group-divider';
+    gd.appendChild(dv);
   }
-  gd.appendChild(grid);
+  if (g.fields2) gd.appendChild(buildGrid(g.fields2, g.cols2 || g.cols));
   gd.querySelectorAll('.eye-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const inp = btn.parentElement.querySelector('input');
@@ -376,6 +361,7 @@ async function renderPromptsTabWrapper() {
       const presets = await apiCall('list_presets');
       const active = await apiCall('get_active_preset');
       state.active_preset_id = active.preset.id;
+      state.pvUseExample = !!active.use_example;
       return { presets, preset: active.preset };
     },
     (data) => renderPromptsTab(data.presets, data.preset),

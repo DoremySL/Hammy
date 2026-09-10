@@ -27,6 +27,7 @@ function renderPromptsTab(presets, activePreset) {
         </div>
         <span class="exp-badge warn" id="pv-dirty-badge" style="display:none">未保存</span>
         <div class="preset-hero-actions">
+          <button class="a-toggle${state.pvUseExample ? ' on' : ''}" id="pv-use-example" data-tip="开启后会附加示例段供模型参考，可调整示例让AI输出更符合个人需求的文风"><span class="dot"></span><span class="txt">拼接示例 · ${state.pvUseExample ? '开' : '关'}</span></button>
           <button class="ws-btn" id="btn-save-as-preset">保存为新模板</button>
           <button class="ws-btn danger" id="btn-delete-preset" ${canSave ? '' : 'disabled'}>删除</button>
           <button class="ws-btn primary" id="btn-save-preset" ${canSave ? '' : 'disabled'} data-tip="${canSave ? '保存对该模板的修改' : '内置模板不可保存，请「保存为新模板」'}">保存</button>
@@ -49,7 +50,7 @@ function renderPromptsTab(presets, activePreset) {
         <textarea data-field="thumb_time_guidance">${esc(activePreset.fields.thumb_time_guidance || '')}</textarea>
       </div>
     </div>
-    <div class="group">
+    <div class="group" id="pv-example-group" style="${state.pvUseExample ? '' : 'display:none'}">
       <h3><span class="tip-text" data-tip="给 AI 一个高质量范例，输出格式与风格会更稳定。">示例值</span></h3>
       <div class="field"><label>plot 示例</label><textarea data-field="plot_example" style="min-height:100px">${esc(activePreset.fields.plot_example)}</textarea></div>
       <div class="field" style="margin-top:14px"><label>tags 示例</label><input type="text" data-field="tags_example" value="${esc(activePreset.fields.tags_example)}"/></div>
@@ -100,6 +101,25 @@ function renderPromptsTab(presets, activePreset) {
     updatePreview();
   }));
   updatePreview();
+
+  $('#pv-use-example').addEventListener('click', async () => {
+    const btn = $('#pv-use-example');
+    const apply = on => {
+      btn.classList.toggle('on', on);
+      btn.querySelector('.txt').textContent = '拼接示例 · ' + (on ? '开' : '关');
+      $('#pv-example-group').style.display = on ? '' : 'none';
+    };
+    const on = !state.pvUseExample;
+    apply(on);
+    const r = await callApi('set_prompt_use_example', on);
+    if (!r || !r.ok) {
+      if (r && !r.ok) toast(r.error || '设置失败', 'err');
+      apply(!on);
+      return;
+    }
+    state.pvUseExample = on;
+    updatePreview();
+  });
 
   initDropdown($('#preset-select'), async (val) => {
     if (val === state.active_preset_id) return;

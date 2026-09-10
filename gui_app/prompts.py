@@ -170,10 +170,12 @@ def get_active(with_thumb_time: bool = False) -> Dict[str, Any]:
         # 回退：激活 id 不存在时取列表第一个；列表为空（prompts.json 被外部清空）用内置默认
         presets = list_presets()
         preset = presets[0] if presets else _builtin_presets()[0]
+    use_example = bool(cfg.get("prompt_use_example", False))
     return {
         "preset": preset,
-        "prompt": build_prompt(preset, with_thumb_time=with_thumb_time),
+        "prompt": build_prompt(preset, with_thumb_time=with_thumb_time, use_example=use_example),
         "system_prompt": preset.get("system_prompt", ""),
+        "use_example": use_example,
     }
 
 
@@ -181,10 +183,11 @@ def get_active(with_thumb_time: bool = False) -> Dict[str, Any]:
 
 
 def build_prompt(preset: Dict[str, Any], include_header: bool = True,
-                 with_thumb_time: bool = False) -> str:
+                 with_thumb_time: bool = False, use_example: bool = False) -> str:
     """从模板的内容层字段 + 锁定的结构层模板，拼出最终 prompt 字符串。
 
     include_header=False 时不含结构约束头部（仅供前端预览展示用）。
+    use_example=False 时不拼接示例段（示例内容仍随模板保存，仅不注入提示词）。
     """
     f = preset.get("fields", {})
     tags_dim = f.get("tags_dim", "")
@@ -197,25 +200,28 @@ def build_prompt(preset: Dict[str, Any], include_header: bool = True,
         title_guidance=f.get("title_guidance", ""),
         thumb_time_field=thumb_time_field,
     )
-    example = _STRUCTURE_EXAMPLE.format(
-        plot_example=f.get("plot_example", ""),
-        tags_example=f.get("tags_example", '"标签1", "标签2"'),
-        title_example=f.get("title_example", ""),
-        thumb_time_example=thumb_time_example,
-    )
     parts = []
     if include_header:
         parts.append(_STRUCTURE_HEADER)
     parts.append(skeleton)
-    parts.append("")
-    parts.append(_STRUCTURE_EXAMPLE_HEADER)
-    parts.append(example)
+    if use_example:
+        example = _STRUCTURE_EXAMPLE.format(
+            plot_example=f.get("plot_example", ""),
+            tags_example=f.get("tags_example", '"标签1", "标签2"'),
+            title_example=f.get("title_example", ""),
+            thumb_time_example=thumb_time_example,
+        )
+        parts.append("")
+        parts.append(_STRUCTURE_EXAMPLE_HEADER)
+        parts.append(example)
     return "\n".join(parts)
 
 
-def preview_prompt(fields: Dict[str, Any], with_thumb_time: bool = False) -> str:
+def preview_prompt(fields: Dict[str, Any], with_thumb_time: bool = False,
+                   use_example: bool = False) -> str:
     """前端预览：用临时 fields 拼出 prompt（不保存）。"""
-    return build_prompt({"fields": fields}, with_thumb_time=with_thumb_time)
+    return build_prompt({"fields": fields}, with_thumb_time=with_thumb_time,
+                        use_example=use_example)
 
 
 # ── 标签检索（全局，独立存储于 _workspace/priority_tags.json） ──

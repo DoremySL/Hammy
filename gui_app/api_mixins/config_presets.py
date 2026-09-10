@@ -40,11 +40,21 @@ class ConfigPresetMixin:
     def set_active_preset(self, pid: str) -> Dict[str, Any]:
         return prompts.set_active(pid)
 
+    def set_prompt_use_example(self, enabled: bool) -> Dict[str, Any]:
+        """设置拼接提示词时是否附带示例段（默认关闭；模板中保存的示例内容不受影响）。"""
+        config_store.update_config(
+            lambda cfg: cfg.update(prompt_use_example=bool(enabled)) or cfg)
+        return {"ok": True, "use_example": bool(enabled)}
+
     def preview_prompt(self, fields: Dict[str, Any]) -> Dict[str, Any]:
-        # 预览跟随当前设置：时间标签=添加并用于优化缩略图时，展示注入的 thumb_time 字段
-        video = config_store.load_config().get("video") or {}
+        # 预览跟随当前设置：时间标签=添加并用于优化缩略图时，展示注入的 thumb_time 字段；
+        # 示例段是否拼接跟随「拼接示例」开关
+        cfg = config_store.load_config()
+        video = cfg.get("video") or {}
         with_thumb = int(video.get("frame_time_tags") or 0) == 2
-        return {"prompt": prompts.preview_prompt(fields, with_thumb_time=with_thumb)}
+        use_example = bool(cfg.get("prompt_use_example", False))
+        return {"prompt": prompts.preview_prompt(
+            fields, with_thumb_time=with_thumb, use_example=use_example)}
 
     # ── 标签检索 ──
 

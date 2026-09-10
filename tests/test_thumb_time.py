@@ -88,10 +88,15 @@ class TestBuildPromptThumbTime(unittest.TestCase):
     def test_enabled_fields(self):
         s = prompts.build_prompt(self.PRESET, with_thumb_time=True)
         self.assertIn('"thumb_time": "挑选出主体清晰，最能代表该视频适合用作封面的截图时间戳，格式HH:MM:SS"', s)
-        self.assertIn('"thumb_time": "00:12:34"', s)
+        s2 = prompts.build_prompt(self.PRESET, with_thumb_time=True, use_example=True)
+        self.assertIn('"thumb_time": "00:12:34"', s2)
+
+    def test_example_toggle(self):
+        self.assertNotIn("示例：", prompts.build_prompt(self.PRESET, with_thumb_time=True))
+        self.assertIn("示例：", prompts.build_prompt(self.PRESET, with_thumb_time=True, use_example=True))
 
     def test_enabled_example_is_valid_json(self):
-        s = prompts.build_prompt(self.PRESET, with_thumb_time=True)
+        s = prompts.build_prompt(self.PRESET, with_thumb_time=True, use_example=True)
         data = json.loads(s.split("示例：")[-1])
         self.assertEqual(data["thumb_time"], "00:12:34")
 

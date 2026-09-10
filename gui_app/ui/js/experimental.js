@@ -1800,7 +1800,7 @@ function renderLlamaTab(llamaStatus) {
   const statusMeta = running
     ? `当前模型：<strong>${esc(curModel)}</strong> · PID ${esc(String(llamaStatus.pid))} · 端口 <code>${esc(String(llamaStatus.port || ''))}</code>`
     : starting ? '服务正在启动，模型加载中…'
-    : (ready ? '服务未运行' : 'llama.cpp 尚未安装');
+    : (ready ? '服务未运行' : '请先到「扩展功能」页安装该模块或下载手动解压至本程序目录 llama.cpp 文件夹');
   const stateBadge = running
     ? `<span class="exp-badge ok">${icon('check')} 运行中</span>`
     : starting
@@ -1824,8 +1824,6 @@ function renderLlamaTab(llamaStatus) {
         <button class="ws-btn primary" id="btn-llama-toggle" ${!ready ? 'disabled' : ''} data-tip="${starting ? '模型加载中也可点击停止' : ''}">${running ? '停止服务' : (starting ? '停止启动' : '启动服务')}</button>
       </div>
     </div>
-
-    ${!ready ? '<div class="exp-intro" style="margin-bottom:14px">llama.cpp 尚未安装，请先到「扩展功能」页安装该模块。</div>' : ''}
 
     <!-- 模型 + 性能参数 -->
     <div class="group">

@@ -99,7 +99,7 @@ function renderWorkspaceTab(stats) {
       `确定清理 ${cwFmtCount(caches[0].count)} 个缩略图缓存吗？\n\n下次查看对应视频时会重新生成缩略图。`,
       r => `已清理 ${r.cleared.thumbs} 个缩略图`),
     nfo: () => workspaceAction('clear_workspace', [false, false, true, false, false, false],
-      `确定清理 ${cwFmtCount(caches[1].count)} 个 NFO 缓存吗？\n\n「自动输出 NFO 至视频目录」关闭时，详情页依赖此缓存。`,
+      `确定清理 ${cwFmtCount(caches[1].count)} 个 NFO 缓存吗？\n\n「自动输出 NFO 至目录」关闭时，详情页依赖此缓存。`,
       r => `已清理 ${r.cleared.nfo} 个 NFO`),
     probe: () => workspaceAction('clear_workspace', [false, false, false, false, true, false],
       '确定清理探针缓存吗？\n\n视频的时长 / 分辨率 / 编码等信息下次使用时会自动重新探测。',
