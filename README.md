@@ -55,7 +55,9 @@ pip install openai pywebview
 
 ### 方式二：双击启动GUI
 
-安装好依赖后直接双击 `Hammy\GUI Launcher.bat`：
+安装好依赖后直接双击 `Hammy\GUI Launcher.bat`
+
+- 压缩包解压前建议右键查看属性，在解除锁定的选项处打勾应用后再解压
 
 ---
 
