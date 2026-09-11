@@ -32,7 +32,7 @@ pywebviewReady(30000).then(async () => {
   try {
     const cfg = await apiCall('get_config');
     if (cfg && cfg.theme) applyTheme(cfg.theme);
-    if (cfg) applyForceAnimation(cfg.force_animation !== false);
+    if (cfg) applyDisableAnimation(cfg.disable_animation === true);
     const exp = (cfg && cfg.experimental) || {};
     state.thumbOptimize = Number(((cfg || {}).video || {}).frame_time_tags) === 2;
     // 各 id 集合互相独立，并行拉取避免逐个串行等待

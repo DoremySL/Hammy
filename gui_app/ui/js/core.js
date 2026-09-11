@@ -66,8 +66,8 @@ function toggleTheme() {
   applyTheme(next);
   apiCall('save_config', { theme: next }).catch(() => {});
 }
-function applyForceAnimation(on) {
-  document.documentElement.classList.toggle('force-anim', !!on);
+function applyDisableAnimation(on) {
+  document.documentElement.classList.toggle('no-anim', !!on);
 }
 
 /* ════════════════════════════════════════════════════════════

@@ -137,7 +137,7 @@ const CFG_FIELDS_AI = [
     { sec: 'ai', key: 'top_p', label: 'Top-p', type: 'number', min: 0, max: 1, step: 0.05, help: '核采样阈值，与温度共同控制输出多样性', default: 0.8 },
     { sec: 'ai', key: 'retry_times', label: '重试次数', type: 'number', min: 0, help: '请求失败后的重试次数，重试之间会自动等待', default: 2 },
     { sec: 'ai', key: 'ai_timeout', label: '超时(秒)', type: 'number', min: 1, help: '单次 AI 请求的超时时间（秒），超时按失败重试', default: 300 },
-    { sec: 'ai', key: 'enforce_json_mode', label: 'JSON 模式', type: 'select', options: [['1', '开启'], ['0', '关闭']], default: '1', help: '确保输出合法 JSON' },
+    { sec: 'ai', key: 'enforce_json_mode', label: 'JSON 模式', type: 'select', options: [['1', '开启'], ['0', '关闭']], default: '1', help: '增加模型以预期结构输出的几率，部分模型不支持' },
   ]},
 ];
 const CFG_FIELDS_PROCESSING = [
@@ -148,10 +148,10 @@ const CFG_FIELDS_PROCESSING = [
     { sec: 'video', key: 'frame_time_tags', label: '时间标签', type: 'select', options: [['1', '添加时间标签'], ['2', '添加并用于优化缩略图'], ['0', '不添加标签']], default: '0', help: '每张截图前添加时间戳，帮助模型理解画面时间顺序；开启用于优化缩略图将提示模型给出最符合视频主题的截图时间戳，对模型能力有要求' },
   ]},
   { group: '命名与输出', noTitle: true, cols: 4, fields: [
-    { sec: 'naming', key: 'include_date', label: '日期前缀', type: 'bool', help: '文件名前添加日期，降低重名几率' },
-    { sec: 'naming', key: 'include_original', label: '初始文件名后缀', type: 'bool', help: '文件名末尾追加初始文件名，降低重名几率' },
+    { sec: 'naming', key: 'include_date', label: '添加日期前缀', type: 'bool', help: '文件名前添加日期，降低重名几率' },
+    { sec: 'naming', key: 'include_original', label: '添加初始文件名后缀', type: 'bool', help: '文件名末尾追加初始文件名，降低重名几率' },
     { sec: '__gui', key: 'nfo_auto_export', label: '自动输出 NFO 至目录', type: 'bool', help: '开启后处理时直接写入视频目录；关闭则先存工作区，导出时再复制' },
-    { sec: '__gui', key: 'force_animation', label: '默认启用动画', type: 'bool', help: '忽略系统「减弱动态效果」设置' },
+    { sec: '__gui', key: 'disable_animation', label: '关闭动画效果', type: 'bool', help: '关闭界面动画与过渡效果' },
   ]},
 ];
 
@@ -419,7 +419,7 @@ async function _saveConfigNow() {
     const res = await apiCall('save_config', data);
     if (res && res.ok) {
       state.thumbOptimize = Number((data.video || {}).frame_time_tags) === 2;
-      if ('force_animation' in data) applyForceAnimation(data.force_animation !== false);
+      if ('disable_animation' in data) applyDisableAnimation(data.disable_animation === true);
     } else if (token === _cfgSaveToken) {
       toast('保存失败: ' + ((res && res.error) || ''), 'err');
     }

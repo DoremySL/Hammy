@@ -45,7 +45,7 @@ def _default_config() -> Dict[str, Any]:
         "active_prompt_id": "default",
         "theme": "",
         "nfo_auto_export": False,
-        "force_animation": True,
+        "disable_animation": False,
         "experimental": {},
     }
 

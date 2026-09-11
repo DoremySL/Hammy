@@ -603,7 +603,7 @@
 
   /* ── 提示词编辑器 ── */
   .modal-body:has(> .preset-wrap){padding:0}
-  .preset-wrap{padding:20px 22px}
+  .preset-wrap{padding:20px 12px}
   .preset-hero{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:10px;flex-wrap:wrap;
     padding:10px 14px;border-radius:var(--r-xl);border:1px solid var(--border);
     background:linear-gradient(135deg,var(--panel-2),var(--panel));margin-bottom:14px;
@@ -947,7 +947,7 @@
 
   /* ── 本地推理页 ── */
   .modal-body:has(> .llama-wrap){padding:0}
-  .llama-wrap{padding:20px 22px}
+  .llama-wrap{padding:20px 12px}
   .llama-hero{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:14px;flex-wrap:wrap;
     padding:16px 18px;border-radius:var(--r-xl);border:1px solid var(--border);
     background:linear-gradient(135deg,var(--panel-2),var(--panel));margin-bottom:14px;
@@ -1150,13 +1150,11 @@
   .llama-row .field{flex:1;min-width:220px}
   .llama-row>.switch{margin-bottom:8px}
 
-  /* ── 无障碍 ── */
-  @media (prefers-reduced-motion:reduce){
-    html:not(.force-anim) *,html:not(.force-anim) *::before,html:not(.force-anim) *::after{
-      animation-duration:.01ms!important;animation-iteration-count:1!important;
-      transition-duration:.01ms!important;scroll-behavior:auto!important}
-    .pill .conn-dot.yellow{animation-duration:1.2s!important;animation-iteration-count:infinite!important}
-  }
+  /* ── 动画开关 ── */
+  html.no-anim *,html.no-anim *::before,html.no-anim *::after{
+    animation-duration:.01ms!important;animation-iteration-count:1!important;
+    transition-duration:.01ms!important;scroll-behavior:auto!important}
+  html.no-anim .pill .conn-dot.yellow{animation-duration:1.2s!important;animation-iteration-count:infinite!important}
 
   /* ── 手动重命名弹窗 ── */
   #renameModal .modal{width:min(560px,96vw)}
@@ -1209,7 +1207,7 @@ html:not(.light) .card.band.selected{box-shadow:0 0 0 2px var(--accent-soft),0 6
 
 /* 两侧 gutter 各 8px 的视觉补偿：左右 padding 减回，内容宽度与原布局一致 */
 .grid-wrap{padding-left:6px;padding-right:6px}
-.modal-body{padding-left:14px;padding-right:14px}
+.modal-body{padding-left:12px;padding-right:12px}
 .log{padding-left:6px;padding-right:6px}
 .detail{padding-left:10px;padding-right:10px}
 .dedup-body{padding-left:12px;padding-right:12px}

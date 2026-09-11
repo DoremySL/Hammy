@@ -290,7 +290,7 @@ def invalidate_thumbnail(vid: str) -> None:
 def _run_frame_extract(path: str, ss: str, quality: int,
                        vf: Optional[str] = None) -> "subprocess.CompletedProcess":
     """按 seek 策略抽一帧（JPEG bytes）：mpegts 输入 seek 不准，改输出 seek。"""
-    seek_args = ["-i", path, "-ss", ss] if is_mpeg_ts(path) else ["-ss", ss, "-noaccurate_seek", "-i", path]
+    seek_args = ["-i", path, "-ss", ss] if is_mpeg_ts(path) else ["-ss", ss, "-i", path]
     vf_args = ["-vf", vf] if vf else []
     cmd = [
         FFMPEG_EXE, "-y", "-nostats", *seek_args,
