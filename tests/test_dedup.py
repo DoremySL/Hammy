@@ -4,7 +4,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import tempfile
 import unittest
 
-from batch_rename.dedup import DUPLICATES_DIR, find_duplicates, move_to_duplicates, partial_hash
+from batch_rename.dedup import DUPLICATES_DIR, _norm, find_duplicates, move_to_duplicates, partial_hash
 from batch_rename.collector import VideoCollector
 
 
@@ -58,8 +58,8 @@ class TestDedup(unittest.TestCase):
         groups = find_duplicates([a, b])
         self.assertEqual(len(groups), 1)
         self.assertEqual(len(groups[0]["remove"]), 1)
-        # 两个路径分别在 keep / remove 中
-        all_paths = {groups[0]["keep"]} | set(groups[0]["remove"])
+        # 两个路径分别在 keeps / remove 中
+        all_paths = set(groups[0]["keeps"]) | set(groups[0]["remove"])
         self.assertEqual(all_paths, {a, b})
 
     def test_find_duplicates_different_size_not_grouped(self):
@@ -78,7 +78,7 @@ class TestDedup(unittest.TestCase):
         shallow = self._write("top.mp4", b"dup content" * 50)
         groups = find_duplicates([deep, shallow])
         self.assertEqual(len(groups), 1)
-        self.assertEqual(groups[0]["keep"], shallow)
+        self.assertEqual(groups[0]["keeps"], [shallow])
         self.assertEqual(groups[0]["remove"], [deep])
 
     def test_find_duplicates_same_dir_keeps_original(self):
@@ -86,7 +86,7 @@ class TestDedup(unittest.TestCase):
         orig = self._write("video.mp4", b"dup content" * 50)
         copy1 = self._write("video (1).mp4", b"dup content" * 50)
         groups = find_duplicates([copy1, orig])
-        self.assertEqual(groups[0]["keep"], orig)
+        self.assertEqual(groups[0]["keeps"], [orig])
         self.assertEqual(groups[0]["remove"], [copy1])
 
     def test_find_duplicates_marker_beats_length(self):
@@ -94,8 +94,32 @@ class TestDedup(unittest.TestCase):
         long_orig = self._write("a very long original name.mp4", b"dup content" * 50)
         copy1 = self._write("x (1).mp4", b"dup content" * 50)
         groups = find_duplicates([copy1, long_orig])
-        self.assertEqual(groups[0]["keep"], long_orig)
+        self.assertEqual(groups[0]["keeps"], [long_orig])
         self.assertEqual(groups[0]["remove"], [copy1])
+
+    def test_find_duplicates_prefers_processed(self):
+        # 已处理视频优先保留，待处理副本推荐移除
+        pend = self._write("video.mp4", b"dup content" * 50)
+        proc = self._write("20260907-1200_标题.mp4", b"dup content" * 50)
+        groups = find_duplicates([pend, proc], {_norm(proc)})
+        self.assertEqual(groups[0]["keeps"], [proc])
+        self.assertEqual(groups[0]["remove"], [pend])
+
+    def test_find_duplicates_all_processed_all_kept(self):
+        # 多个已处理重复默认全部保留
+        a = self._write("a.mp4", b"dup content" * 50)
+        b = self._write("b.mp4", b"dup content" * 50)
+        groups = find_duplicates([a, b], {_norm(a), _norm(b)})
+        self.assertEqual(set(groups[0]["keeps"]), {a, b})
+        self.assertEqual(groups[0]["remove"], [])
+
+    def test_find_duplicates_processed_beats_sort_key(self):
+        # 已处理必进 keeps，即使其 stem 更长
+        pend = self._write("x.mp4", b"dup content" * 50)
+        proc = self._write("a very long processed name here.mp4", b"dup content" * 50)
+        groups = find_duplicates([pend, proc], {_norm(proc)})
+        self.assertEqual(groups[0]["keeps"], [proc])
+        self.assertEqual(groups[0]["remove"], [pend])
 
     def test_find_duplicates_multiple_groups(self):
         a1 = self._write("a1.mp4", b"group one content" * 40)

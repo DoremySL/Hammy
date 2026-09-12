@@ -79,7 +79,7 @@ class TestInvalidateThumbnail(unittest.TestCase):
 class TestBuildPromptThumbTime(unittest.TestCase):
     PRESET = {"fields": {"plot_guidance": "p", "tags_dim": "", "title_guidance": "t",
                          "plot_example": "pe", "tags_example": '"a"', "title_example": "te",
-                         "thumb_time_guidance": "挑选出主体清晰，最能代表该视频适合用作封面的截图时间戳，格式HH:MM:SS",
+                         "thumb_time_guidance": "挑选出构图最适合用作封面的关键帧截图时间戳，格式HH:MM:SS",
                          "thumb_time_example": "00:12:34"}}
 
     def test_disabled_no_thumb(self):
@@ -87,7 +87,7 @@ class TestBuildPromptThumbTime(unittest.TestCase):
 
     def test_enabled_fields(self):
         s = prompts.build_prompt(self.PRESET, with_thumb_time=True)
-        self.assertIn('"thumb_time": "挑选出主体清晰，最能代表该视频适合用作封面的截图时间戳，格式HH:MM:SS"', s)
+        self.assertIn('"thumb_time": "挑选出构图最适合用作封面的关键帧截图时间戳，格式HH:MM:SS"', s)
         s2 = prompts.build_prompt(self.PRESET, with_thumb_time=True, use_example=True)
         self.assertIn('"thumb_time": "00:12:34"', s2)
 
@@ -111,7 +111,7 @@ class TestGetActiveThumbTime(unittest.TestCase):
 
     def test_appends_field_only(self):
         r = self._get(True)
-        self.assertIn("挑选出主体清晰", r["prompt"])
+        self.assertIn("挑选出构图最适合用作封面", r["prompt"])
         self.assertNotIn("总结最能代表该视频的截图时间戳", r["system_prompt"])
 
     def test_default_untouched(self):

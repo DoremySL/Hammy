@@ -146,8 +146,15 @@ class TestClusterGroups(unittest.TestCase):
         metas = {"a": self._meta(res="1280x720"), "b": self._meta(res="1920x1080")}
         r = sim.AlignResult(0, 5, 5, 25, 0, 0)
         groups = sim.cluster_groups(metas, [("a", "b", r)])
-        self.assertEqual(groups[0]["keep"], "b")
+        self.assertEqual(groups[0]["keeps"], ["b"])
         self.assertEqual(groups[0]["extras"], {"a": 0.0, "b": 0.0})
+
+    def test_keep_prefers_processed(self):
+        # 已处理成员优先保留，即使质量较低
+        metas = {"a": self._meta(res="1920x1080"), "b": self._meta(res="1280x720")}
+        r = sim.AlignResult(0, 5, 5, 25, 0, 0)
+        groups = sim.cluster_groups(metas, [("a", "b", r)], {"b"})
+        self.assertEqual(groups[0]["keeps"], ["b"])
 
 
 class TestAlign(unittest.TestCase):

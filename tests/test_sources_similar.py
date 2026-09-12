@@ -120,7 +120,19 @@ class TestFinalize(_SimilarTestBase):
                 accepted, {}, fpsf, sim.FAST, full_edges)
         self.assertEqual(calls, [])              # 命中 full_edges，不再重算
         self.assertEqual(len(groups), 1)
-        self.assertEqual(groups[0]["keep"], "a")
+        self.assertEqual(groups[0]["keeps"], ["a"])
+
+    def test_preferred_all_kept_in_finalize(self):
+        frames = {i: _const_frames(0xF0F0, 30) for i in (1, 2, 3)}
+        fps1 = {p: {i: list(v) for i, v in frames.items()} for p in "abc"}
+        metas = {p: _meta(200) for p in "abc"}
+        r = sim.AlignResult(0, 3, 3, 90, 0, 0)
+        groups = SourcesMixin._similar_finalize(
+            metas, ["a", "b", "c"],
+            [("a", "b", r), ("b", "c", r)], fps1, {}, sim.FAST, {}, {"a", "c"})
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(set(groups[0]["keeps"]), {"a", "c"})   # 已处理全保
+        self.assertEqual(len(groups[0]["items"]), 3)
 
     def test_bridged_member_kicked_by_terminal_verify(self):
         # a≈b、b≈c，但 a vs c 汉明 13 > 阈值 → 桥接链被终验拆开，c 被踢
@@ -135,6 +147,27 @@ class TestFinalize(_SimilarTestBase):
         paths = {it["path"] for it in groups[0]["items"]}
         self.assertEqual(paths, {"a", "b"})      # c 被踢
         self.assertNotIn("c", paths)
+
+    def test_recluster_keeps_all_subgroups_visible(self):
+        # 踢人重聚后：全部子组输出，未连入子组的保留项单独成组
+        frames = {i: _const_frames(0x1FFF, 10) for i in range(5)}
+        fps1 = {
+            "a": {i: _const_frames(0x0000, 10) for i in range(5)},
+            "b": {},                                # b 无指纹 → 终验被踢
+            "c": {i: list(v) for i, v in frames.items()},
+            "d": {i: list(v) for i, v in frames.items()},
+        }
+        metas = {p: _meta(200) for p in "abcd"}
+        r = sim.AlignResult(0, 3, 3, 90, 0, 0)
+        groups = SourcesMixin._similar_finalize(
+            metas, ["a", "b", "c", "d"],
+            [("a", "b", r), ("b", "c", r), ("c", "d", r)],
+            fps1, {}, sim.NORMAL, {}, {"a", "c"})
+        shown = {it["path"] for g in groups for it in g["items"]}
+        self.assertEqual(shown, {"a", "c", "d"})    # b 被踢，其余全部可见
+        keeps = {k for g in groups for k in g["keeps"]}
+        self.assertEqual(keeps, {"a", "c"})         # 两个已处理保留项都不丢
+        self.assertEqual(len(groups), 2)            # {a} 单独成组 + {c, d}
 
 
 class TestSimilarScanFlow(_SimilarTestBase):
