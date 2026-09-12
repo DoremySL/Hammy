@@ -46,6 +46,13 @@ class ConfigPresetMixin:
             lambda cfg: cfg.update(prompt_use_example=bool(enabled)) or cfg)
         return {"ok": True, "use_example": bool(enabled)}
 
+    def set_prompt_thumb_optimize(self, enabled: bool) -> Dict[str, Any]:
+        """设置是否启用缩略图优化（注入 thumb_time 字段并据其重生成封面）。"""
+        config_store.update_config(
+            lambda cfg: cfg.setdefault("video", {}).update(
+                frame_time_tags=2 if enabled else 0) or cfg)
+        return {"ok": True, "thumb_optimize": bool(enabled)}
+
     def preview_prompt(self, fields: Dict[str, Any]) -> Dict[str, Any]:
         # 预览跟随当前设置：时间标签=添加并用于优化缩略图时，展示注入的 thumb_time 字段；
         # 示例段是否拼接跟随「拼接示例」开关

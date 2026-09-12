@@ -681,7 +681,7 @@
   .tag-left{width:320px;flex-shrink:0;display:flex;flex-direction:column;gap:8px;min-height:0}
   .tag-left-top{display:flex;gap:8px;align-items:stretch;flex-wrap:wrap}
   .tag-left-top .mode-switch{flex-shrink:0;padding:2px;gap:1px;border-radius:var(--r-md)}
-  .tag-left-top .mode-switch .pill{padding:5px 10px;border-radius:var(--r-sm)}
+  .tag-left-top .mode-switch .pill{padding:5px 10px;border-radius:var(--r-sm);min-width:56px;justify-content:center}
   .tag-left-top .mode-switch .pill-sep{margin:0 1px}
   .tag-left-top .tag-seg{flex:1;min-width:0}
   .tag-left-top .tag-seg button{padding:6px 4px}
@@ -790,6 +790,7 @@
     font-size:10.5px;font-weight:700;line-height:1.5;z-index:2}
   .dedup-card.keep .badge{background:var(--ok-soft);color:var(--ok)}
   .dedup-card.rm .badge{background:var(--err-soft);color:var(--err)}
+  .dedup-thumb .badge.proc{left:auto;right:6px;background:var(--warn-soft);color:var(--warn)}
   .dedup-meta{padding:5px 8px;display:flex;flex-direction:column;gap:2px;min-width:0}
   .dedup-meta .stem{font-size:10px;color:var(--faint);min-width:0;white-space:nowrap;overflow:hidden;
     text-overflow:ellipsis}

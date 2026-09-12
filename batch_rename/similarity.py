@@ -1,10 +1,11 @@
 """同内容不同版本视频比对核心：抽帧指纹 + 平移对齐 + 头尾多余量推断。"""
 from __future__ import annotations
 
+import os
 import threading
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from .dependencies import ffmpeg_tools
 from .video import run_subprocess_with_cancel
@@ -313,8 +314,13 @@ def aspect_ratio(res: str) -> float:
 _CODEC_PRIORITY = {"hevc": 4, "av1": 3, "vp9": 2, "h264": 1}
 
 
-def cluster_groups(metas: Dict[str, Dict], accepted: List[Tuple[str, str, AlignResult]]):
-    """union-find 聚组，返回 [{paths, keep, extras, edges}]。"""
+def cluster_groups(metas: Dict[str, Dict], accepted: List[Tuple[str, str, AlignResult]],
+                   preferred: Optional[Set[str]] = None):
+    """union-find 聚组，返回 [{paths, keeps, extras, edges}]。
+
+    preferred（normcase 路径集合）中的成员优先保留：组内全部已处理成员进 keeps，
+    无已处理成员时按质量打分保留最优一个。
+    """
     parent: Dict[str, str] = {}
 
     def find(x: str) -> str:
@@ -341,14 +347,18 @@ def cluster_groups(metas: Dict[str, Dict], accepted: List[Tuple[str, str, AlignR
             if m not in groups[root]:
                 groups[root].append(m)
 
+    pref = preferred or set()
     out = []
     for root, members in groups.items():
         edges = [(a, b, r.head_diff, r.tail_diff) for a, b, r in edges_by[root]]
         extras = infer_extras(members, edges)
-        best = max(members, key=lambda m: (_res_height(metas[m].get("resolution", "")),
-                                           -extras[m],
-                                           _CODEC_PRIORITY.get(metas[m].get("codec", ""), 0),
-                                           metas[m].get("size", 0)))
-        out.append({"paths": members, "keep": best, "extras": extras,
+        keeps = [m for m in members if os.path.normcase(os.path.normpath(m)) in pref]
+        if not keeps:
+            best = max(members, key=lambda m: (_res_height(metas[m].get("resolution", "")),
+                                               -extras[m],
+                                               _CODEC_PRIORITY.get(metas[m].get("codec", ""), 0),
+                                               metas[m].get("size", 0)))
+            keeps = [best]
+        out.append({"paths": members, "keeps": keeps, "extras": extras,
                     "edges": edges_by[root]})
     return out

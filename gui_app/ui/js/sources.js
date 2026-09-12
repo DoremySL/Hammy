@@ -92,10 +92,12 @@ async function addFolder() {
   loadFromResult(result);
   const total = (result.pending || []).length + (result.processed || []).length + (result.failed || []).length;
   const hasFailed = r.some(p => p.replace(/\\/g, '/').split('/').filter(Boolean).pop().toLowerCase() === '_failed');
+  const ni = result.nfo_import;
+  const nfoMsg = ni && ni.imported ? `，从 NFO 恢复 ${ni.imported} 条处理记录` : '';
   if (total === 0) {
     toast(hasFailed ? '已添加，但 _failed 目录内的视频已自动排除' : '未扫描到视频', 'err', true);
   } else {
-    toast('已添加文件夹', 'ok', true);
+    toast('已添加文件夹' + nfoMsg, 'ok', true);
   }
 }
 async function addFiles() {
@@ -107,10 +109,12 @@ async function addFiles() {
   if (result.error) { loadFromResult(result); return; }
   loadFromResult(result);
   const total = (result.pending || []).length + (result.processed || []).length + (result.failed || []).length;
+  const ni = result.nfo_import;
+  const nfoMsg = ni && ni.imported ? `，从 NFO 恢复 ${ni.imported} 条处理记录` : '';
   if (total === 0) {
     toast('未扫描到视频', 'err', true);
   } else {
-    toast(`已添加 ${r.length} 个文件`, 'ok', true);
+    toast(`已添加 ${r.length} 个文件${nfoMsg}`, 'ok', true);
   }
 }
 $('#btn-add-folder').addEventListener('click', addFolder);
@@ -159,9 +163,9 @@ function dedupByPath() {
 }
 
 async function findDuplicates() {
-  if (!state.pending.length) {
+  if (!state.pending.length && !state.processed.length) {
     $('#dedupBg').classList.add('show');
-    showDedupInterlude('待处理列表为空', false);
+    showDedupInterlude('没有可参与比对的视频', false);
     return;
   }
   const gen = ++_dedupGen;
@@ -180,8 +184,10 @@ async function findDuplicates() {
   _dedupGroups = groups.map(g => ({
     kind: 'identical',
     sizeStr: g.size_str,
-    items: [g.keep, ...g.remove].map((it, i) =>
-      ({ path: it.path, name: it.name, keep: i === 0, video: byPath.get(it.path) || null })),
+    items: [
+      ...(g.keeps || []).map(k => ({ path: k.path, name: k.name, keep: true })),
+      ...(g.remove || []).map(rm => ({ path: rm.path, name: rm.name, keep: false })),
+    ].map(it => ({ ...it, video: byPath.get(it.path) || null })),
   }));
   renderDedup();
 }
@@ -214,7 +220,9 @@ function makeDedupCard(it) {
   card.className = 'dedup-card ' + (it.keep ? 'keep' : 'rm');
   card.innerHTML =
     `<div class="dedup-thumb"><div class="ph">${icon('clapper', '22px')}</div>` +
-    `<span class="badge">${it.keep ? '保留' : '移除'}</span></div>` +
+    `<span class="badge">${it.keep ? '保留' : '移除'}</span>` +
+    (v && v.status === 'processed' ? '<span class="badge proc">已处理</span>' : '') +
+    `</div>` +
     `<div class="dedup-meta">${dedupMetaHtml(it)}</div>`;
   card.onclick = () => {
     it.keep = !it.keep;
@@ -341,7 +349,7 @@ async function scanSimilar() {
   _dedupGroups = groups.map(g => ({
     kind: 'similar',
     items: g.items.map(it =>
-      ({ ...it, keep: it.path === g.keep, video: byPath.get(it.path) || null })),
+      ({ ...it, keep: (g.keeps || []).includes(it.path), video: byPath.get(it.path) || null })),
   }));
   renderDedup();
 }
@@ -398,10 +406,12 @@ async function confirmDedup() {
   loadFromResult(r);
   const moved = r.dedup_moved != null ? r.dedup_moved : paths.length;
   const failed = r.dedup_failed || 0;
+  const cleaned = r.dedup_history_removed || 0;
+  const cleanMsg = cleaned ? `，清理 ${cleaned} 条处理记录` : '';
   if (_dedupStage === 'identical') {
-    showDedupInterlude(`已移除 ${moved} 个完全相同副本` + (failed ? `，失败 ${failed} 个` : ''));
+    showDedupInterlude(`已移除 ${moved} 个完全相同副本` + (failed ? `，失败 ${failed} 个` : '') + cleanMsg);
   } else {
-    showDedupInterlude(`已移除 ${moved} 个重复视频` + (failed ? `，失败 ${failed} 个` : ''));
+    showDedupInterlude(`已移除 ${moved} 个重复视频` + (failed ? `，失败 ${failed} 个` : '') + cleanMsg);
   }
 }
 

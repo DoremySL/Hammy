@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from .env import logger
 from .failed import move_with_companion
@@ -43,14 +43,24 @@ def partial_hash(path: str) -> Optional[str]:
 _COPY_MARKERS = re.compile(r"[（(\[]\d{1,3}[)）\]]|副本|copy", re.IGNORECASE)
 
 
+def _norm(path: str) -> str:
+    return os.path.normcase(os.path.normpath(path))
+
+
 def _dedup_sort_key(path: str) -> Tuple[str, int, int, str]:
-    p = os.path.normcase(os.path.normpath(path))
+    p = _norm(path)
     stem = os.path.splitext(os.path.basename(p))[0]
     return (os.path.dirname(p), len(_COPY_MARKERS.findall(stem)), len(stem), p)
 
 
-def find_duplicates(paths: List[str]) -> List[Dict]:
-    """在给定的视频路径列表中查找内容重复的分组。"""
+def find_duplicates(paths: List[str],
+                    preferred: Optional[Set[str]] = None) -> List[Dict]:
+    """在给定的视频路径列表中查找内容重复的分组。
+
+    preferred 为已处理路径集合（normcase）：组内已处理成员全部保留（keeps），
+    其余待处理成员推荐移除；无已处理成员时按原排序保留第一个。
+    """
+    pref = preferred or set()
     # 1) 按文件大小分组（大小不同必然不重复）
     by_size: Dict[int, List[str]] = {}
     for p in paths:
@@ -75,11 +85,13 @@ def find_duplicates(paths: List[str]) -> List[Dict]:
         for digest, dup in by_hash.items():
             if len(dup) < 2:
                 continue
-            # 排序，保留最像原版的第一个
             dup_sorted = sorted(dup, key=_dedup_sort_key)
+            keeps = [p for p in dup_sorted if _norm(p) in pref]
+            if not keeps:
+                keeps = [dup_sorted[0]]
             groups.append({
-                "keep": dup_sorted[0],
-                "remove": dup_sorted[1:],
+                "keeps": keeps,
+                "remove": [p for p in dup_sorted if p not in keeps],
                 "size": size,
             })
     return groups

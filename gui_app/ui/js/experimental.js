@@ -2307,7 +2307,7 @@ function _specSelectVal(v) {
 }
 const _specDdInner = sel => buildDdInner(SPEC_DRAFT_OPTS, sel);
 
-const IMG_TOKEN_STR = ['70', '140', '280', '560', '1120'];
+const IMG_TOKEN_STR = ['96', '192', '256', '384', '512', '960'];
 const _IMG_TOKEN_OPTS = [['', '自动']].concat(IMG_TOKEN_STR.map(t => [t, t]));
 function _imgTokensSelectVal(v) {
   const s = String(v || '').trim();

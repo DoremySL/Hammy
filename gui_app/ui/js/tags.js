@@ -48,11 +48,11 @@ function renderTagsTab(pt) {
         <div class="tag-left">
           <div class="tag-left-top">
             <span id="pt-mode-seg" class="mode-switch">
-              <button type="button" class="pill clickable${state.ptMode === 'off' ? ' active' : ''}" data-mode="off">关闭</button>
+              <button type="button" class="pill clickable${state.ptMode === 'off' ? ' active' : ''}" data-mode="off" data-tip="关闭：标签库不参与分析">关闭</button>
               <span class="pill-sep"></span>
-              <button type="button" class="pill clickable${state.ptMode === 'on' ? ' active' : ''}" data-mode="on">开启</button>
+              <button type="button" class="pill clickable${state.ptMode === 'on' ? ' active' : ''}" data-mode="on" data-tip="开启：启用的标签一次性写入提示词，一次分析完成">开启</button>
               <span class="pill-sep"></span>
-              <button type="button" class="pill clickable${state.ptMode === 'enhanced' ? ' active' : ''}" data-mode="enhanced">增强</button>
+              <button type="button" class="pill clickable${state.ptMode === 'enhanced' ? ' active' : ''}" data-mode="enhanced" data-tip="增强：首轮不带标签，根据首轮输出内容检索出候选标签让AI做第二轮修订">增强</button>
             </span>
             <div class="tag-seg">
               <button type="button" id="btn-pt-import">导入</button>

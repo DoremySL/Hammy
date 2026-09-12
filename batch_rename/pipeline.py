@@ -201,7 +201,7 @@ class AIWorker:
             write_nfo(video_path=new_path, title=title, plot=plot,
                        tags=tags, info=info, original_name=name,
                        target_dir=self.config.nfo_target_dir,
-                       nfo_name=nfo_name)
+                       nfo_name=nfo_name, status=status)
 
         self.stats.inc(status)
         if status == "error":

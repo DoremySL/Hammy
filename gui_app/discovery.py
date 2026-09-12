@@ -125,6 +125,12 @@ def _build_history_path_index() -> Tuple[Set[str], Set[str], Dict[str, Dict[str,
     return done, failed, by_path
 
 
+def processed_paths() -> Set[str]:
+    """已处理视频路径集合（normcase）：ok 的现路径 + skipped 的原路径。"""
+    done, _, _ = _build_history_path_index()
+    return done
+
+
 # ── 缩略图内存缓存 ──
 
 _thumb_lru: OrderedDict[str, str] = OrderedDict()  # vid -> data_url

@@ -141,11 +141,10 @@ const CFG_FIELDS_AI = [
   ]},
 ];
 const CFG_FIELDS_PROCESSING = [
-  { group: '视频抽帧', noTitle: true, cols: 4, fields: [
+  { group: '视频抽帧', noTitle: true, cols: 3, fields: [
     { sec: 'video', key: 'sampling_points', label: '采样点位', type: 'number', min: 1, help: '均匀分布的关键帧取样位置数；采样点位*每点帧数=抽取的关键帧数量', default: 5 },
     { sec: 'video', key: 'frames_per_point', label: '每点帧数', type: 'number', min: 1, help: '每个点位取连续关键帧数，增大此项可给AI提供连续的画面信息', default: 3 },
     { sec: 'video', key: 'frame_max_side', label: '长边像素', type: 'number', min: 64, help: '抽帧图片长边上限，仅缩小不放大', default: 640 },
-    { sec: 'video', key: 'frame_time_tags', label: '时间标签', type: 'select', options: [['1', '添加时间标签'], ['2', '添加并用于优化缩略图'], ['0', '不添加标签']], default: '0', help: '每张截图前添加时间戳，帮助模型理解画面时间顺序；开启用于优化缩略图将提示模型给出最符合视频主题的截图时间戳，对模型能力有要求' },
   ]},
   { group: '命名与输出', noTitle: true, cols: 4, fields: [
     { sec: 'naming', key: 'include_date', label: '添加日期前缀', type: 'bool', help: '文件名前添加日期，降低重名几率' },
@@ -418,7 +417,6 @@ async function _saveConfigNow() {
   try {
     const res = await apiCall('save_config', data);
     if (res && res.ok) {
-      state.thumbOptimize = Number((data.video || {}).frame_time_tags) === 2;
       if ('disable_animation' in data) applyDisableAnimation(data.disable_animation === true);
     } else if (token === _cfgSaveToken) {
       toast('保存失败: ' + ((res && res.error) || ''), 'err');

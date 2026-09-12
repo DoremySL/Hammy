@@ -126,6 +126,29 @@ def restore_videos(vids: List[str]) -> Dict[str, Any]:
     return {"ok": failed == 0, "ok_count": ok, "failed_count": failed, "messages": msgs[:10]}
 
 
+def remove_history_for_path(path: str) -> bool:
+    """按现路径（new_path）删除匹配的 history 条目（供去重移动已处理视频后调用），
+    同时清理其缩略图与缓存 NFO。未匹配返回 False。"""
+    target = os.path.normcase(os.path.normpath(path))
+    vid = ""
+    with _lock:
+        for e in load_history().get("entries", []):
+            p = e.get("new_path")
+            if p and os.path.normcase(os.path.normpath(p)) == target:
+                vid = e.get("id") or ""
+                break
+        if vid:
+            remove_history_by_id(vid)
+    if not vid:
+        return False
+    discovery.invalidate_thumbnail(vid)
+    try:
+        (NFO_DIR / f"{vid}.nfo").unlink(missing_ok=True)
+    except OSError:
+        pass
+    return True
+
+
 # ── Reconcile：history 与磁盘对账 ──
 
 

@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .. import discovery
+from .. import nfo_import
+from .. import workspace_service
 from ..constants import PROBE_POOL_WORKERS
 from ..workspace_paths import SIMILAR_CACHE_FILE, stable_id
 from ..workspace_store import (
@@ -43,21 +45,31 @@ class SourcesMixin:
     # ── 多源管理 ──
 
     def add_sources(self, paths: List[str]) -> Dict[str, Any]:
-        """追加源（文件夹或文件）。返回更新后的 manifest + 扫描结果。"""
+        """追加源（文件夹或文件）。返回更新后的 manifest + 扫描结果（含 NFO 导入计数）。"""
         # 防御性：前端可能传非 list
         if not isinstance(paths, (list, tuple)):
             return {"error": "paths 必须是列表"}
         try:
+            valid = []
             for p in paths:
                 if not isinstance(p, str) or not p:
                     continue
                 if Path(p).is_dir():
                     add_root(p)
+                    valid.append(p)
                 elif Path(p).is_file():
                     add_adhoc_files([p])
+                    valid.append(p)
         except Exception as e:
             return {"error": f"添加源失败: {e}"}
-        return self.scan()
+        try:
+            import_counts = nfo_import.import_from_sources(valid)
+        except Exception:
+            import_counts = None
+        result = self.scan()
+        if import_counts is not None:
+            result["nfo_import"] = import_counts
+        return result
 
     def remove_source(self, path: str, is_adhoc: bool) -> Dict[str, Any]:
         """从 manifest 移除一个源。"""
@@ -75,15 +87,20 @@ class SourcesMixin:
     # ── 去重 ──
 
     def find_duplicates(self) -> Dict[str, Any]:
-        """扫描当前待处理列表，返回内容重复的分组（仅检测，不移动）：
-        {"groups": [{"keep", "remove", "size", "size_str"}], "total_remove": int}
+        """扫描源内全部视频（含已处理）查找内容重复分组（仅检测，不移动）：
+        {"groups": [{"keeps", "remove", "size", "size_str"}], "total_remove": int}
+        已处理视频优先全量保留，组内待处理重复项被推荐移除。
         """
-        pending = discovery.collect_all()
-        groups = dedup.find_duplicates(pending)
+        done = discovery.processed_paths()
+        groups = dedup.find_duplicates(discovery.collect_all(), done)
         out: List[Dict[str, Any]] = []
         total_remove = 0
         for g in groups:
-            keep_p = Path(g["keep"])
+            keep_items = [{
+                "path": k,
+                "name": Path(k).name,
+                "dir": str(Path(k).parent),
+            } for k in g["keeps"]]
             remove_items = []
             for rp in g["remove"]:
                 rp_path = Path(rp)
@@ -93,11 +110,7 @@ class SourcesMixin:
                     "dir": str(rp_path.parent),
                 })
             out.append({
-                "keep": {
-                    "path": g["keep"],
-                    "name": keep_p.name,
-                    "dir": str(keep_p.parent),
-                },
+                "keeps": keep_items,
                 "remove": remove_items,
                 "size": g["size"],
                 "size_str": _fmt_size(g["size"]),
@@ -119,6 +132,7 @@ class SourcesMixin:
         _similar_stop = stop
         try:
             paths = discovery.collect_all()
+            done = discovery.processed_paths()
             with ThreadPoolExecutor(PROBE_POOL_WORKERS) as ex:
                 infos = list(ex.map(discovery.probe_video, paths))
             discovery.prune_probe_cache(paths)
@@ -189,7 +203,7 @@ class SourcesMixin:
             if not accepted:
                 return {"groups": []}
             return {"groups": self._similar_finalize(
-                metas, cand, accepted, fps1, fpsf, mode_cfg, full_edges)}
+                metas, cand, accepted, fps1, fpsf, mode_cfg, full_edges, done)}
         finally:
             _similar_stop = None
             _similar_lock.release()
@@ -277,41 +291,45 @@ class SourcesMixin:
         return fpsf, accepted, full_edges
 
     @staticmethod
-    def _similar_finalize(metas, cand, accepted, fps1, fpsf, mode_cfg,
-                          full_edges) -> List[Dict[str, Any]]:
-        """聚组后终验：每个成员与 keep 实际对齐（accepted 边直接复用结果），
-        防止 A≈B≈C 桥接链误并；有成员被踢时用保留边重聚并重算 keep/extras。"""
+    def _member_aligns(m: str, keeps: List[str], all_fp: Dict[str, Optional[Dict]],
+                       full_edges: Dict[frozenset, Any], metas: Dict[str, Dict],
+                       mode_cfg) -> bool:
+        """成员 m 与任一保留项实际对齐即视为组内有效（accepted 边直接复用结果）。"""
         from batch_rename import similarity as sim
+        fm = {i: v for i, v in (all_fp.get(m) or {}).items() if v}
+        if not fm:
+            return False
+        for k in keeps:
+            if k == m:
+                continue
+            r = full_edges.get(frozenset((m, k)))
+            if r is None:
+                fk = {i: v for i, v in (all_fp.get(k) or {}).items() if v}
+                if not fk:
+                    continue
+                r = sim.align([fm[i] for i in sorted(fm)],
+                              [fk[i] for i in sorted(fk)],
+                              metas[k]["duration"] - metas[m]["duration"],
+                              metas[m]["duration"], metas[k]["duration"],
+                              mode=mode_cfg)
+            if r:
+                return True
+        return False
+
+    @staticmethod
+    def _similar_finalize(metas, cand, accepted, fps1, fpsf, mode_cfg,
+                          full_edges, preferred=None) -> List[Dict[str, Any]]:
+        """聚组后终验：每个成员与任一保留项实际对齐（accepted 边直接复用结果），
+        防止 A≈B≈C 桥接链误并；有成员被踢时用保留边重聚，重聚产生的全部子组
+        均输出，未连入任何子组的保留项单独成组。"""
+        from batch_rename import similarity as sim
+        pref = preferred or set()
         all_fp = {p: fpsf.get(p) or fps1.get(p) for p in cand
                   if fpsf.get(p) or fps1.get(p)}
-        groups = []
-        for g in sim.cluster_groups(metas, accepted):
-            members = g["paths"]
-            keep = g["keep"]
-            fk = {i: v for i, v in all_fp[keep].items() if v}
-            ok_set = {keep}
-            for m in members:
-                if m == keep:
-                    continue
-                r = full_edges.get(frozenset((m, keep)))
-                if r is None:
-                    fm = {i: v for i, v in all_fp[m].items() if v}
-                    r = sim.align([fm[i] for i in sorted(fm)],
-                                  [fk[i] for i in sorted(fk)],
-                                  metas[keep]["duration"] - metas[m]["duration"],
-                                  metas[m]["duration"], metas[keep]["duration"],
-                                  mode=mode_cfg)
-                if r:
-                    ok_set.add(m)
-            if len(ok_set) < len(members):
-                sub_edges = [(a, b, r2) for a, b, r2 in accepted
-                             if a in ok_set and b in ok_set]
-                for g2 in sim.cluster_groups(metas, sub_edges):
-                    if keep in g2["paths"]:
-                        g = g2
-                        break
+
+        def emit(paths: List[str], keeps: List[str], extras: Dict[str, float]) -> None:
             items = []
-            for p in g["paths"]:
+            for p in paths:
                 m = metas[p]
                 pp = Path(p)
                 items.append({
@@ -321,17 +339,52 @@ class SourcesMixin:
                     "duration": m.get("duration", 0),
                     "audio_codec": m.get("audio_codec", ""), "has_audio": m.get("has_audio", False),
                 })
-            groups.append({"items": items, "keep": g["keep"], "extras": g["extras"]})
+            groups.append({"items": items, "keeps": keeps, "extras": extras})
+
+        groups = []
+        for g in sim.cluster_groups(metas, accepted, pref):
+            members = g["paths"]
+            keeps = g["keeps"]
+            ok_set = set(keeps)
+            for m in members:
+                if m in ok_set:
+                    continue
+                if SourcesMixin._member_aligns(m, keeps, all_fp, full_edges,
+                                               metas, mode_cfg):
+                    ok_set.add(m)
+            if len(ok_set) < len(members):
+                sub_edges = [(a, b, r2) for a, b, r2 in accepted
+                             if a in ok_set and b in ok_set]
+                sub_groups = sim.cluster_groups(metas, sub_edges, pref)
+                if sub_groups:
+                    covered = set()
+                    for g2 in sub_groups:
+                        covered.update(g2["paths"])
+                        emit(g2["paths"], g2["keeps"], g2["extras"])
+                    for k in keeps:
+                        if k not in covered:
+                            emit([k], [k], {k: 0.0})
+                    continue
+            emit(g["paths"], keeps, g["extras"])
         return groups
 
     def confirm_dedup(self, remove_paths: List[str]) -> Dict[str, Any]:
-        """执行去重：将指定文件移入 _duplicates/ 子目录，然后重新扫描。"""
+        """执行去重：将指定文件移入 _duplicates/ 子目录，然后重新扫描。
+        被移除的已处理视频同步删除其 history 条目与缩略图/缓存 NFO。"""
         if not isinstance(remove_paths, (list, tuple)) or not remove_paths:
             return {"error": "没有需要移除的文件"}
         moved, errors = dedup.move_to_duplicates(list(remove_paths))
+        hist_removed = 0
+        for p in moved:
+            try:
+                if workspace_service.remove_history_for_path(p):
+                    hist_removed += 1
+            except Exception:
+                pass
         result = self.scan()
         result["dedup_moved"] = len(moved)
         result["dedup_failed"] = len(errors)
+        result["dedup_history_removed"] = hist_removed
         return result
 
     # ── 扫描 ──

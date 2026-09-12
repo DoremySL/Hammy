@@ -19,7 +19,7 @@ function renderPromptsTab(presets, activePreset) {
     <div class="preset-wrap">
       <input type="hidden" id="preset-editing-id" value="${esc(activePreset.id)}"/>
       <div class="preset-hero">
-        <div class="dd" id="preset-select" data-tip="选择模板即启用，下方编辑区随之切换">
+        <div class="dd" id="preset-select">
           <button class="dd-btn"><span class="dd-label">${esc(activePreset.name)}</span>${ddArrow()}</button>
           <div class="dd-panel">
             ${presets.map(p => `<div class="dd-opt${p.id === activePreset.id ? ' active' : ''}" data-value="${esc(p.id)}">${esc(p.name)}</div>`).join('')}
@@ -28,6 +28,7 @@ function renderPromptsTab(presets, activePreset) {
         <span class="exp-badge warn" id="pv-dirty-badge" style="display:none">未保存</span>
         <div class="preset-hero-actions">
           <button class="a-toggle${state.pvUseExample ? ' on' : ''}" id="pv-use-example" data-tip="开启后会附加示例段供模型参考，可调整示例让AI输出更符合个人需求的文风"><span class="dot"></span><span class="txt">拼接示例 · ${state.pvUseExample ? '开' : '关'}</span></button>
+          <button class="a-toggle${state.thumbOptimize ? ' on' : ''}" id="pv-thumb-opt" data-tip="开启后提示模型给出最符合视频主题的封面截图时间戳，处理完成时据此重新生成缩略图；对模型能力有要求"><span class="dot"></span><span class="txt">缩略图优化 · ${state.thumbOptimize ? '开' : '关'}</span></button>
           <button class="ws-btn" id="btn-save-as-preset">保存为新模板</button>
           <button class="ws-btn danger" id="btn-delete-preset" ${canSave ? '' : 'disabled'}>删除</button>
           <button class="ws-btn primary" id="btn-save-preset" ${canSave ? '' : 'disabled'} data-tip="${canSave ? '保存对该模板的修改' : '内置模板不可保存，请「保存为新模板」'}">保存</button>
@@ -45,7 +46,7 @@ function renderPromptsTab(presets, activePreset) {
         <div class="field"><label>title 字数/格式要求</label><textarea data-field="title_guidance">${esc(activePreset.fields.title_guidance)}</textarea></div>
       </div>
       <div class="field" style="margin-top:14px"><label>tags 维度要求</label><textarea data-field="tags_dim">${esc(activePreset.fields.tags_dim)}</textarea></div>
-      <div class="field" style="margin-top:14px;${state.thumbOptimize ? '' : 'display:none'}">
+      <div class="field" id="pv-thumb-guide-field" style="margin-top:14px;${state.thumbOptimize ? '' : 'display:none'}">
         <label>thumb_time 引导</label>
         <textarea data-field="thumb_time_guidance">${esc(activePreset.fields.thumb_time_guidance || '')}</textarea>
       </div>
@@ -55,7 +56,7 @@ function renderPromptsTab(presets, activePreset) {
       <div class="field"><label>plot 示例</label><textarea data-field="plot_example" style="min-height:100px">${esc(activePreset.fields.plot_example)}</textarea></div>
       <div class="field" style="margin-top:14px"><label>tags 示例</label><input type="text" data-field="tags_example" value="${esc(activePreset.fields.tags_example)}"/></div>
       <div class="field" style="margin-top:14px"><label>title 示例</label><input type="text" data-field="title_example" value="${esc(activePreset.fields.title_example)}"/></div>
-      <div class="field" style="margin-top:14px;${state.thumbOptimize ? '' : 'display:none'}">
+      <div class="field" id="pv-thumb-example-field" style="margin-top:14px;${state.thumbOptimize ? '' : 'display:none'}">
         <label>thumb_time 示例</label>
         <input type="text" data-field="thumb_time_example" value="${esc(activePreset.fields.thumb_time_example || '')}"/>
       </div>
@@ -118,6 +119,26 @@ function renderPromptsTab(presets, activePreset) {
       return;
     }
     state.pvUseExample = on;
+    updatePreview();
+  });
+
+  $('#pv-thumb-opt').addEventListener('click', async () => {
+    const btn = $('#pv-thumb-opt');
+    const apply = on => {
+      btn.classList.toggle('on', on);
+      btn.querySelector('.txt').textContent = '缩略图优化 · ' + (on ? '开' : '关');
+      const g = $('#pv-thumb-guide-field'); if (g) g.style.display = on ? '' : 'none';
+      const e = $('#pv-thumb-example-field'); if (e) e.style.display = on ? '' : 'none';
+    };
+    const on = !state.thumbOptimize;
+    apply(on);
+    const r = await callApi('set_prompt_thumb_optimize', on);
+    if (!r || !r.ok) {
+      if (r && !r.ok) toast(r.error || '设置失败', 'err');
+      apply(!on);
+      return;
+    }
+    state.thumbOptimize = on;
     updatePreview();
   });
 
