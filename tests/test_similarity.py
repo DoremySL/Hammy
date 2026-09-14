@@ -34,10 +34,6 @@ class TestDhash(unittest.TestCase):
         frames = sim._frames_from_raw(f1 + flat + f1, 10)
         self.assertEqual([t for t, _ in frames], [10.0, 12.0])
 
-    def test_raw_unique_counts_content_changes(self):
-        a, b = bytes([1] * 72), bytes([2] * 72)
-        self.assertEqual(sim._raw_unique_count(a + a + b + a), 3)
-
 
 class TestMatchCount(unittest.TestCase):
     @staticmethod
@@ -84,6 +80,22 @@ class TestPreDist(unittest.TestCase):
 
     def test_short_input(self):
         self.assertEqual(sim.pre_dist([_f(0, 0b0011)], [_f(0, 0b0000)]), 2)
+
+    def test_span_mismatch_compares_near_time_frames(self):
+        # 整片单段指纹（中间 ~131s）vs 60s 窗口指纹（中间 ~161s）：
+        # 应取窗口中间帧与整片中时间相近的帧比较，而不是各自中间帧硬比
+        mix = lambda t: (t * 0x9E3779B97F4A7C15) & FULL
+        whole = [_f(t, mix(t)) for t in range(263)]
+        win = [_f(132 + t, mix(132 + t)) for t in range(60)]
+        self.assertLessEqual(sim.pre_dist(whole, win), 10)
+
+    def test_disjoint_spans_pass_gate(self):
+        a = [_f(t, 0) for t in range(10)]
+        b = [_f(100.0 + t, FULL) for t in range(10)]
+        self.assertEqual(sim.pre_dist(a, b), 0)
+
+    def test_empty_input_rejected(self):
+        self.assertGreater(sim.pre_dist([], [_f(0, 0)]), sim.PRE_FILTER_DIST)
 
 
 class TestResolution(unittest.TestCase):

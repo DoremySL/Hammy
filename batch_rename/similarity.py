@@ -37,11 +37,9 @@ class ScanMode:
     delta_range: float
     window_sec: float
     window_min_match: int
-    use_keyframes: bool = False
     windows: Tuple[int, ...] = (0, 1, 2, 3, 4)
     short_sec: float = SHORT_VIDEO_SEC
     tiered_dur_tol: bool = False
-    kf_unique_div: int = 3     # 关键帧回退分母
 
     def dur_tol_for(self, duration: float) -> float:
         """按时长返回预筛容差。"""
@@ -55,9 +53,8 @@ class ScanMode:
 
 
 # 快速 / 常规 / 极慢
-FAST = ScanMode(2.0, 2.0, 15.0, 6, True, (1, 2, 3), 90.0,
-                tiered_dur_tol=True, kf_unique_div=6)
-NORMAL = ScanMode(15.0, 15.0, 30.0, 8, True)
+FAST = ScanMode(2.0, 2.0, 15.0, 6, (1, 2, 3), 90.0, tiered_dur_tol=True)
+NORMAL = ScanMode(15.0, 15.0, 30.0, 8)
 EXTREME = ScanMode(35.0, 35.0, 60.0, 8)
 SCAN_MODES = {"fast": FAST, "normal": NORMAL, "extreme": EXTREME}
 
@@ -88,23 +85,16 @@ def _frames_from_raw(raw: bytes, t0: float) -> List[Tuple[float, int]]:
     return out
 
 
-def _raw_unique_count(raw: bytes) -> int:
-    """去重后的不同内容帧数。"""
-    n = 0
-    prev = None
-    for k in range(len(raw) // _FRAME_BYTES):
-        b = raw[k * _FRAME_BYTES:(k + 1) * _FRAME_BYTES]
-        if b != prev:
-            n += 1
-            prev = b
-    return n
-
-
 def fingerprint_windows(path: str, duration: float,
                         is_ts: bool, idxs: Sequence[int],
                         stop_event: threading.Event,
                         mode: ScanMode = NORMAL) -> Dict[int, List[Tuple[float, int]]]:
-    """抽取指纹帧 [(t, hash)]。"""
+    """抽取指纹帧 [(t, hash)]：全解码 fps=1 均匀采样。
+
+    不用 -skip_frame nokey 快路径：只解关键帧时 fps=1 会把过期关键帧
+    复制填充时间轴，各编码 GOP 落点不同导致帧内容与时间戳错位，
+    跨编码比对必然失败，只有同一码流的转封装才能对上。
+    """
     if not ffmpeg_tools.ffmpeg:
         ffmpeg_tools.locate()
     vf = "fps=1,scale=9:8,format=gray"
@@ -114,36 +104,18 @@ def fingerprint_windows(path: str, duration: float,
         stdout, _ = run_subprocess_with_cancel(cmd, timeout, stop_event)
         return _frames_from_raw(stdout or b"", t0)
 
-    def run_kf(cmd: List[str], t0: float, timeout: float, min_unique: int) -> List[Tuple[float, int]]:
-        raw = run_subprocess_with_cancel(
-            [ffmpeg_tools.ffmpeg, "-y", "-skip_frame", "nokey", *cmd], timeout, stop_event)[0] or b""
-        frames = _frames_from_raw(raw, t0)
-        if _raw_unique_count(raw) < min_unique:
-            raw2 = run_subprocess_with_cancel(
-                [ffmpeg_tools.ffmpeg, "-y", *cmd], timeout, stop_event)[0] or b""
-            if _raw_unique_count(raw2) > _raw_unique_count(raw):
-                frames = _frames_from_raw(raw2, t0)
-        return frames
-
     # mpegts / 短视频：整段单次解码
     if is_ts or duration <= mode.short_sec:
         cmd = ["-i", path, "-vf", vf, *raw_out]
-        if mode.use_keyframes:
-            return {0: run_kf(cmd, 0.0, _FULL_TIMEOUT,
-                              max(4, int(duration) // mode.kf_unique_div))}
         return {0: run([ffmpeg_tools.ffmpeg, "-y", *cmd], 0.0, _FULL_TIMEOUT)}
     result: Dict[int, List[Tuple[float, int]]] = {}
-    min_unique = max(4, int(mode.window_sec) // mode.kf_unique_div)
     for i in idxs:
         if stop_event.is_set():
             break
         pos = WINDOW_POS[i] * duration
         cmd = ["-ss", f"{pos:.3f}", "-i", path, "-t", f"{mode.window_sec:.3f}",
                "-vf", vf, *raw_out]
-        if mode.use_keyframes:
-            result[i] = run_kf(cmd, pos, _WINDOW_TIMEOUT, min_unique)
-        else:
-            result[i] = run([ffmpeg_tools.ffmpeg, "-y", *cmd], pos, _WINDOW_TIMEOUT)
+        result[i] = run([ffmpeg_tools.ffmpeg, "-y", *cmd], pos, _WINDOW_TIMEOUT)
     return result
 
 
@@ -192,11 +164,21 @@ def _bin_by_windows(frames: List[Tuple[float, int]], duration: float,
 
 
 def pre_dist(fa: List[Tuple[float, int]], fb: List[Tuple[float, int]]) -> int:
-    """阶段 1 帧级粗筛距离。"""
-    def mid3(f: List[Tuple[float, int]]) -> List[int]:
-        k = max(0, len(f) // 2 - 1)
-        return [h for _, h in f[k:k + 3]]
-    return min((x ^ y).bit_count() for x in mid3(fa) for y in mid3(fb))
+    """阶段 1 帧级粗筛距离。
+
+    整片单段（ts/短视频）与窗口指纹的时间跨度不同，直接各取中间帧
+    会错位到不同画面；改为取跨度较短一方的中间帧，与另一方时间相近
+    的帧比较。时间不相交时返回 0 放行，交给 align 判定。
+    """
+    if not fa or not fb:
+        return PRE_FILTER_DIST + 1
+    src, other = (fa, fb) if len(fa) <= len(fb) else (fb, fa)
+    k = max(0, len(src) // 2 - 1)
+    mids = src[k:k + 3]
+    near = [h for t, h in other if abs(t - mids[0][0]) <= 3.0]
+    if not near:
+        return 0
+    return min((x ^ y).bit_count() for _, x in mids for y in near)
 
 
 @dataclass(frozen=True)
