@@ -149,7 +149,7 @@ class TestBuildEngineConfigTriState(unittest.TestCase):
 
     def test_invalid_falls_back(self):
         eng, _ = self._build("x")
-        self.assertEqual(eng.frame_time_tags, 0)
+        self.assertEqual(eng.frame_time_tags, 2)
 
 
 if __name__ == "__main__":

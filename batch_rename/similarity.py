@@ -90,10 +90,6 @@ def fingerprint_windows(path: str, duration: float,
                         stop_event: threading.Event,
                         mode: ScanMode = NORMAL) -> Dict[int, List[Tuple[float, int]]]:
     """抽取指纹帧 [(t, hash)]：全解码 fps=1 均匀采样。
-
-    不用 -skip_frame nokey 快路径：只解关键帧时 fps=1 会把过期关键帧
-    复制填充时间轴，各编码 GOP 落点不同导致帧内容与时间戳错位，
-    跨编码比对必然失败，只有同一码流的转封装才能对上。
     """
     if not ffmpeg_tools.ffmpeg:
         ffmpeg_tools.locate()
@@ -165,10 +161,6 @@ def _bin_by_windows(frames: List[Tuple[float, int]], duration: float,
 
 def pre_dist(fa: List[Tuple[float, int]], fb: List[Tuple[float, int]]) -> int:
     """阶段 1 帧级粗筛距离。
-
-    整片单段（ts/短视频）与窗口指纹的时间跨度不同，直接各取中间帧
-    会错位到不同画面；改为取跨度较短一方的中间帧，与另一方时间相近
-    的帧比较。时间不相交时返回 0 放行，交给 align 判定。
     """
     if not fa or not fb:
         return PRE_FILTER_DIST + 1

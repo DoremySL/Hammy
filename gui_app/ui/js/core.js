@@ -107,7 +107,7 @@ const state = {
   pixaiTaggerEnabled: false,
   whisperEnabled: false,
   ragVecEnabled: false,
-  thumbOptimize: false,
+  thumbOptimize: true,
   gpuBusy: false,
   installing: false,
   pixaiTaggedIds: new Set(),

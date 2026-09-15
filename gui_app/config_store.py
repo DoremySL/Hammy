@@ -36,6 +36,7 @@ def _default_config() -> Dict[str, Any]:
             "sampling_points": 5,
             "frames_per_point": 3,
             "frame_max_side": 640,
+            "frame_time_tags": 2,
         },
         "naming": {
             "include_date": True,

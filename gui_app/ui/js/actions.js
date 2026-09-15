@@ -127,7 +127,7 @@ async function moveOut() {
     toast(r && r.error ? r.error : '移回失败', 'err', true);
   }
 }
-async function recycleExcluded(ids) {
+async function recycleVideos(ids) {
   const n = ids.length;
   if (!n) return;
   if (!await showConfirm(`确定把 ${n} 个视频移入回收站吗？\n\n之后如需恢复，可从系统回收站还原。`, { okText: '移入回收站', danger: true })) return;
@@ -386,11 +386,19 @@ function showContextMenu(e, v) {
     { label: '在资源管理器中打开', fn: () => openInExplorer(v.path) },
     { label: '使用默认播放器播放', fn: () => callApi('play_video', v.path) },
   ];
-  const gRename = [];
-  if (!state.processing && !state.gpuBusy) {
-    gRename.push({ label: `手动重命名（${selIds.length} 个）`, fn: () => openRenameDialog() });
+  const pendingIds = state.view === 'pending' ? selIds.filter(id => {
+    const vv = findVideoById(id);
+    return vv && vv.status === 'pending';
+  }) : [];
+  const gTop = [];
+  if (pendingIds.length) {
+    const noProcess = !(state.llamaIntegration || state.aiConnected) || state.processing || state.gpuBusy;
+    gTop.push({ label: `处理选中视频（${pendingIds.length} 个）`, fn: () => processSelected(), disabled: noProcess });
   }
-  if (gRename.length) groups.push(gRename);
+  if (!state.processing && !state.gpuBusy) {
+    gTop.push({ label: `手动重命名（${selIds.length} 个）`, fn: () => openRenameDialog() });
+  }
+  if (gTop.length) groups.push(gTop);
   const gExport = [
     { label: `导出到…（${selIds.length} 个）`, fn: () => exportToFolder(false) },
   ];
@@ -400,15 +408,8 @@ function showContextMenu(e, v) {
   groups.push(gBasic, gExport);
 
   const gView = [];
-  if (state.view === 'pending') {
-    const pendingIds = selIds.filter(id => {
-      const vv = findVideoById(id);
-      return vv && vv.status === 'pending';
-    });
-    if (pendingIds.length) {
-      const noProcess = !(state.llamaIntegration || state.aiConnected) || state.processing || state.gpuBusy;
-      gView.push({ label: `处理选中视频（${pendingIds.length} 个）`, fn: () => processSelected(), disabled: noProcess });
-    }
+  if (state.view === 'pending' && pendingIds.length) {
+    gView.push({ label: `移入回收站（${pendingIds.length} 个）`, fn: () => recycleVideos(pendingIds), danger: true, disabled: state.processing || state.gpuBusy });
   }
   const gPixai = [];
   if (state.view === 'pending' && state.pixaiTaggerEnabled) {
@@ -442,7 +443,7 @@ function showContextMenu(e, v) {
     });
     if (exIds.length) {
       gView.push({ label: `移回上级目录（${exIds.length} 个）`, fn: () => moveOut() });
-      gView.push({ label: `移入回收站（${exIds.length} 个）`, fn: () => recycleExcluded(exIds), danger: true });
+      gView.push({ label: `移入回收站（${exIds.length} 个）`, fn: () => recycleVideos(exIds), danger: true });
     }
   }
   if (gView.length) groups.push(gView);
