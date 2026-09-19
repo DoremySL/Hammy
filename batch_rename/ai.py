@@ -384,6 +384,8 @@ def _refine_round(client: OpenAIClient, model: str, messages: list,
         "aux": extra_meta,
     }
     candidates = tag_recall.recall(parts)
+    if stop_event.is_set():
+        return AnalyzeResult("", "", [], 0, "已取消", "cancel")
     if not candidates:
         return result._replace(recalled=0, recalled_keywords=[])
     keywords = [it["keyword"] for it in candidates]
@@ -396,7 +398,7 @@ def _refine_round(client: OpenAIClient, model: str, messages: list,
     refined: Optional[AnalyzeResult] = None
     for _attempt2 in range(2):
         if stop_event.is_set():
-            return result._replace(recalled=len(candidates), recalled_keywords=keywords)
+            return AnalyzeResult("", "", [], 0, "已取消", "cancel")
         try:
             refined = _call_and_parse(client, model, msgs, config, stop_event,
                                       slot_id=slot_id)
@@ -406,6 +408,8 @@ def _refine_round(client: OpenAIClient, model: str, messages: list,
         except Exception:
             # 第二轮失败沿用首轮
             return result._replace(recalled=len(candidates), recalled_keywords=keywords)
+    if refined is not None and refined.error_kind == "cancel":
+        return refined
     if refined is None or not refined.title:
         return result._replace(recalled=len(candidates), recalled_keywords=keywords)
 

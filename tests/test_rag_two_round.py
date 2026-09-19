@@ -147,7 +147,7 @@ class TestFullModeSingleRound(unittest.TestCase):
         sep = chr(10) * 2
         tr = TagRecall(ITEMS, mode="full")
         client = _FakeClient([R1])
-        analyze_frames(client, "m", _frames(), _cfg(), threading.Event(),
+        analyze_frames(client, "m", _frames(), _cfg(frame_time_tags=0), threading.Event(),
                        "C:/a.mp4", 60.0,
                        priority_section=tr.full_section, tag_recall=None)
         parts = client.calls[0]["messages"][-1]["content"]
@@ -155,6 +155,19 @@ class TestFullModeSingleRound(unittest.TestCase):
         combined = texts[-1]
         self.assertTrue(combined.endswith(sep + tr.full_section))
         self.assertEqual(len(texts), 2)  # meta 段 + 合并后的 prompt/标签段（原版布局）
+
+    def test_frame_time_tags_inserts_stamp_before_each_frame(self):
+        tr = TagRecall(ITEMS, mode="full")
+        client = _FakeClient([R1])
+        frames = _frames()
+        analyze_frames(client, "m", frames, _cfg(frame_time_tags=2), threading.Event(),
+                       "C:/a.mp4", 60.0,
+                       priority_section=tr.full_section, tag_recall=None)
+        parts = client.calls[0]["messages"][-1]["content"]
+        texts = [p["text"] for p in parts if p.get("type") == "text"]
+        self.assertEqual(len(texts), len(frames) + 2)  # 每帧时间戳段 + meta 段 + prompt/标签段
+        self.assertEqual(parts[0], {"type": "text", "text": "\n00:00:00:"})
+        self.assertEqual(parts[1]["type"], "image_url")
 
     def test_full_section_injected_once(self):
         tr = TagRecall(ITEMS, mode="full")

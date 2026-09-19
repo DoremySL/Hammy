@@ -4,13 +4,15 @@ from __future__ import annotations
 import re
 import threading
 import unicodedata
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional
 
 KIND_SCORE = {"exact": 1.0, "compact": 0.9, "token": 0.7}
 
 _SEP_RE = re.compile(r"[\s_\-]+")
 _LATIN_RE = re.compile(r"[a-z0-9]+")
 _RELATED_SPLIT_RE = re.compile(r"[,，、;；]+")
+
+_FIELD_SEP = "\x00"
 
 _FULL_HEADER = "【标签检索】\n为视频生成 tags 时，若画面内容匹配，请优先采用以下指定标签："
 _CAND_HEADER = ("【标签检索·召回候选】\n以下标签来自标签库检索，可能包含与视频无关的条目，"
@@ -38,6 +40,13 @@ def build_section(items: List[Dict[str, str]], header: str) -> str:
         lines.append(f"- {it['keyword']}：{desc}" if desc else f"- {it['keyword']}")
     return "\n".join(lines)
 
+class _Target(NamedTuple):
+    norm: str
+    compact: str
+    latin_tokens: frozenset
+    exact_re: Optional[re.Pattern]
+    compact_re: Optional[re.Pattern]
+
 class _Entry:
     """单个标签的预计算匹配索引：关键词与各关联词各为一组匹配目标。"""
     __slots__ = ("idx", "item", "targets")
@@ -45,14 +54,19 @@ class _Entry:
     def __init__(self, idx: int, item: Dict[str, str]):
         self.idx = idx
         self.item = item
-        self.targets: List[Tuple[str, str, frozenset]] = []
+        self.targets: List[_Target] = []
         for text in [item["keyword"], *split_related(item.get("related", ""))]:
             norm = _norm(text)
             if not norm:
                 continue
             compact = _compact(text)
             latin_tokens = frozenset(_LATIN_RE.findall(norm))
-            self.targets.append((norm, compact, latin_tokens))
+            exact_re = compact_re = None
+            if latin_tokens:
+                exact_re = re.compile(rf"(?<![a-z0-9]){re.escape(norm)}(?![a-z0-9])")
+                flex = r"[\s_-]*".join(map(re.escape, compact))
+                compact_re = re.compile(rf"(?<![a-z0-9]){flex}(?![a-z0-9])")
+            self.targets.append(_Target(norm, compact, latin_tokens, exact_re, compact_re))
 
 class TagRecall:
     """标签检索提供方：显式模式路由 + 词面召回（+ 可选向量召回合并）。"""
@@ -94,7 +108,7 @@ class TagRecall:
         """词面召回并取向量命中，返回去重后的候选条目；仅 rag 模式有效。"""
         if self.mode != "rag" or not self._entries:
             return []
-        hay_n = _norm("\n".join(v for v in parts.values() if v))
+        hay_n = _norm(_FIELD_SEP.join(v for v in parts.values() if v))
         hay_c = _compact(hay_n)
         hay_tokens = frozenset(_LATIN_RE.findall(hay_n))
 
@@ -146,12 +160,13 @@ class TagRecall:
     @staticmethod
     def _match(e: _Entry, hay_n: str, hay_c: str, hay_tokens: frozenset) -> Optional[str]:
         """任一匹配目标（关键词或关联词）三级命中即召回：精确 → 紧凑 → 分词。"""
-        for norm, compact, latin_tokens in e.targets:
-            if norm in hay_n:
+        for t in e.targets:
+            if t.norm in hay_n and (t.exact_re is None or t.exact_re.search(hay_n)):
                 return "exact"
-            if compact and compact in hay_c:
-                return "compact"
-            if latin_tokens and latin_tokens <= hay_tokens:
+            if t.compact and t.compact in hay_c:
+                if t.compact_re is None or t.compact_re.search(hay_n):
+                    return "compact"
+            if t.latin_tokens and t.latin_tokens <= hay_tokens:
                 return "token"
         return None
 
