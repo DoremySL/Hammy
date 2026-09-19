@@ -5,7 +5,7 @@ function renderSources() {
   const bar = $('#sourceBar');
   bar.innerHTML = '';
   if (!state.roots.length && !state.adhoc_files.length) {
-    bar.innerHTML = '<span class="drop-hint">点击右上方「添加文件夹 / 添加文件」按钮添加源</span>';
+    setSourceBar(false);
     return;
   }
   const wrap = document.createElement('div');
@@ -16,7 +16,7 @@ function renderSources() {
     const span = document.createElement('span');
     span.className = 'src' + (state.sourceFilter === r ? ' active' : '');
     span.dataset.tip = r + '（点击筛选该源）';
-    span.innerHTML = `${icon('folder-open')} <span class="nm" data-tip="${esc(r)}">${esc(shortPath(r))}</span> <span class="x" data-tip="移除" tabindex="0">×</span>`;
+    span.innerHTML = `${icon('folder-open')} <span class="nm" data-tip="${esc(r)}">${esc(shortPath(r))}</span> <span class="x" tabindex="0" aria-label="移除">×</span>`;
     span.querySelector('.x').onclick = (e) => { e.stopPropagation(); removeSource(r, false); };
     span.addEventListener('click', () => toggleSourceFilter(r));
     scroll.appendChild(span);
@@ -25,7 +25,7 @@ function renderSources() {
     const span = document.createElement('span');
     span.className = 'src' + (state.sourceFilter === f ? ' active' : '');
     span.dataset.tip = f + '（点击筛选该源）';
-    span.innerHTML = `${icon('file')} <span class="nm" data-tip="${esc(f)}">${esc(shortPath(f))}</span> <span class="x" data-tip="移除" tabindex="0">×</span>`;
+    span.innerHTML = `${icon('file')} <span class="nm" data-tip="${esc(f)}">${esc(shortPath(f))}</span> <span class="x" tabindex="0" aria-label="移除">×</span>`;
     span.querySelector('.x').onclick = (e) => { e.stopPropagation(); removeSource(f, true); };
     span.addEventListener('click', () => toggleSourceFilter(f));
     scroll.appendChild(span);
@@ -39,10 +39,17 @@ function renderSources() {
   wrap.appendChild(fadeR);
   bar.appendChild(wrap);
   scroll.addEventListener('scroll', updateSrcFades, { passive: true });
+  const dd = document.createElement('button');
+  dd.className = 'src-action';
+  dd.id = 'btn-dedup';
+  dd.innerHTML = icon('dedup', '14px') + ' 移除重复视频';
+  dd.dataset.tip = '扫描并移除重复视频';
+  dd.onclick = findDuplicates;
+  bar.appendChild(dd);
   const clr = document.createElement('button');
   clr.className = 'src-action danger';
   clr.innerHTML = icon('trash', '14px') + ' 清空源';
-  clr.dataset.tip = '移除所有已添加的文件夹/文件';
+  clr.dataset.tip = '从源列表移除，不删除磁盘文件和已处理记录';
   clr.onclick = clearSources;
   bar.appendChild(clr);
   updateSrcFades();
@@ -119,6 +126,7 @@ async function addFiles() {
 }
 $('#btn-add-folder').addEventListener('click', addFolder);
 $('#btn-add-files').addEventListener('click', addFiles);
+$('#emptyAdd').addEventListener('click', addFolder);
 
 /* ════════════════════════════════════════════════════════════
    刷新 / 清空 / 源栏切换
@@ -139,12 +147,13 @@ async function clearSources() {
   loadFromResult(r);
   toast('已清空所有源', 'ok');
 }
+function setSourceBar(open) {
+  $('#sourceBar').style.display = open ? '' : 'none';
+  $('#folderPath').classList.toggle('expanded', open);
+  if (open) updateSrcFades();
+}
 $('#folderPath').addEventListener('click', () => {
-  const bar = $('#sourceBar');
-  const show = bar.style.display === 'none';
-  bar.style.display = show ? '' : 'none';
-  $('#folderPath').classList.toggle('expanded', show);
-  if (show) updateSrcFades();
+  setSourceBar($('#sourceBar').style.display === 'none');
 });
 
 /* ════════════════════════════════════════════════════════════
@@ -415,7 +424,6 @@ async function confirmDedup() {
   }
 }
 
-$('#btn-dedup').addEventListener('click', findDuplicates);
 $('#btn-closededup').addEventListener('click', closeDedup);
 $('#dedupCancel').addEventListener('click', closeDedup);
 $('#dedupOk').addEventListener('click', confirmDedup);

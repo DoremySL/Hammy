@@ -193,7 +193,7 @@ async function saveConfigAndTest() {
   const token = ++aiTestToken;
   btn.disabled = true; btn.textContent = '正在保存…';
   try {
-    await _saveConfigNow();
+    await _cfgSave.runNow();
     btn.textContent = '正在测试连接…';
     btn.disabled = false;
     btn.dataset.testing = '1';
@@ -405,12 +405,9 @@ async function renderTagsTabWrapper() {
   );
 }
 
-let _cfgSaveTimer = null;
 let _cfgSaveToken = 0;
 
 async function _saveConfigNow() {
-  clearTimeout(_cfgSaveTimer);
-  _cfgSaveTimer = null;
   if (!$('#modal-body [data-key]')) return;
   const token = ++_cfgSaveToken;
   const data = collectConfigData();
@@ -426,15 +423,9 @@ async function _saveConfigNow() {
   }
 }
 
-function scheduleConfigSave(immediate) {
-  if (immediate) { _saveConfigNow(); return; }
-  clearTimeout(_cfgSaveTimer);
-  _cfgSaveTimer = setTimeout(_saveConfigNow, 600);
-}
-
-function flushPendingConfigSave() {
-  if (_cfgSaveTimer) _saveConfigNow();
-}
+const _cfgSave = makeDebouncedSave(600, _saveConfigNow);
+const scheduleConfigSave = _cfgSave.schedule;
+const flushPendingConfigSave = _cfgSave.flush;
 
 $('#modal-body').addEventListener('input', e => {
   const el = e.target;

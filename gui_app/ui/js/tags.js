@@ -63,7 +63,7 @@ function renderTagsTab(pt) {
             <div class="dd search-mode" id="pt-group-dd"></div>
             <span class="search-sep"></span>
             <input type="text" id="pt-search" placeholder="搜索标签、描述或关联词…" spellcheck="false"/>
-            <button type="button" id="btn-pt-clear-search" data-tip="清除"><svg class="ic"><use href="#ic-close"></use></svg></button>
+            <button type="button" id="btn-pt-clear-search" aria-label="清除"><svg class="ic"><use href="#ic-close"></use></svg></button>
           </div>
           <div class="tag-list-wrap"><div class="pt-list" id="pt-list"></div></div>
         </div>
@@ -381,7 +381,7 @@ function ptDupCheck(kw, excludeIdx) {
 
 async function ptApplyAdd() {
   const f = ptCollectFields($('#pt-editor'));
-  if (!f.keyword) { $('#pt-f-kw').focus(); return; }
+  if (!f.keyword) { $('#pt-editor #pt-f-kw').focus(); return; }
   if (ptDupCheck(f.keyword, -1)) { toast('标签已存在: ' + f.keyword, 'err'); return; }
   const item = { keyword: f.keyword, description: f.description, related: f.related, group: f.group };
   state.ptItems.unshift(item);
@@ -406,7 +406,7 @@ async function ptApplyEdit() {
   const idx = state.ptEditIdx;
   if (idx < 0 || !state.ptItems[idx]) return;
   const f = ptCollectFields($('#pt-editor'));
-  if (!f.keyword) { $('#pt-f-kw').focus(); return; }
+  if (!f.keyword) { $('#pt-editor #pt-f-kw').focus(); return; }
   if (ptDupCheck(f.keyword, idx)) { toast('标签已存在: ' + f.keyword, 'err'); return; }
   const old = { ...state.ptItems[idx] };
   state.ptItems[idx] = { keyword: f.keyword, description: f.description, related: f.related, group: f.group };

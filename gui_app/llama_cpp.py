@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .env import APP_ROOT
-from .installer import detect_gpu, start_cancel_watcher
+from .installer import detect_gpu, pick_cuda_version, start_cancel_watcher, ver_tuple as _ver_tuple
 from .js_push import js_pusher
 from batch_rename.env import SUBPROCESS_KWARGS
 from batch_rename.subprocess_registry import register_subprocess, unregister_subprocess
@@ -91,6 +91,7 @@ _llama_state: Dict[str, Any] = {
     "launch_params": None,
     "starting": False,
     "launch_failed": None,
+    "port_conflict": None,
 }
 _state_lock = threading.Lock()
 
@@ -195,14 +196,6 @@ _cached_release_at = 0.0
 _HEALTH_TIMEOUT_SEC = 90.0
 
 
-def _ver_tuple(v: str) -> Tuple[int, ...]:
-    """把 '12.4' 解析为 (12, 4)，用于精确版本比较（避免 float 误判 12.10→12.1）。"""
-    try:
-        return tuple(int(x) for x in str(v).split("."))
-    except (ValueError, TypeError):
-        return (0,)
-
-
 def _build_key(b: Dict[str, Any]) -> str:
     """构建唯一标识，用作前端选项值。cuda 带版本号，其余用类型名。"""
     if b.get("type") == "cuda":
@@ -265,7 +258,7 @@ def _parse_release_assets(data: Any) -> Optional[Tuple[str, List[Dict[str, Any]]
         return None
 
     def _sort_key(b: Dict[str, Any]) -> Tuple[int, int, int]:
-        """排序键：类型优先（CUDA 前），CUDA 版本高者优先（按段比较，避免 12.10→12.1 误判）。"""
+        """排序键：类型优先（CUDA 前），CUDA 版本高者优先。"""
         vt = _ver_tuple(b["ver"]) if b.get("ver") else (0,)
         return (order.get(b["type"], 9),
                 -vt[0] if vt else 0,
@@ -277,7 +270,7 @@ def _parse_release_assets(data: Any) -> Optional[Tuple[str, List[Dict[str, Any]]
 
 def get_latest_release_assets(force: bool = False,
                               stop_event: Optional[threading.Event] = None) -> Dict[str, Any]:
-    """拉取最新可用 release 并解析各平台的预编译 + cudart 资源。"""
+    """拉取最新可用 release 并解析 win 构建资源（预编译 + cudart）。"""
     global _cached_release, _cached_release_at, _release_fetching
     now = time.time()
     with _cache_lock:
@@ -306,19 +299,12 @@ def get_latest_release_assets(force: bool = False,
         tag, builds = found
 
         gpu = detect_gpu()
-        cuda_max = gpu.get("cuda_max", "")
-        recommended_key = None
-        if cuda_max:
-            try:
-                cm = _ver_tuple(cuda_max)
-                for b in builds:
-                    if b["type"] == "cuda" and _ver_tuple(b["ver"]) <= cm:
-                        recommended_key = b["key"]
-                        break
-            except (ValueError, TypeError):
-                pass
-        if recommended_key is None and builds and gpu.get("has_nvidia"):
-            recommended_key = builds[0]["key"]
+        recommended_key = pick_cuda_version(
+            gpu.get("cuda_max", ""),
+            [(b["key"], b["ver"]) for b in builds if b["type"] == "cuda"],
+        )
+        if recommended_key is None:
+            recommended_key = next((b["key"] for b in builds if b["type"] == "cpu"), None)
 
         result: Dict[str, Any] = {
             "ok": True,
@@ -708,6 +694,7 @@ def get_status() -> Dict[str, Any]:
         "running": running,
         "starting": bool(state.get("starting")),      # 正在启动（Popen 后、健康检查未通过）
         "launch_failed": state.get("launch_failed"),  # 最近一次启动失败原因；None = 无
+        "port_conflict": state.get("port_conflict"),  # 最近一次预检命中的端口；None = 无冲突
         "pid": state.get("pid"),
         "port": state.get("port"),
         "model": state.get("model"),
@@ -718,10 +705,7 @@ def get_status() -> Dict[str, Any]:
 
 
 class InstallCancelled(Exception):
-    """安装被用户取消（stop_install 置位停止事件后由检查点抛出）。
-
-    与网络错误区分：外层据此返回「安装已取消」，并清理未完成的下载文件。
-    """
+    """安装被用户取消：外层据此返回「安装已取消」并清理未完成的下载文件。"""
 
 
 def _log_network_fallback(log_fn) -> None:
@@ -749,7 +733,6 @@ def _normalize_layout(target: Path) -> bool:
                 else:
                     dest.unlink()
             shutil.move(str(item), str(target / item.name))
-        # 清理空目录
         for d in sorted([x for x in nested.rglob("*") if x.is_dir()], key=lambda x: -len(str(x))):
             try:
                 d.rmdir()
@@ -813,7 +796,6 @@ def install(build_sel: str, log_fn=None, proxy: str = "",
         return {"ok": False, "error": "未指定构建（manual / cuda-<ver>）"}
 
     if build_sel == "manual":
-        # 手动安装模式：仅创建文件夹，提示用户自行放入编译版本
         LLAMA_DIR.mkdir(parents=True, exist_ok=True)
         models_dir = get_models_dir()
         models_dir.mkdir(parents=True, exist_ok=True)
@@ -977,10 +959,13 @@ def _model_layers(model_path: Path) -> int:
 
 
 def _port_in_use(host: str, port: int) -> bool:
-    """端口占用预检：connect 成功 = 已有监听者。"""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.settimeout(0.5)
-        return s.connect_ex((host, port)) == 0
+    """端口占用预检：connect 成功 = 已有监听者；地址无法解析等异常情况视为无法判定。"""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            return s.connect_ex((host, port)) == 0
+    except (OSError, OverflowError, ValueError):
+        return False
 
 
 def _local_host(host: str) -> str:
@@ -1023,7 +1008,7 @@ def _build_args(model_path: Path, p: Dict[str, Any]) -> List[str]:
         "-np", str(num("parallel", DEFAULTS["parallel"])),
         "--timeout", str(num("timeout", DEFAULTS["timeout"])),
     ]
-    # 缓存预设（下拉）：统一 KV 缓存 / 禁用提示缓存与检查点 / 两者组合；空 = 默认不传参
+    # 缓存预设：统一 KV 缓存 / 禁用提示缓存与检查点；空 = 不传参
     kv_preset = str(p.get("kv_preset", DEFAULTS["kv_preset"]) or "").strip()
     if kv_preset == "kv_unified":
         args.append("--kv-unified")
@@ -1035,7 +1020,7 @@ def _build_args(model_path: Path, p: Dict[str, Any]) -> List[str]:
     n_cpu_moe = num("n_cpu_moe", 0)
     if n_cpu_moe > 0:
         args += ["--n-cpu-moe", str(n_cpu_moe)]
-    # 加载模式：空 = 自动（不传参，llama.cpp 自行决定）；非法值忽略
+    # 加载模式；空 = 自动（不传参）；非法值忽略
     lm = str(p.get("load_mode", DEFAULTS["load_mode"]) or "").strip().lower()
     if lm in ("mmap", "mmap+mlock", "none", "mlock", "dio"):
         args += ["--load-mode", lm]
@@ -1056,18 +1041,17 @@ def _build_args(model_path: Path, p: Dict[str, Any]) -> List[str]:
         args += ["--reasoning-effort", mode]
     else:
         args += ["--reasoning", "off", "--reasoning-budget", "0"]
-    # KV 缓存量化；空 = 不启用（不传参）；小写传参
+    # KV 缓存量化；空 = 不传参
     kv = str(p.get("kv_quant", DEFAULTS["kv_quant"]) or "").strip().lower()
     if kv:
         args += ["--cache-type-k", kv, "--cache-type-v", kv]
-    # mmproj：前端显式指定或 launch() 自动检测；空 = 不使用；权重放 CPU 时附加 --no-mmproj-offload
+    # mmproj：空 = 不使用；权重放 CPU 时附加 --no-mmproj-offload
     mmproj = p.get("mmproj", "") or ""
     if mmproj:
         args += ["--mmproj", str(mmproj)]
         if p.get("no_mmproj_offload", DEFAULTS["no_mmproj_offload"]):
             args.append("--no-mmproj-offload")
-    # MTP 投机解码：不启用不传参；数字 = 草稿令牌数上限；
-    # 主模型同目录有 mtp 开头的草稿模型时附加 --model-draft
+    # MTP 投机解码：不传参 = 不启用；同目录有 mtp 草稿模型时附加 --model-draft
     spec = str(p.get("spec_draft_n", DEFAULTS["spec_draft_n"]) or "").strip()
     if spec in ("1", "2", "3", "4", "5"):
         args += ["--spec-type", "draft-mtp", "--spec-draft-n-max", spec]
@@ -1075,7 +1059,7 @@ def _build_args(model_path: Path, p: Dict[str, Any]) -> List[str]:
         if draft:
             args += ["--model-draft", str(draft)]
     extra = p.get("extra_args", "") or ""
-    # 前端传 argv 列表（支持嵌套：每组 = 一次输入拆出的多个 argv）；兜底：非列表（手改配置）按空格拆分
+    # 前端传 argv 列表（可嵌套）；兜底：非列表（手改配置）按空格拆分
     if isinstance(extra, (list, tuple)):
         for e in extra:
             if isinstance(e, (list, tuple)):
@@ -1086,7 +1070,7 @@ def _build_args(model_path: Path, p: Dict[str, Any]) -> List[str]:
                     args.append(e)
     elif str(extra).strip():
         args += str(extra).split()
-    # 别名 -a：空 = 不传；argv 列表无 shell 解析，值内空格天然安全，不引号包裹
+    # 别名 -a：空 = 不传；argv 列表无 shell 解析，值内空格天然安全
     alias = str(p.get("alias", "") or "").strip()
     if alias:
         args += ["-a", alias]
@@ -1097,7 +1081,7 @@ def _reader_thread(proc: subprocess.Popen, log_fn, show_logs: bool = True,
                    read_pipe: bool = True) -> None:
     try:
         if read_pipe:
-            # 输出被接管：逐行转发日志（show_logs=False 时静默，仅保留停止提示）
+            # show_logs=False 时静默，仅保留停止提示
             assert proc.stdout is not None
             for line in proc.stdout:
                 if line.strip() and show_logs:
@@ -1168,7 +1152,6 @@ def launch(model_path: str, params: Dict[str, Any], log_fn=None) -> Dict[str, An
         if _llama_proc is not None and _llama_proc.poll() is None:
             return {"ok": False, "error": f"llama-server 已在运行（PID {_llama_proc.pid}），请先停止再启动"}
 
-        # 解析模型路径
         chosen = model_path or ""
         if not chosen:
             models = scan_models(force=True)
@@ -1207,9 +1190,16 @@ def launch(model_path: str, params: Dict[str, Any], log_fn=None) -> Dict[str, An
 
         # 端口占用预检：被占立即报错，避免启动后健康检查白等超时、误判模型加载失败
         chk_port = _to_int(merged.get("port", DEFAULTS["port"]), _to_int(DEFAULTS["port"], 0))
-        if chk_port > 0 and _port_in_use(_local_host(str(merged.get("host", DEFAULTS["host"]))), chk_port):
+        if not 0 < chk_port < 65536:
+            return {"ok": False, "error": f"端口 {chk_port} 无效，请填写 1-65535 之间的端口"}
+        if _port_in_use(_local_host(str(merged.get("host", DEFAULTS["host"]))), chk_port):
+            with _state_lock:
+                _llama_state["port_conflict"] = chk_port
+            _notify_state_change()
             return {"ok": False,
                     "error": f"端口 {chk_port} 已被占用，请更换端口或停止占用它的进程"}
+        with _state_lock:
+            _llama_state["port_conflict"] = None
 
         try:
             creationflags = SUBPROCESS_KWARGS.get("creationflags", 0) if use_pipe else 0
@@ -1313,6 +1303,7 @@ def stop(log_fn=None, grace: float = 5.0) -> Dict[str, Any]:
             _llama_state["running"] = False
             _llama_state["starting"] = False
             _llama_state["launch_failed"] = None
+            _llama_state["port_conflict"] = None
             _llama_proc = None
         _notify_state_change()
         return {"ok": True, "message": "没有运行中的服务"}
@@ -1329,6 +1320,7 @@ def stop(log_fn=None, grace: float = 5.0) -> Dict[str, Any]:
             _llama_state["running"] = False
             _llama_state["starting"] = False
             _llama_state["launch_failed"] = None
+            _llama_state["port_conflict"] = None
             _llama_proc = None
     _notify_state_change()
     log_fn("本地推理服务已停止。")
@@ -1360,10 +1352,7 @@ def pause_for_task(log_fn=None) -> Dict[str, Any]:
 
 
 def resume_after_task(log_fn=None) -> Dict[str, Any]:
-    """高显存任务完成后调用：若此前让出过显存，则按暂存的参数重新加载 llama-server。
-
-    期间服务已被手动启动时跳过（不重复启动）。返回 dict 带 restarted 标志。
-    """
+    """高显存任务完成后调用：若此前让出过显存则按暂存参数重启；期间被手动启动时跳过。"""
     global _paused_launch
     log_fn = log_fn or _stderr_log
     with _state_lock:

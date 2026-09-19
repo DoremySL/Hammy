@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Tuple
 from ..config_store import (load_config, load_llama_config, load_llama_model_configs,
                             load_pixai_config, load_whisper_config,
                             update_llama_config, update_pixai_config, update_whisper_config)
+from ..installer import DEFAULT_PYPI_MIRROR, DEFAULT_PYTORCH_SITE, DEFAULT_PYTORCH_VERSION
 from ..js_push import js_pusher
 from ..workspace_paths import (LLAMA_CONFIG_FILE, PIXAI_TAGS_FILE,
                                WHISPER_SRT_DIR, WHISPER_TRANSCRIPTS_FILE)
@@ -165,12 +166,12 @@ class ExperimentalMixin:
         return result
 
     def get_rag_vec_mirrors(self) -> Dict[str, Any]:
-        """向量检索模块安装可选镜像（PyTorch CUDA/CPU + 通用 PyPI + GPU 检测）。"""
+        """向量检索模块安装可选镜像（PyTorch 版本档位 + 下载站点 + GPU 检测）。"""
         from ..installer import get_mirror_groups
         return get_mirror_groups(["pytorch", "pypi"])
 
-    def install_rag_vec(self, pytorch_mirror: str = "nju-cu128",
-                        pypi_mirror: str = "nju",
+    def install_rag_vec(self, pytorch_version: str = DEFAULT_PYTORCH_VERSION,
+                        site: str = DEFAULT_PYTORCH_SITE,
                         model: str = "") -> Dict[str, Any]:
         """安装向量检索依赖（uv + venv + torch + sentence-transformers + 所选模型）。"""
         from ..st_embedding import install_dependencies
@@ -178,8 +179,8 @@ class ExperimentalMixin:
             return {"ok": False, "error": "已有模块正在安装，请等待完成后再试"}
         _install_stop_event.clear()
         try:
-            return install_dependencies(pytorch_mirror=pytorch_mirror,
-                                        pypi_mirror=pypi_mirror, model=model,
+            return install_dependencies(pytorch_version=pytorch_version,
+                                        site=site, model=model,
                                         log_fn=_push_log,
                                         stop_event=_install_stop_event)
         finally:
@@ -221,12 +222,12 @@ class ExperimentalMixin:
         return {"ok": True, "enabled": enabled}
 
     def get_pixai_mirrors(self) -> Dict[str, Any]:
-        """获取 pixai-tagger 安装可选镜像（PyTorch CUDA + 通用 PyPI + GPU 检测）。"""
+        """获取 pixai-tagger 安装可选镜像（PyTorch 版本档位 + 下载站点 + GPU 检测）。"""
         from ..pixai_tagger import get_mirrors_info
         return get_mirrors_info()
 
-    def install_pixai_tagger(self, pytorch_mirror: str = "nju-cu128",
-                             pypi_mirror: str = "nju") -> Dict[str, Any]:
+    def install_pixai_tagger(self, pytorch_version: str = DEFAULT_PYTORCH_VERSION,
+                             site: str = DEFAULT_PYTORCH_SITE) -> Dict[str, Any]:
         """安装 pixai-tagger 依赖（uv + venv + torch/timm + 两个模型）。"""
         from ..pixai_tagger import install_dependencies
 
@@ -234,8 +235,8 @@ class ExperimentalMixin:
             return {"ok": False, "error": "已有模块正在安装，请等待完成后再试"}
         _install_stop_event.clear()
         try:
-            return install_dependencies(pytorch_mirror=pytorch_mirror,
-                                        pypi_mirror=pypi_mirror, log_fn=_push_log,
+            return install_dependencies(pytorch_version=pytorch_version,
+                                        site=site, log_fn=_push_log,
                                         stop_event=_install_stop_event)
         finally:
             _install_stop_event.clear()
@@ -603,7 +604,7 @@ class ExperimentalMixin:
         info["gpu"] = detect_gpu()
         return info
 
-    def install_whisper(self, pypi_mirror: str = "nju",
+    def install_whisper(self, pypi_mirror: str = DEFAULT_PYPI_MIRROR,
                         model: str = "v3-turbo") -> Dict[str, Any]:
         """安装 faster-whisper 依赖（uv + venv + packages + 所选模型）。"""
         from ..faster_whisper import install_dependencies

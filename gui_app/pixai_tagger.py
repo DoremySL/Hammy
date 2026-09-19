@@ -19,7 +19,7 @@ from batch_rename.env import SUBPROCESS_KWARGS
 from .env import APP_ROOT, PYTHON_EXE, make_logger
 from . import installer
 from .installer import (
-    PYPI_MIRRORS, PYTORCH_MIRRORS, DEFAULT_PYPI_MIRROR, DEFAULT_PYTORCH_MIRROR,
+    resolve_pytorch, DEFAULT_PYTORCH_VERSION, DEFAULT_PYTORCH_SITE,
     ensure_uv as _ensure_uv,
     run_subprocess_streaming as _run_subprocess_streaming,
     UV_TIMEOUT_SEC,
@@ -106,22 +106,23 @@ def get_status() -> Dict[str, Any]:
 
 
 def install_dependencies(
-    pytorch_mirror: str = DEFAULT_PYTORCH_MIRROR,
-    pypi_mirror: str = DEFAULT_PYPI_MIRROR,
+    pytorch_version: str = DEFAULT_PYTORCH_VERSION,
+    site: str = DEFAULT_PYTORCH_SITE,
     log_fn: Optional[Callable[[str], None]] = None,
     stop_event: Optional[threading.Event] = None,
 ) -> Dict[str, Any]:
     """安装 pixai-tagger 全部依赖（uv + venv + torch/timm + 两个模型）。
         Args:
-        pytorch_mirror: PyTorch CUDA 镜像 ID（nju-cu128/nju-cpu/…）
-        pypi_mirror: 通用 PyPI 镜像 ID（nju/tsinghua/aliyun）
+        pytorch_version: PyTorch 版本档位（cu132/cu126/cpu）
+        site: 下载站点 ID（sjtu/nju/official），torch 与通用依赖都走该站点
         log_fn: 实时日志回调
         stop_event: 安装取消事件，取消返回 {"cancelled": True}
         Returns:
         {"ok": bool, "error": str|None}
     """
-    torch_url = PYTORCH_MIRRORS.get(pytorch_mirror, PYTORCH_MIRRORS[DEFAULT_PYTORCH_MIRROR])["url"]
-    pypi_url = PYPI_MIRRORS.get(pypi_mirror, PYPI_MIRRORS[DEFAULT_PYPI_MIRROR])["url"]
+    plan = resolve_pytorch(pytorch_version, site)
+    torch_url = plan["torch_url"]
+    pypi_url = plan["pypi_url"]
 
     PIXAI_TAGGER_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -158,8 +159,8 @@ def install_dependencies(
     venv_py = str(venv_python_path(VENV_DIR))
 
     # ── 步骤 3 ──
-    is_cpu = "cpu" in torch_url
-    _log(f"━━ 步骤 3/6：安装 torch（{'CPU' if is_cpu else 'CUDA'} 版）━━", log_fn)
+    is_cpu = plan["is_cpu"]
+    _log(f"━━ 步骤 3/6：安装 torch（{plan['version_name']} · {plan['site_name']}）━━", log_fn)
     rc, out = _run_subprocess_streaming(
         [uv, "pip", "install", "--python", venv_py,
          "torch", "--index-url", torch_url],

@@ -10,9 +10,9 @@ const CW_CACHES = [
 ];
 
 const CW_RECORDS = [
-  { key: 'missing', title: '失效记录',   unit: '条', size: false,
+  { key: 'missing', title: '失效记录',   unit: '条',
     desc: '对应视频已不在磁盘，一并清理孤立缓存' },
-  { key: 'history', title: '已处理记录', unit: '条', size: false,
+  { key: 'history', title: '已处理记录', unit: '条',
     desc: '重置后已处理视频重新进入待处理', warn: '影响处理状态' },
 ];
 
@@ -51,7 +51,7 @@ function renderWorkspaceTab(stats) {
   const cards = [...CW_RECORDS.map(r => ({
     ...r,
     count: r.key === 'missing' ? missingCount : historyCount,
-    foot: `${cwFmtCount(r.key === 'missing' ? missingCount : historyCount)} ${r.unit}，—`,
+    foot: `${cwFmtCount(r.key === 'missing' ? missingCount : historyCount)} ${r.unit}`,
   })), ...caches.map(c => ({
     key: c.key, title: c.title, desc: c.desc, unit: c.unit,
     count: c.count,

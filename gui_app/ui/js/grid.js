@@ -318,6 +318,7 @@ function _renderVisible() {
 function renderGrid() {
   updateSortDropdown();
   _vsList = currentList();
+  updateSelectAllBtn();
   const hasSources = state.roots.length || state.adhoc_files.length;
   $('#gridWrap').style.display = (_vsList.length || hasSources) ? 'block' : 'none';
   $('#emptyState').style.display = (_vsList.length || hasSources) ? 'none' : 'flex';
@@ -349,6 +350,7 @@ function renderGrid() {
 function refreshGridData() {
   updateSortDropdown();
   _vsList = currentList();
+  updateSelectAllBtn();
   _vsStartRow = -1; _vsEndRow = -1;
   if (_thumbLoader) _thumbLoader.destroy();
   _thumbLoader = null;
@@ -357,9 +359,11 @@ function refreshGridData() {
   _markLayoutDirty();
   _calcLayout();
   _renderVisible();
+  _calibrateRowH();
 }
 
 function removeFromGrid(id) {
+  const wasSelected = state.selected.delete(id);
   const idx = _vsList.findIndex(v => v.id === id);
   if (idx >= 0) _vsList.splice(idx, 1);
   if (state.sortBy === 'dir') _markDirBands(_vsList);
@@ -374,6 +378,7 @@ function removeFromGrid(id) {
   }
   _vsStartRow = -1; _vsEndRow = -1;
   _renderVisible();
+  if (wasSelected) updateSelectAllBtn();
 }
 
 $('#gridWrap').addEventListener('scroll', () => {
@@ -601,6 +606,19 @@ function loadProbe(v) {
    事件委托
    ════════════════════════════════════════════════════════════ */
 const _EMPTY_DETAIL = '<div class="empty">点击「已处理」中的视频查看详情</div>';
+function renderDetailForSelection(v) {
+  const collapsed = $('#pane-bottom').classList.contains('collapsed');
+  if (state.selected.size === 0) {
+    $('#detail').innerHTML = _EMPTY_DETAIL;
+  } else if (state.selected.size === 1 && v.status === 'processed' && !collapsed) {
+    showDetail(v);
+  } else if (state.selected.size === 1 && v.status === 'pending'
+             && (state.pixaiTaggerEnabled || state.whisperEnabled) && !collapsed) {
+    showPendingDetail(v);
+  } else if (v.status !== 'processed') {
+    $('#detail').innerHTML = _EMPTY_DETAIL;
+  }
+}
 $('#grid').addEventListener('click', e => {
   const card = e.target.closest('.card');
   if (!card || !card._video) return;
@@ -616,8 +634,12 @@ $('#grid').addEventListener('dblclick', e => {
     state.primaryId = v.id;
     refreshSelectionUI();
   }
-  if (v.status === 'processed') { showDetail(v); }
-  else { callApi('play_video', v.path); }
+  if (v.status !== 'processed' && v.status !== 'pending') {
+    callApi('play_video', v.path);
+    return;
+  }
+  switchTab('detail');
+  renderDetailForSelection(v);
 });
 $('#grid').addEventListener('contextmenu', e => {
   const card = e.target.closest('.card');
@@ -652,11 +674,7 @@ function updateSelectedInfo() {
   if (n > 1) { el.textContent = `已选 ${n} 个视频`; return; }
   const v = findVideoById(state.primaryId);
   if (v) {
-    const title = v.title || v.name || '';
-    const orig = v.original_name || '';
-    let txt = title;
-    if (orig && orig !== title) txt += ` ｜ 初始文件名: ${orig}`;
-    txt += ` ｜ 路径: ${v.path || ''}`;
+    const txt = v.path || '';
     el.textContent = txt;
     el.dataset.tip = txt;
   } else { el.textContent = ''; el.dataset.tip = ''; }
@@ -665,9 +683,36 @@ function refreshSelectionUI() {
   $('#grid').querySelectorAll('.card').forEach(c =>
     c.classList.toggle('selected', state.selected.has(c.dataset.id)));
   updateSelectedInfo();
-  updateStatusCount();
-  updateSelToolbar();
+  updateSelectAllBtn();
 }
+function updateSelectAllBtn() {
+  const btn = $('#btn-select-all');
+  if (!btn) return;
+  const all = _vsList.length > 0 && _vsList.every(x => state.selected.has(x.id));
+  const tip = all ? '取消全选' : '全选 (Ctrl+A)';
+  btn.dataset.tip = tip;
+  btn.setAttribute('aria-label', tip);
+  btn.querySelector('use').setAttribute('href', all ? '#ic-deselect-all' : '#ic-select-all');
+}
+function selectAllVisible() {
+  if (!_vsList.length) return;
+  state.selected = new Set(_vsList.map(x => x.id));
+  state.primaryId = _vsList[_vsList.length - 1].id;
+  refreshSelectionUI();
+}
+function deselectAllVisible() {
+  _vsList.forEach(x => state.selected.delete(x.id));
+  if (!state.selected.size) {
+    state.selAnchor = null;
+    state.primaryId = null;
+    $('#detail').innerHTML = _EMPTY_DETAIL;
+  }
+  refreshSelectionUI();
+}
+$('#btn-select-all').addEventListener('click', () => {
+  if (_vsList.length && _vsList.every(x => state.selected.has(x.id))) deselectAllVisible();
+  else selectAllVisible();
+});
 function selectCard(v, ev) {
   ev = ev || {};
   const id = v.id;
@@ -677,18 +722,7 @@ function selectCard(v, ev) {
   state.selAnchor = pickSelection(state.selected, state.selAnchor, id, ev, _vsList.map(x => x.id));
   state.primaryId = shiftRange ? id : state.selAnchor;
   refreshSelectionUI();
-  if (state.selected.size === 0) {
-    $('#detail').innerHTML = _EMPTY_DETAIL;
-  } else if (state.selected.size === 1 && v.status === 'processed'
-             && !$('#pane-bottom').classList.contains('collapsed')) {
-    showDetail(v);
-  } else if (state.selected.size === 1 && v.status === 'pending'
-             && (state.pixaiTaggerEnabled || state.whisperEnabled)
-             && !$('#pane-bottom').classList.contains('collapsed')) {
-    showPendingDetail(v);
-  } else if (v.status !== 'processed') {
-    $('#detail').innerHTML = _EMPTY_DETAIL;
-  }
+  renderDetailForSelection(v);
 }
 document.addEventListener('keydown', e => {
   const tag = (e.target.tagName || '').toLowerCase();
@@ -696,69 +730,10 @@ document.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
     if (_vsList.length) {
       e.preventDefault();
-      state.selected = new Set(_vsList.map(x => x.id));
-      state.primaryId = _vsList[_vsList.length - 1].id;
-      refreshSelectionUI();
+      selectAllVisible();
     }
   }
 });
-
-/* ════════════════════════════════════════════════════════════
-   选区操作工具栏
-   ════════════════════════════════════════════════════════════ */
-function updateSelToolbar() {
-  const tb = $('#selToolbar');
-  if (!tb) return;
-  const n = state.selected.size;
-  const view = state.view;
-  $('#tb-process').style.display = view === 'pending' ? '' : 'none';
-  $('#tb-export-nfo').style.display = view === 'processed' ? '' : 'none';
-  $('#tb-restore').style.display = view === 'processed' ? '' : 'none';
-  $('#tb-move-out').style.display = view === 'failed' ? '' : 'none';
-  const allSel = _vsList.length > 0 && _vsList.every(x => state.selected.has(x.id));
-  const selBtn = $('#tb-select-all');
-  selBtn.disabled = !_vsList.length;
-  selBtn.dataset.tbTip = allSel ? '取消全选' : '全选 (Ctrl+A)';
-  selBtn.querySelector('use').setAttribute('href', allSel ? '#ic-deselect-all' : '#ic-select-all');
-  $('#tb-export').disabled = !n;
-  $('#tb-process').disabled = !n || !state.aiConnected || state.processing;
-  $('#tb-export-nfo').disabled = !n;
-  $('#tb-restore').disabled = !n;
-  $('#tb-move-out').disabled = !n;
-}
-$('#tb-select-all').onclick = () => {
-  if (!_vsList.length) return;
-  const allSel = _vsList.every(x => state.selected.has(x.id));
-  if (allSel) {
-    _vsList.forEach(x => state.selected.delete(x.id));
-    if (!state.selected.size) {
-      state.selAnchor = null;
-      state.primaryId = null;
-      $('#detail').innerHTML = _EMPTY_DETAIL;
-    }
-  } else {
-    state.selected = new Set(_vsList.map(x => x.id));
-    state.primaryId = _vsList[_vsList.length - 1].id;
-  }
-  refreshSelectionUI();
-};
-$('#tb-export').onclick = () => exportToFolder(false);
-$('#tb-process').onclick = () => processSelected();
-$('#tb-export-nfo').onclick = () => {
-  const ids = [...state.selected].filter(id => {
-    const v = findVideoById(id);
-    return v && v.status === 'processed';
-  });
-  if (ids.length) exportNfoBatch(ids);
-};
-$('#tb-restore').onclick = () => {
-  const ids = [...state.selected].filter(id => {
-    const v = findVideoById(id);
-    return v && v.status === 'processed';
-  });
-  if (ids.length) restoreBatch(ids);
-};
-$('#tb-move-out').onclick = () => moveOut();
 
 initDropdown($('#sortSel'), dim => {
   const cur = state.sortBy || 'default';
@@ -769,7 +744,6 @@ initDropdown($('#sortSel'), dim => {
   state.sortBy = mode;
   syncSortLabel();
   renderGrid();
-  updateStatusCount();
 });
 
 /* ════════════════════════════════════════════════════════════
@@ -794,9 +768,7 @@ function switchView(view) {
   renderGrid();
   renderSources();
   updateStats();
-  updateStatusCount();
   updateSelectedInfo();
-  updateSelToolbar();
   $('#detail').innerHTML = _EMPTY_DETAIL;
   if (prev === 'processed' && view === 'pending'
       && !$('#pane-bottom').classList.contains('collapsed')
@@ -808,7 +780,7 @@ function switchTab(tab) {
   $$('.tab[data-tab]').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
   $('#body-progress').classList.toggle('active', tab === 'progress');
   $('#body-detail').classList.toggle('active', tab === 'detail');
-  $('#pane-bottom').classList.remove('collapsed');
+  setBottomCollapsed(false);
 }
 function gotoLog() {
   switchTab('progress');
@@ -820,9 +792,6 @@ function gotoLog() {
 }
 $('#tab-progress').addEventListener('click', () => switchTab('progress'));
 $('#tab-detail').addEventListener('click', () => switchTab('detail'));
-$('#btn-collapse').addEventListener('click', () => {
-  $('#pane-bottom').classList.toggle('collapsed');
-});
 function updateMiniProg() {
   const el = $('#miniProg'), arc = $('#miniProgArc');
   const box = $('#miniProgBox');
@@ -840,6 +809,16 @@ function updateMiniProg() {
   el.dataset.tip = '';
 }
 let _collapseAccum = 0, _collapseTimer = null;
+function setBottomCollapsed(v) {
+  $('#pane-bottom').classList.toggle('collapsed', v);
+  const b = $('#btn-collapse');
+  if (!b) return;
+  b.classList.toggle('collapsed', v);
+  b.dataset.tip = v ? '展开面板' : '收起面板';
+}
+$('#btn-collapse').addEventListener('click', () =>
+  setBottomCollapsed(!$('#pane-bottom').classList.contains('collapsed')));
+setBottomCollapsed($('#pane-bottom').classList.contains('collapsed'));
 $('.pane.top').addEventListener('wheel', (e) => {
   if ($('#pane-bottom').classList.contains('collapsed')) return;
   if (e.target.closest('#sourceBar')) return;
@@ -847,7 +826,7 @@ $('.pane.top').addEventListener('wheel', (e) => {
   clearTimeout(_collapseTimer);
   _collapseTimer = setTimeout(() => { _collapseAccum = 0; }, 500);
   if (_collapseAccum >= _vsRowH * 5) {
-    $('#pane-bottom').classList.add('collapsed');
+    setBottomCollapsed(true);
     _collapseAccum = 0;
   }
 }, { passive: true });
@@ -861,13 +840,9 @@ function updateStats() {
   updateStartBtn();
   const fp = $('#folderPath');
   const hasSrc = !!(state.roots.length || state.adhoc_files.length);
-  $('#btn-dedup').style.display = hasSrc ? '' : 'none';
   if (hasSrc) {
     fp.style.display = '';
-    const parts = [];
-    if (state.roots.length) parts.push(`${icon('folder-open')} ${state.roots.length} 个文件夹`);
-    if (state.adhoc_files.length) parts.push(`${icon('paperclip')} ${state.adhoc_files.length} 个文件`);
-    fp.innerHTML = parts.join('  ·  ') + ' ' + ddArrow('chevron');
+    fp.innerHTML = '文件管理 ' + ddArrow('chevron');
   } else {
     fp.style.display = 'none';
   }

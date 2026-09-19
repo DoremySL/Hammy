@@ -17,7 +17,7 @@ from batch_rename.subprocess_registry import register_subprocess, unregister_sub
 from .env import APP_ROOT, PYTHON_EXE, make_logger
 from . import installer
 from .installer import (
-    PYPI_MIRRORS, PYTORCH_MIRRORS, DEFAULT_PYPI_MIRROR, DEFAULT_PYTORCH_MIRROR,
+    resolve_pytorch, DEFAULT_PYTORCH_VERSION, DEFAULT_PYTORCH_SITE,
     ensure_uv as _ensure_uv,
     run_subprocess_streaming as _run_subprocess_streaming,
     _terminate_proc,
@@ -168,15 +168,20 @@ def _fmt_size(num: float) -> str:
     return f"{num:.1f}TB"
 
 def install_dependencies(
-    pytorch_mirror: str = DEFAULT_PYTORCH_MIRROR,
-    pypi_mirror: str = DEFAULT_PYPI_MIRROR,
+    pytorch_version: str = DEFAULT_PYTORCH_VERSION,
+    site: str = DEFAULT_PYTORCH_SITE,
     model: str = "",
     log_fn: Optional[Callable[[str], None]] = None,
     stop_event: Optional[threading.Event] = None,
 ) -> Dict[str, Any]:
-    """安装依赖（uv + venv + torch + sentence-transformers/modelscope）+ 下载所选模型。"""
-    torch_url = PYTORCH_MIRRORS.get(pytorch_mirror, PYTORCH_MIRRORS[DEFAULT_PYTORCH_MIRROR])["url"]
-    pypi_url = PYPI_MIRRORS.get(pypi_mirror, PYPI_MIRRORS[DEFAULT_PYPI_MIRROR])["url"]
+    """安装依赖（uv + venv + torch + sentence-transformers/modelscope）+ 下载所选模型。
+        Args:
+        pytorch_version: PyTorch 版本档位（cu132/cu126/cpu）
+        site: 下载站点 ID（sjtu/nju/official），torch 与通用依赖都走该站点
+    """
+    plan = resolve_pytorch(pytorch_version, site)
+    torch_url = plan["torch_url"]
+    pypi_url = plan["pypi_url"]
     meta = _model_def(model)
     model_key = meta["key"]
 
@@ -209,7 +214,7 @@ def install_dependencies(
     venv_py = str(venv_python_path(VENV_DIR))
     _log("虚拟环境就绪", log_fn)
 
-    _log(f"━━ 步骤 3/5：安装 torch（{'CPU' if 'cpu' in torch_url else 'CUDA'} 版）━━", log_fn)
+    _log(f"━━ 步骤 3/5：安装 torch（{plan['version_name']} · {plan['site_name']}）━━", log_fn)
     rc, out = _run_subprocess_streaming(
         [uv, "pip", "install", "--python", venv_py,
          "torch", "--index-url", torch_url],

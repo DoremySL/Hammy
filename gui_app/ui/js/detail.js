@@ -26,11 +26,9 @@ async function showDetail(v) {
     || '<span class="filemeta">无标签</span>';
   d.innerHTML = `
     <div class="row">
-      <h4>标签（点击筛选同类视频，右键加入标签检索）</h4>
       <div class="chips">${tags}</div>
     </div>
     <div class="row">
-      <h4>简介</h4>
       <div class="plot">${esc(data.plot || '—')}</div>
     </div>`;
   d.querySelectorAll('.chip').forEach(ch => {
@@ -40,11 +38,7 @@ async function showDetail(v) {
   if (state.primaryId === v.id && state.selected.size === 1) {
     const si = $('#selectedInfo');
     if (si) {
-      const title = data.title || v.title || v.name || '';
-      const orig = data.file_original_name || v.original_name || '';
-      let txt = title;
-      if (orig && orig !== title) txt += ` ｜ 初始文件名: ${orig}`;
-      txt += ` ｜ 路径: ${v.path || ''}`;
+      const txt = v.path || '';
       si.style.display = '';
       si.textContent = txt;
       si.dataset.tip = txt;
@@ -91,11 +85,11 @@ async function showPendingDetail(v) {
       || '<span class="filemeta">未识别到IP</span>';
     html += `
     <div class="row">
-      <h4>角色标签（置信度 &gt; 阈值，右键加入标签检索）</h4>
+      <h4>角色标签</h4>
       <div class="chips">${charTags}</div>
     </div>
     <div class="row">
-      <h4>IP / 版权标签（右键加入标签检索）</h4>
+      <h4>IP / 版权标签</h4>
       <div class="chips">${ipTags}</div>
     </div>`;
   }
@@ -126,6 +120,7 @@ async function onWebTagClick(name) {
 
 function onTagClick(tag) {
   setDropdownValue($('#searchMode'), 'tags');
+  expandSearch();
   $('#searchInput').value = tag;
   $('#searchInput').placeholder = '空格分隔多关键词';
   state.search = tag;
@@ -137,16 +132,45 @@ function onTagClick(tag) {
   } else {
     renderGrid();
   }
-  updateStatusCount();
 }
 
 /* ════════════════════════════════════════════════════════════
    搜索栏交互
    ════════════════════════════════════════════════════════════ */
+function expandSearch() {
+  const w = $('#searchWidget');
+  if (!w) return;
+  w.classList.add('open');
+  const inp = $('#searchInput');
+  if (!inp || document.activeElement === inp) return;
+  inp.focus();
+  if (document.activeElement !== inp) requestAnimationFrame(() => inp.focus());
+}
+function collapseSearch(force) {
+  const w = $('#searchWidget');
+  if (!w) return;
+  const inp = $('#searchInput');
+  if (!force && inp && inp.value) return;
+  w.classList.remove('open');
+}
+$('#btn-search-toggle').addEventListener('click', (e) => {
+  e.stopPropagation();
+  if ($('#searchWidget').classList.contains('open')) collapseSearch(true);
+  else expandSearch();
+});
+document.addEventListener('click', (e) => {
+  if (!$('#searchWidget').classList.contains('open')) return;
+  if (e.target.closest('#searchWidget')) return;
+  collapseSearch();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || !$('#searchWidget').classList.contains('open')) return;
+  if (document.querySelector('.modal-bg.show,.confirm-bg.show,#dedupBg.show')) return;
+  collapseSearch(true);
+});
 initDropdown($('#searchMode'), val => {
   state.searchMode = val;
   renderGrid();
-  updateStatusCount();
 });
 let _searchTimer;
 $('#searchInput').addEventListener('input', e => {
@@ -155,12 +179,10 @@ $('#searchInput').addEventListener('input', e => {
     state.search = e.target.value;
     $('#searchWidget').classList.toggle('has-text', !!e.target.value);
     renderGrid();
-    updateStatusCount();
   }, 150);
 });
 $('#searchInput').addEventListener('focus', () => {
   $('#searchInput').placeholder = '空格分隔多关键词';
-  if (state.search) updateStatusCount();
 });
 $('#searchInput').addEventListener('blur', () => {
   if (!$('#searchInput').value) $('#searchInput').placeholder = '搜索…';
@@ -171,16 +193,5 @@ $('#btn-clear-search').addEventListener('click', () => {
   $('#searchWidget').classList.remove('has-text');
   $('#searchInput').placeholder = '空格分隔多关键词';
   renderGrid();
-  updateStatusCount();
   $('#searchInput').focus();
 });
-function updateStatusCount() {
-  const el = $('#selCount');
-  if (state.search) {
-    el.textContent = `匹配 ${currentList().length} 个`;
-  } else if (state.selected.size > 0) {
-    el.textContent = `已选 ${state.selected.size} 个`;
-  } else {
-    el.textContent = '';
-  }
-}

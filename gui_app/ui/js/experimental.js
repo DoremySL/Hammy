@@ -37,7 +37,6 @@ function syncLlamaState(llamaStatus) {
   if (typeof updateLlamaTabVisibility === 'function') updateLlamaTabVisibility();
 }
 
-let _expSaveTimer = null;
 let _expSaveToken = 0;
 
 function _collectExperimentalData() {
@@ -91,8 +90,6 @@ function _collectExperimentalData() {
 }
 
 async function _saveExperimentalNow() {
-  clearTimeout(_expSaveTimer);
-  _expSaveTimer = null;
   if (!$('#pixai-enable-toggle')) return;
   const token = ++_expSaveToken;
   const data = _collectExperimentalData();
@@ -110,22 +107,13 @@ async function _saveExperimentalNow() {
   }
 }
 
-function scheduleExperimentalSave(immediate) {
-  if (immediate) { _saveExperimentalNow(); return; }
-  clearTimeout(_expSaveTimer);
-  _expSaveTimer = setTimeout(_saveExperimentalNow, 600);
-}
+const _expSave = makeDebouncedSave(600, _saveExperimentalNow);
+const scheduleExperimentalSave = _expSave.schedule;
+const flushPendingExperimentalSave = _expSave.flush;
 
-function flushPendingExperimentalSave() {
-  if (_expSaveTimer) _saveExperimentalNow();
-}
-
-let _llamaSaveTimer = null;
 let _llamaSaveToken = 0;
 
 async function _saveLlamaParamsNow() {
-  clearTimeout(_llamaSaveTimer);
-  _llamaSaveTimer = null;
   if (!$('#llama-sliders-wrap')) return;
   const token = ++_llamaSaveToken;
   try {
@@ -138,15 +126,9 @@ async function _saveLlamaParamsNow() {
   }
 }
 
-function scheduleLlamaSave(immediate) {
-  if (immediate) { _saveLlamaParamsNow(); return; }
-  clearTimeout(_llamaSaveTimer);
-  _llamaSaveTimer = setTimeout(_saveLlamaParamsNow, 800);
-}
-
-function flushPendingLlamaSave() {
-  if (_llamaSaveTimer) _saveLlamaParamsNow();
-}
+const _llamaSave = makeDebouncedSave(800, _saveLlamaParamsNow);
+const scheduleLlamaSave = _llamaSave.schedule;
+const flushPendingLlamaSave = _llamaSave.flush;
 
 function renderExperimentalPage(cfg, uvStatus, llamaStatus, pStatus, wStatus, rvStatus) {
   const body = $('#modal-body');
@@ -216,7 +198,7 @@ function _renderUvCard(uvStatus) {
         </span>
         <div class="exp-head-main">
           <div class="exp-title-row"><strong>UV 包管理工具</strong>${uvBadge}</div>
-          <div class="exp-desc">转录 / 标签获取模块的依赖安装工具，清理或卸载不影响已装模块。</div>
+          <div class="exp-desc">模块的依赖安装工具，清理或卸载不影响已装模块。</div>
         </div>
         <div class="exp-head-actions">
           <button class="ws-btn" id="btn-uv-clean" ${uv.installed ? '' : 'disabled'}>清理缓存</button>
@@ -238,8 +220,8 @@ function _bindManageButtons(uvStatus, llamaStatus, pStatus, wStatus, rvStatus) {
 
   const pInstallBtn = $('#btn-pixai-install');
   if (pInstallBtn && !pStatus.ready) pInstallBtn.addEventListener('click', async () => {
-    const sel = await showMirrorSelectDialog({ api: 'get_pixai_mirrors', title: '选择镜像站 — PixAI Tagger' });
-    if (sel) startPixaiInstall(sel.pytorch || 'nju-cu128', sel.pypi || 'nju');
+    const sel = await showMirrorSelectDialog({ api: 'get_pixai_mirrors', title: '选择版本与站点 — PixAI Tagger' });
+    if (sel) startPixaiInstall(sel.version || 'cu132', sel.site || 'sjtu');
   });
 
   const pRemoveBtn = $('#btn-pixai-remove');
@@ -259,7 +241,7 @@ function _bindManageButtons(uvStatus, llamaStatus, pStatus, wStatus, rvStatus) {
       api: 'get_whisper_mirrors', title: '选择镜像站与模型 — Faster-Whisper',
       showModelSelect: true, models: (wStatus && wStatus.models) || [],
     });
-    if (sel) startWhisperInstall(sel.pypi || 'nju', sel.model || 'v3-turbo');
+    if (sel) startWhisperInstall(sel.pypi || 'sjtu', sel.model || 'v3-turbo');
   });
 
   const wRemoveBtn = $('#btn-whisper-remove');
@@ -276,10 +258,10 @@ function _bindManageButtons(uvStatus, llamaStatus, pStatus, wStatus, rvStatus) {
   const rvInstallBtn = $('#btn-ragvec-install');
   if (rvInstallBtn && rvStatus && !rvStatus.ready) rvInstallBtn.addEventListener('click', async () => {
     const sel = await showMirrorSelectDialog({
-      api: 'get_rag_vec_mirrors', title: '选择镜像站与模型 — 标签向量检索',
+      api: 'get_rag_vec_mirrors', title: '选择版本、站点与模型 — 标签向量检索',
       showModelSelect: true, models: (rvStatus && rvStatus.models) || [],
     });
-    if (sel) startRagVecInstall(sel.pytorch || 'nju-cu128', sel.pypi || 'nju', sel.model || '');
+    if (sel) startRagVecInstall(sel.version || 'cu132', sel.site || 'sjtu', sel.model || '');
   });
 
   const rvRemoveBtn = $('#btn-ragvec-remove');
@@ -321,7 +303,9 @@ async function showMirrorSelectDialog(opts) {
   catch (e) { toast('获取镜像列表失败', 'err'); return null; }
 
   const gpu = mirrors.gpu || null;
-  const hasPytorch = Array.isArray(mirrors.pytorch) && mirrors.pytorch.length;
+  const versions = Array.isArray(mirrors.pytorch_versions) ? mirrors.pytorch_versions : [];
+  const sites = Array.isArray(mirrors.pytorch_sites) ? mirrors.pytorch_sites : [];
+  const hasPytorch = !!(versions.length && sites.length);
   const hasPypi = Array.isArray(mirrors.pypi) && mirrors.pypi.length;
 
   let gpuBanner = '';
@@ -343,25 +327,40 @@ async function showMirrorSelectDialog(opts) {
         </div>`;
   }
 
-  const recommended = (gpu && gpu.recommended) || mirrors.default_pytorch || 'nju-cu128';
+  const recommended = (gpu && gpu.recommended) || mirrors.default_version || 'cu132';
+  const defaultSite = mirrors.default_site || 'sjtu';
 
-  const torchSection = hasPytorch ? `
+  const versionSection = hasPytorch ? `
     <div class="mirror-section">
       <div class="mirror-section-head">
-        <strong>PyTorch CUDA 镜像</strong>
-        <span class="mirror-section-hint">torch / torchvision 专用索引</span>
+        <strong>PyTorch 版本</strong>
       </div>
-      <div class="mirror-opts">${mirrors.pytorch.map(m => {
+      <div class="mirror-opts">${versions.map(m => {
         const isRec = m.id === recommended;
         return `<label class="mirror-opt${isRec ? ' recommended selected' : ''}">
-          <input type="radio" name="torch-mirror" value="${esc(m.id)}" ${isRec ? 'checked' : ''}/>
+          <input type="radio" name="torch-version" value="${esc(m.id)}" ${isRec ? 'checked' : ''}/>
           <span class="mirror-opt-name">${esc(m.name)}${isRec ? '<span class="mirror-rec-badge">推荐</span>' : ''}</span>
-          <small class="mirror-opt-url">${esc(m.url)}</small>
+          <small class="mirror-opt-url">${esc(m.desc || '')}</small>
         </label>`;
       }).join('')}</div>
     </div>` : '';
 
-  const pypiSection = hasPypi ? `
+  const siteSection = hasPytorch ? `
+    <div class="mirror-section">
+      <div class="mirror-section-head">
+        <strong>下载站点</strong>
+      </div>
+      <div class="mirror-opts">${sites.map(s => {
+        const isDef = s.id === defaultSite;
+        return `<label class="mirror-opt${isDef ? ' recommended selected' : ''}">
+          <input type="radio" name="torch-site" value="${esc(s.id)}" ${isDef ? 'checked' : ''}/>
+          <span class="mirror-opt-name">${esc(s.name)}${isDef ? '<span class="mirror-rec-badge">推荐</span>' : ''}</span>
+          <small class="mirror-opt-url">${esc(s.desc || s.url || '')}</small>
+        </label>`;
+      }).join('')}</div>
+    </div>` : '';
+
+  const pypiSection = (hasPypi && !hasPytorch) ? `
     <div class="mirror-section">
       <div class="mirror-section-head">
         <strong>通用 PyPI 镜像</strong>
@@ -401,7 +400,8 @@ async function showMirrorSelectDialog(opts) {
     <div class="confirm-title">${esc(opts.title || '选择镜像站')}</div>
     <div class="mirror-body">
       ${gpuBanner}
-      ${torchSection}
+      ${versionSection}
+      ${siteSection}
       ${pypiSection}
       ${modelSection}
     </div>
@@ -427,10 +427,12 @@ async function showMirrorSelectDialog(opts) {
     }
     $('#mirrorCancel').addEventListener('click', () => close(null));
     $('#mirrorOk').addEventListener('click', () => {
-      const torch = box.querySelector('input[name="torch-mirror"]:checked');
+      const version = box.querySelector('input[name="torch-version"]:checked');
+      const site = box.querySelector('input[name="torch-site"]:checked');
       const pypi = box.querySelector('input[name="pypi-mirror"]:checked');
       const model = box.querySelector('input[name="model-select"]:checked');
-      close({ pytorch: torch ? torch.value : null, pypi: pypi ? pypi.value : 'nju',
+      close({ version: version ? version.value : null, site: site ? site.value : null,
+              pypi: pypi ? pypi.value : 'sjtu',
               model: model ? model.value : null });
     });
   });
@@ -620,28 +622,31 @@ function _bindPixaiEvents(pStatus) {
   });
 }
 
-async function startPixaiInstall(pytorchMirror, pypiMirror) {
-  if (state.installing || state.hfDownloading) { toast(state.hfDownloading ? '模型下载进行中，请等待完成' : '已有模块正在安装，请等待完成', 'err'); return; }
+/* ════════════════════════════════════════════════════════════
+   安装流程骨架（PixAI / Whisper / llama.cpp / 向量检索共用）
+   ════════════════════════════════════════════════════════════ */
+async function runInstallTask(progText, run, onOk) {
+  if (state.installing || state.hfDownloading) {
+    toast(state.hfDownloading ? '模型下载进行中，请等待完成' : '已有模块正在安装，请等待完成', 'err');
+    return;
+  }
   state.installing = true;
+  state.stopRequested = false;
   closeSettings();
   gotoLog();
   $('#log').innerHTML = '';
   const logEmpty = $('#logEmpty'); if (logEmpty) logEmpty.remove();
   $('#prog-bar').style.width = '0%';
   $('#prog-bar').className = 'active';
-  $('#prog-num').textContent = '正在安装 PixAI Tagger…';
-  $('#btn-stop').classList.add('active');
-  $('#btn-stop').classList.remove('done');
+  $('#prog-num').textContent = progText;
+  updateStartBtn();
   toast('开始安装，请查看日志面板…');
   try {
-    const r = await apiCall('install_pixai_tagger', pytorchMirror, pypiMirror);
+    const r = await run();
     if (r && r.ok) {
       $('#prog-bar').style.width = '100%'; $('#prog-bar').className = 'done';
       $('#prog-num').textContent = '安装完成';
-      await apiCall('set_pixai_tagger_enabled', true);
-      state.pixaiTaggerEnabled = true;
-      updateSortDropdown();
-      toast('PixAI Tagger 安装完成，已自动启用', 'ok');
+      if (onOk) await onOk(r);
     } else if (r && r.cancelled) {
       $('#prog-bar').className = ''; $('#prog-num').textContent = '安装已取消';
       toast('安装已取消', 'dim');
@@ -654,9 +659,21 @@ async function startPixaiInstall(pytorchMirror, pypiMirror) {
     toast('安装失败: ' + ((e && e.message) || e), 'err');
   } finally {
     state.installing = false;
-    $('#btn-stop').classList.remove('active');
+    state.stopRequested = false;
+    updateStartBtn();
     renderSettings();
   }
+}
+
+async function startPixaiInstall(pytorchVersion, site) {
+  await runInstallTask('正在安装 PixAI Tagger…',
+    () => apiCall('install_pixai_tagger', pytorchVersion, site),
+    async () => {
+      await apiCall('set_pixai_tagger_enabled', true);
+      state.pixaiTaggerEnabled = true;
+      updateSortDropdown();
+      toast('PixAI Tagger 安装完成，已自动启用', 'ok');
+    });
 }
 
 function _renderWhisperSection(exp, wStatus) {
@@ -668,7 +685,7 @@ function _renderWhisperSection(exp, wStatus) {
   const hasInstalled = wModels.some(m => installed[m.key]);
   const modelSel = hasInstalled ? `
     <div class="dd whisper-model-dd" id="whisper-model-dd">
-      <button class="dd-btn" type="button" data-tip="切换转录模型，选择后立即保存">
+      <button class="dd-btn" type="button">
         <span class="dd-label">${esc((wModels.find(m => m.key === current) || {}).title || '请选择模型')}</span>
         ${ddArrow()}
       </button>
@@ -778,41 +795,13 @@ function _bindWhisperEvents(wStatus) {
 }
 
 async function startWhisperInstall(pypiMirror, modelKey) {
-  if (state.installing || state.hfDownloading) { toast(state.hfDownloading ? '模型下载进行中，请等待完成' : '已有模块正在安装，请等待完成', 'err'); return; }
-  state.installing = true;
-  closeSettings();
-  gotoLog();
-  $('#log').innerHTML = '';
-  const logEmpty = $('#logEmpty'); if (logEmpty) logEmpty.remove();
-  $('#prog-bar').style.width = '0%';
-  $('#prog-bar').className = 'active';
-  $('#prog-num').textContent = '正在安装 Faster-Whisper…';
-  $('#btn-stop').classList.add('active');
-  $('#btn-stop').classList.remove('done');
-  toast('开始安装，请查看日志面板…');
-  try {
-    const r = await apiCall('install_whisper', pypiMirror || 'nju', modelKey || 'v3-turbo');
-    if (r && r.ok) {
-      $('#prog-bar').style.width = '100%'; $('#prog-bar').className = 'done';
-      $('#prog-num').textContent = '安装完成';
+  await runInstallTask('正在安装 Faster-Whisper…',
+    () => apiCall('install_whisper', pypiMirror || 'sjtu', modelKey || 'v3-turbo'),
+    async () => {
       await apiCall('set_whisper_enabled', true);
       state.whisperEnabled = true;
       toast('Faster-Whisper 安装完成，已自动启用', 'ok');
-    } else if (r && r.cancelled) {
-      $('#prog-bar').className = ''; $('#prog-num').textContent = '安装已取消';
-      toast('安装已取消', 'dim');
-    } else {
-      $('#prog-bar').className = ''; $('#prog-num').textContent = '安装失败';
-      toast('安装失败: ' + ((r && r.error) || '').slice(0, 200), 'err');
-    }
-  } catch (e) {
-    $('#prog-bar').className = ''; $('#prog-num').textContent = '安装失败';
-    toast('安装失败: ' + ((e && e.message) || e), 'err');
-  } finally {
-    state.installing = false;
-    $('#btn-stop').classList.remove('active');
-    renderSettings();
-  }
+    });
 }
 
 /* ════════════════════════════════════════════════════════════
@@ -1001,85 +990,92 @@ function _makeModelDownloader(cfg) {
   return { dl, renderProgress, start, close };
 }
 
-let _wData = null;
-const _wDlApi = _makeModelDownloader({
-  kind: 'whisper', dialogCls: 'wm-dialog',
-  progressKey: '__onWhisperModelProgress', doneKey: '__onWhisperModelDone',
-  cancelledMsg: () => '未完成的文件已清理，再次下载将从零开始。',
-  successMsg: r => `<div class="ok">已下载 ${r.downloaded} 个文件到模型目录</div>
-      <div class="hf-files-hint" style="margin-top:4px">关闭弹窗后，在卡片「当前模型」下拉中选择该模型即可切换。</div>`,
-  afterDone: _wRefresh,
-  onClose: () => {
-    _wData = null;
-    if ($('#modal').classList.contains('show')) renderSettings();
-  },
-});
-
-async function openWhisperModelDialog() {
-  const ctx = _hfBox();
-  if (!ctx) return;
-  const { bg, box } = ctx;
-  if (bg.classList.contains('show')) { toast('请先关闭当前弹窗', 'dim'); return; }
-  if (state.hfDownloading && state.dlKind !== 'whisper') { toast('已有模型下载进行中，请等待完成', 'err'); return; }
-  if (_wDlApi.dl.active) {
-    box.classList.add('wm-dialog');
-    _wDlApi.renderProgress(box);
-    bg.classList.add('show');
-    return;
-  }
-  let st;
-  try { st = await apiCall('get_whisper_status'); } catch (e) { st = null; }
-  if (!st) { toast('获取模型状态失败', 'err'); return; }
-  _wData = { models: st.models || [], installed: st.installed || {}, current: st.current_model || '' };
-  _wDlApi.dl.origHtml = box.innerHTML;
-  box.classList.add('wm-dialog');
-  _wRenderList(box);
-  bg.classList.add('show');
-}
-
-function _wRenderList(box) {
-  box.innerHTML = `
-    <div class="confirm-title">Faster-Whisper 模型管理</div>
-    <div class="wm-list">${_wData.models.map(m => _wRowHtml(m)).join('')}</div>
+function makeModelManager(cfg) {
+  const mgr = {
+    data: null,
+    dlApi: null,
+    async open() {
+      const ctx = _hfBox();
+      if (!ctx) return;
+      const { bg, box } = ctx;
+      if (bg.classList.contains('show')) { toast('请先关闭当前弹窗', 'dim'); return; }
+      if (state.hfDownloading && state.dlKind !== cfg.dlKind) { toast('已有模型下载进行中，请等待完成', 'err'); return; }
+      if (mgr.dlApi.dl.active) {
+        box.classList.add(cfg.dialogCls);
+        mgr.dlApi.renderProgress(box);
+        bg.classList.add('show');
+        return;
+      }
+      let st;
+      try { st = await apiCall(cfg.statusApi); } catch (e) { st = null; }
+      if (!st) { toast('获取模型状态失败', 'err'); return; }
+      mgr.data = { models: st.models || [], installed: st.installed || {}, current: st.current_model || '' };
+      mgr.dlApi.dl.origHtml = box.innerHTML;
+      box.classList.add(cfg.dialogCls);
+      mgr.renderList(box);
+      bg.classList.add('show');
+    },
+    renderList(box) {
+      box.innerHTML = `
+    <div class="confirm-title">${esc(cfg.title)}</div>
+    <div class="wm-list">${mgr.data.models.map(m => mgr.rowHtml(m)).join('')}</div>
     <div class="confirm-foot"><button class="btn" id="wmClose">关闭</button></div>`;
-  $('#wmClose').addEventListener('click', () => _wDlApi.close());
-  box.querySelectorAll('.wm-dl-btn').forEach(btn =>
-    btn.addEventListener('click', () => _wStartDownload(box, btn.dataset.key)));
-}
-
-function _wRowHtml(m) {
-  const isInst = !!_wData.installed[m.key];
-  const isCur = m.key === _wData.current;
-  const badge = isInst
-    ? `<span class="exp-badge ok">${icon('check')} 已安装${isCur ? ' · 当前使用' : ''}</span>`
-    : '';
-  const action = isInst ? '' : `
+      $('#wmClose').addEventListener('click', () => mgr.dlApi.close());
+      box.querySelectorAll('.wm-dl-btn').forEach(btn =>
+        btn.addEventListener('click', () => mgr.startDownload(box, btn.dataset.key)));
+    },
+    rowHtml(m) {
+      const isInst = !!mgr.data.installed[m.key];
+      const isCur = m.key === mgr.data.current;
+      const badge = isInst
+        ? `<span class="exp-badge ok">${icon('check')} 已安装${isCur ? ' · 当前使用' : ''}</span>`
+        : '';
+      const action = isInst ? '' : `
     <button class="ws-btn primary wm-dl-btn" data-key="${esc(m.key)}">${icon('download')} 下载</button>`;
-  return `<div class="wm-row">
+      return `<div class="wm-row">
     <div class="wm-main">
       <div class="wm-name">${esc(m.title)}${m.recommended ? '<span class="mirror-rec-badge">推荐</span>' : ''}</div>
       <div class="wm-desc" data-tip="${esc(m.repo || '')}" data-tip-trunc>${esc(m.desc || '')} · ${esc(m.size_label || '')}${isInst ? '' : ' · ' + esc(m.repo || '')}</div>
     </div>
     <div class="wm-right">${badge}${action}</div>
   </div>`;
+    },
+    startDownload(box, key) {
+      const meta = (mgr.data.models || []).find(m => m.key === key) || { title: '模型' };
+      mgr.dlApi.start(box, meta.title, apiCall(cfg.downloadApi, key));
+    },
+    refresh() {
+      apiCall(cfg.statusApi).then(st => {
+        if (!st || !mgr.data) return;
+        mgr.data.installed = st.installed || {};
+        mgr.data.current = st.current_model || '';
+        const ctx = _hfBox();
+        if (ctx && ctx.bg.classList.contains('show') && ctx.box.classList.contains(cfg.dialogCls)) {
+          mgr.renderList(ctx.box);
+        }
+      }).catch(() => {});
+    },
+  };
+  return mgr;
 }
 
-function _wStartDownload(box, key) {
-  const meta = (_wData.models || []).find(m => m.key === key) || { title: '模型' };
-  _wDlApi.start(box, meta.title, apiCall('download_whisper_model', key));
-}
-
-function _wRefresh() {
-  apiCall('get_whisper_status').then(st => {
-    if (!st || !_wData) return;
-    _wData.installed = st.installed || {};
-    _wData.current = st.current_model || '';
-    const ctx = _hfBox();
-    if (ctx && ctx.bg.classList.contains('show') && ctx.box.classList.contains('wm-dialog')) {
-      _wRenderList(ctx.box);
-    }
-  }).catch(() => {});
-}
+const _wMgr = makeModelManager({
+  title: 'Faster-Whisper 模型管理', dlKind: 'whisper', dialogCls: 'wm-dialog',
+  statusApi: 'get_whisper_status', downloadApi: 'download_whisper_model',
+});
+_wMgr.dlApi = _makeModelDownloader({
+  kind: 'whisper', dialogCls: 'wm-dialog',
+  progressKey: '__onWhisperModelProgress', doneKey: '__onWhisperModelDone',
+  cancelledMsg: () => '未完成的文件已清理，再次下载将从零开始。',
+  successMsg: r => `<div class="ok">已下载 ${r.downloaded} 个文件到模型目录</div>
+      <div class="hf-files-hint" style="margin-top:4px">关闭弹窗后，在卡片「当前模型」下拉中选择该模型即可切换。</div>`,
+  afterDone: () => _wMgr.refresh(),
+  onClose: () => {
+    _wMgr.data = null;
+    if ($('#modal').classList.contains('show')) renderSettings();
+  },
+});
+const openWhisperModelDialog = _wMgr.open;
 
 let _hfLastSrc = 'hf';
 const HF_SOURCES = {
@@ -1139,9 +1135,9 @@ function _hfRenderSearch(box) {
   const src = _hfData.src;
   const meta = HF_SOURCES[src];
   box.innerHTML = `
-    <button class="hf-dlg-close" id="hfDlgClose" type="button" data-tip="关闭"><svg class="ic"><use href="#ic-close"></use></svg></button>
+    <button class="hf-dlg-close" id="hfDlgClose" type="button" aria-label="关闭"><svg class="ic"><use href="#ic-close"></use></svg></button>
     <div class="confirm-title hf-head-row">搜索模型
-      <div class="dd search-mode hf-src-dd" id="hfSrcSel" data-tip="模型源">
+      <div class="dd search-mode hf-src-dd" id="hfSrcSel">
         <button class="dd-btn" type="button"><span class="dd-label">${meta.endpoint}</span>${ddArrow()}</button>
         <div class="dd-panel">
           ${Object.entries(HF_SOURCES).map(([k, v]) =>
@@ -1151,7 +1147,7 @@ function _hfRenderSearch(box) {
     </div>
     <div class="hf-search-row">
       <div class="search-widget hf-search-widget" id="hfSearchWidget">
-        <div class="dd search-mode" id="hfSortSel" data-tip="排序方式">
+        <div class="dd search-mode" id="hfSortSel">
           <button class="dd-btn" type="button"><span class="dd-label">热门</span>${ddArrow()}</button>
           <div class="dd-panel">
             ${meta.sorts.map(([v, t], i) =>
@@ -1290,7 +1286,7 @@ function _hfRenderSearch(box) {
 async function _hfOpenFiles(box, repoId) {
   box.classList.add('hf-files-view');
   box.innerHTML = `
-    <button class="hf-dlg-close" id="hfDlgClose" type="button" data-tip="关闭"><svg class="ic"><use href="#ic-close"></use></svg></button>
+    <button class="hf-dlg-close" id="hfDlgClose" type="button" aria-label="关闭"><svg class="ic"><use href="#ic-close"></use></svg></button>
     <div class="confirm-title">${esc(repoId)}</div>
     <div class="hf-hint">加载文件列表…</div>`;
   let r;
@@ -1329,7 +1325,7 @@ function _hfRenderFiles(box, r) {
         </label>`).join('')}</div></div>`;
   };
   box.innerHTML = `
-    <button class="hf-dlg-close" id="hfDlgClose" type="button" data-tip="关闭"><svg class="ic"><use href="#ic-close"></use></svg></button>
+    <button class="hf-dlg-close" id="hfDlgClose" type="button" aria-label="关闭"><svg class="ic"><use href="#ic-close"></use></svg></button>
     <div class="confirm-title">${esc(_hfData.repoId)}</div>
     <div class="hf-files-hint">保存到：${esc(r.models_dir || '')}</div>
     <div class="hf-files-cols">
@@ -1555,43 +1551,12 @@ async function showLlamaCudaDialog() {
 }
 
 async function startLlamaInstall(cudaVer, proxy) {
-  if (state.installing || state.hfDownloading) { toast(state.hfDownloading ? '模型下载进行中，请等待完成' : '已有模块正在安装，请等待完成', 'err'); return; }
-  state.installing = true;
-  closeSettings();
-  gotoLog();
-  $('#log').innerHTML = '';
-  const logEmpty = $('#logEmpty'); if (logEmpty) logEmpty.remove();
-  $('#prog-bar').style.width = '0%';
-  $('#prog-bar').className = 'active';
-  $('#prog-num').textContent = '正在安装 llama.cpp (' + cudaVer + ')…';
-  $('#btn-stop').classList.add('active');
-  $('#btn-stop').classList.remove('done');
-  toast('开始安装，请查看日志面板…');
-  try {
-    const r = await apiCall('install_llama', cudaVer, proxy || '');
-    if (r && r.ok) {
-      $('#prog-bar').style.width = '100%'; $('#prog-bar').className = 'done';
-      $('#prog-num').textContent = '安装完成';
-      if (r.manual) {
-        toast('（手动模式）: 已创建 llama.cpp 文件夹，请自行将对应的编译版本放入其中', 'ok');
-      } else {
-        toast('llama.cpp 安装完成', 'ok');
-      }
-    } else if (r && r.cancelled) {
-      $('#prog-bar').className = ''; $('#prog-num').textContent = '安装已取消';
-      toast('安装已取消', 'dim');
-    } else {
-      $('#prog-bar').className = ''; $('#prog-num').textContent = '安装失败';
-      toast('安装失败: ' + ((r && r.error) || '').slice(0, 200), 'err');
-    }
-  } catch (e) {
-    $('#prog-bar').className = ''; $('#prog-num').textContent = '安装失败';
-    toast('安装失败: ' + ((e && e.message) || e), 'err');
-  } finally {
-    state.installing = false;
-    $('#btn-stop').classList.remove('active');
-    renderSettings();
-  }
+  await runInstallTask('正在安装 llama.cpp (' + cudaVer + ')…',
+    () => apiCall('install_llama', cudaVer, proxy || ''),
+    async r => {
+      if (r.manual) toast('（手动模式）: 已创建 llama.cpp 文件夹，请自行将对应的编译版本放入其中', 'ok');
+      else toast('llama.cpp 安装完成', 'ok');
+    });
 }
 
 async function removeLlama() {
@@ -1659,32 +1624,37 @@ async function launchLlama() {
   }
 }
 
-async function ensureLlamaReady() {
-  if (state.llamaRunning && !state.llamaStarting) return true;
-  state.llamaPendingLaunch = true;
-  updateLlamaPill({ running: false, starting: true, model: null });
-  startLlamaPillPolling();
-  updateStartBtn();
-  try {
-    const r = await apiCall('ensure_llama_running');
-    let st = r ? await apiCall('get_llama_status') : null;
-    if (st) syncLlamaState(st);
-    if (r && r.ok && st && st.running && !st.starting) return true;
-    if (r && r.ok && st && st.starting) {
-      st = await waitLlamaSettled();
-      if (st) syncLlamaState(st);
-      if (st && st.running && !st.starting) return true;
-    }
-    toast('本地推理服务启动失败: ' + ((r && r.error) || (st && st.launch_failed) || '未知错误'), 'err');
-    return false;
-  } catch (e) {
-    toast('本地推理服务启动失败: ' + ((e && e.message) || e), 'err');
-    return false;
-  } finally {
-    state.llamaPendingLaunch = false;
-    stopLlamaPillPolling();
+let _ensureLlamaInflight = null;
+function ensureLlamaReady() {
+  if (state.llamaRunning && !state.llamaStarting) return Promise.resolve(true);
+  if (_ensureLlamaInflight) return _ensureLlamaInflight;
+  _ensureLlamaInflight = (async () => {
+    state.llamaPendingLaunch = true;
+    updateLlamaPill({ running: false, starting: true, model: null });
+    startLlamaPillPolling();
     updateStartBtn();
-  }
+    try {
+      const r = await apiCall('ensure_llama_running');
+      let st = r ? await apiCall('get_llama_status') : null;
+      if (st) syncLlamaState(st);
+      if (r && r.ok && st && st.running && !st.starting) return true;
+      if (r && r.ok && st && st.starting) {
+        st = await waitLlamaSettled();
+        if (st) syncLlamaState(st);
+        if (st && st.running && !st.starting) return true;
+      }
+      toast('本地推理服务启动失败: ' + ((r && r.error) || (st && st.launch_failed) || '未知错误'), 'err');
+      return false;
+    } catch (e) {
+      toast('本地推理服务启动失败: ' + ((e && e.message) || e), 'err');
+      return false;
+    } finally {
+      state.llamaPendingLaunch = false;
+      stopLlamaPillPolling();
+      updateStartBtn();
+    }
+  })().finally(() => { _ensureLlamaInflight = null; });
+  return _ensureLlamaInflight;
 }
 
 async function waitLlamaSettled(timeoutMs) {
@@ -1755,7 +1725,7 @@ function renderLlamaTab(llamaStatus) {
   const curModelData = _selectModelData(cfg, models);
   const modelSel = models.length ? `
     <div class="dd llama-model-dd" id="llama-model-dd">
-      <button class="dd-btn" data-tip="切换模型">
+      <button class="dd-btn">
         <span class="dd-label">${esc(curModelData ? curModelData.name + ' (' + curModelData.size_mb + ' MB)' : '')}</span>
         ${ddArrow()}
       </button>
@@ -1797,16 +1767,21 @@ function renderLlamaTab(llamaStatus) {
   const moeMax = moeShow ? Math.max(1, parseInt(curModelData.layers, 10) || 128) : 128;
   const moeInit = moeShow ? _clampInt(pv('n_cpu_moe', 0), 0, moeMax, 0) : 0;
   const starting = !!llamaStatus.starting || !!state.llamaPendingLaunch;
+  const portConflict = !running && !starting && ready && !!llamaStatus.port_conflict;
   const statusMeta = running
     ? `当前模型：<strong>${esc(curModel)}</strong> · PID ${esc(String(llamaStatus.pid))} · 端口 <code>${esc(String(llamaStatus.port || ''))}</code>`
     : starting ? '服务正在启动，模型加载中…'
+    : portConflict ? `端口 <code>${esc(String(llamaStatus.port_conflict))}</code> 已被占用，请更换端口后重试`
     : (ready ? '服务未运行' : '请先到「扩展功能」页安装该模块或下载手动解压至本程序目录 llama.cpp 文件夹');
+  const conflictBadge = portConflict
+    ? `<span class="exp-badge err" data-tip="端口 ${esc(String(llamaStatus.port_conflict))} 已被其他程序占用">${icon('warning')} 端口冲突</span>`
+    : '';
   const stateBadge = running
     ? `<span class="exp-badge ok">${icon('check')} 运行中</span>`
     : starting
       ? `<span class="exp-badge warn">${icon('refresh')} 正在启动</span>`
       : (ready
-          ? '<span class="exp-badge dim">已停止</span>'
+          ? `<span class="exp-badge dim">已停止</span>${conflictBadge}`
           : `<span class="exp-badge warn">${icon('warning')} 未安装</span>`);
 
   body.innerHTML = `
@@ -1900,7 +1875,7 @@ function renderLlamaTab(llamaStatus) {
           <input type="text" id="llama-host" value="${esc(pv('host', d.host))}"/>
         </div>
         <div class="field">
-          <label data-tip="服务端口">端口 <code>--port</code></label>
+          <label>端口 <code>--port</code></label>
           <input type="number" id="llama-port" value="${pv('port', d.port)}"/>
         </div>
         <div class="field">
@@ -2239,10 +2214,6 @@ function _applyModelParams(path, cfg, mcfgs, defaults) {
   if (imgMinDD) setDropdownValue(imgMinDD, _imgTokensSelectVal(pv('image_min_tokens', d.image_min_tokens)));
   if (imgMaxDD) setDropdownValue(imgMaxDD, _imgTokensSelectVal(pv('image_max_tokens', d.image_max_tokens)));
   _syncImgTokenLimits();
-  const setChk = (id, on) => {
-    const el = $(id);
-    if (el) el.checked = !!on;
-  };
   const reasonDD = $('#llama-reasoning-dd');
   if (reasonDD) setDropdownValue(reasonDD, _reasoningSelectVal(pv('reasoning_mode', d.reasoning_mode || 'off')));
   const specDD = $('#llama-spec');
@@ -2641,122 +2612,30 @@ function _bindRagVecEvents(rvStatus) {
   });
 }
 
-async function startRagVecInstall(pytorchMirror, pypiMirror, modelKey) {
-  if (state.installing || state.hfDownloading) {
-    toast(state.hfDownloading ? '模型下载进行中，请等待完成' : '已有模块正在安装，请等待完成', 'err');
-    return;
-  }
-  state.installing = true;
-  closeSettings();
-  gotoLog();
-  $('#log').innerHTML = '';
-  const logEmpty = $('#logEmpty'); if (logEmpty) logEmpty.remove();
-  $('#prog-bar').style.width = '0%';
-  $('#prog-bar').className = 'active';
-  $('#prog-num').textContent = '正在安装标签向量检索…';
-  $('#btn-stop').classList.add('active');
-  $('#btn-stop').classList.remove('done');
-  toast('开始安装，请查看日志面板…');
-  try {
-    const r = await apiCall('install_rag_vec', pytorchMirror, pypiMirror, modelKey || '');
-    if (r && r.ok) {
-      $('#prog-bar').style.width = '100%'; $('#prog-bar').className = 'done';
-      $('#prog-num').textContent = '安装完成';
+async function startRagVecInstall(pytorchVersion, site, modelKey) {
+  await runInstallTask('正在安装标签向量检索…',
+    () => apiCall('install_rag_vec', pytorchVersion, site, modelKey || ''),
+    async () => {
       await apiCall('save_config', { experimental: { rag_vec_enabled: true } });
       state.ragVecEnabled = true;
       toast('标签向量检索安装完成，已自动启用', 'ok');
-    } else if (r && r.cancelled) {
-      $('#prog-bar').className = ''; $('#prog-num').textContent = '安装已取消';
-      toast('安装已取消', 'dim');
-    } else {
-      $('#prog-bar').className = ''; $('#prog-num').textContent = '安装失败';
-      toast('安装失败: ' + ((r && r.error) || '').slice(0, 200), 'err');
-    }
-  } catch (e) {
-    $('#prog-bar').className = ''; $('#prog-num').textContent = '安装失败';
-    toast('安装失败: ' + ((e && e.message) || e), 'err');
-  } finally {
-    state.installing = false;
-    $('#btn-stop').classList.remove('active');
-    renderSettings();
-  }
+    });
 }
 
-let _rvData = null;
-const _rvDlApi = _makeModelDownloader({
+const _rvMgr = makeModelManager({
+  title: '嵌入模型管理', dlKind: 'ragvec', dialogCls: 'wm-dialog',
+  statusApi: 'get_rag_vec_status', downloadApi: 'download_rag_vec_model',
+});
+_rvMgr.dlApi = _makeModelDownloader({
   kind: 'ragvec', dialogCls: 'wm-dialog',
   progressKey: '__onRagVecModelProgress', doneKey: '__onRagVecModelDone',
   cancelledMsg: () => '未完成的文件已清理，再次下载将从零开始。',
   successMsg: r => `<div class="ok">已下载 ${r.downloaded} 个文件到模型目录</div>
       <div class="hf-files-hint" style="margin-top:4px">关闭弹窗后，在卡片「嵌入模型」下拉中选择该模型即可切换。</div>`,
-  afterDone: _rvRefresh,
+  afterDone: () => _rvMgr.refresh(),
   onClose: () => {
-    _rvData = null;
+    _rvMgr.data = null;
     if ($('#modal').classList.contains('show')) renderSettings();
   },
 });
-
-async function openRagVecModelDialog() {
-  const ctx = _hfBox();
-  if (!ctx) return;
-  const { bg, box } = ctx;
-  if (bg.classList.contains('show')) { toast('请先关闭当前弹窗', 'dim'); return; }
-  if (state.hfDownloading && state.dlKind !== 'ragvec') { toast('已有模型下载进行中，请等待完成', 'err'); return; }
-  if (_rvDlApi.dl.active) {
-    box.classList.add('wm-dialog');
-    _rvDlApi.renderProgress(box);
-    bg.classList.add('show');
-    return;
-  }
-  let st;
-  try { st = await apiCall('get_rag_vec_status'); } catch (e) { st = null; }
-  if (!st) { toast('获取模型状态失败', 'err'); return; }
-  _rvData = { models: st.models || [], installed: st.installed || {}, current: st.current_model || '' };
-  _rvDlApi.dl.origHtml = box.innerHTML;
-  box.classList.add('wm-dialog');
-  _rvRenderList(box);
-  bg.classList.add('show');
-}
-
-function _rvRenderList(box) {
-  box.innerHTML = `
-    <div class="confirm-title">嵌入模型管理</div>
-    <div class="wm-list">${_rvData.models.map(m => _rvRowHtml(m)).join('')}</div>
-    <div class="confirm-foot"><button class="btn" id="rvClose">关闭</button></div>`;
-  $('#rvClose').addEventListener('click', () => _rvDlApi.close());
-  box.querySelectorAll('.rv-dl-btn').forEach(btn =>
-    btn.addEventListener('click', () => _rvStartDownload(box, btn.dataset.key)));
-}
-
-function _rvRowHtml(m) {
-  const isInst = !!_rvData.installed[m.key];
-  const isCur = m.key === _rvData.current;
-  const badge = isInst
-    ? `<span class="exp-badge ok">${icon('check')} 已安装${isCur ? ' · 当前使用' : ''}</span>` : '';
-  const action = isInst ? '' : `
-    <button class="ws-btn primary rv-dl-btn" data-key="${esc(m.key)}">${icon('download')} 下载</button>`;
-  return `<div class="wm-row">
-    <div class="wm-main">
-      <div class="wm-name">${esc(m.title)}${m.recommended ? '<span class="mirror-rec-badge">推荐</span>' : ''}</div>
-      <div class="wm-desc" data-tip="${esc(m.repo || '')}" data-tip-trunc>${esc(m.desc || '')} · ${esc(m.size_label || '')}${isInst ? '' : ' · ' + esc(m.repo || '')}</div>
-    </div>
-    <div class="wm-right">${badge}${action}</div>
-  </div>`;
-}
-
-function _rvStartDownload(box, key) {
-  const meta = (_rvData.models || []).find(m => m.key === key) || { title: '模型' };
-  _rvDlApi.start(box, meta.title, apiCall('download_rag_vec_model', key));
-}
-
-function _rvRefresh() {
-  apiCall('get_rag_vec_status').then(st => {
-    if (!st || !_rvData) return;
-    _rvData.installed = st.installed || {};
-    _rvData.current = st.current_model || '';
-    const ctx = _hfBox();
-    if (ctx && ctx.bg.classList.contains('show') && ctx.box.classList.contains('wm-dialog')) {
-      _rvRenderList(ctx.box);
-    }
-  });
-}
+const openRagVecModelDialog = _rvMgr.open;

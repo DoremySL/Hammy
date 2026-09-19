@@ -83,6 +83,7 @@ const state = {
   selAnchor: null,
   primaryId: null,
   processing: false,
+  stopRequested: false,
   search: '',
   searchMode: 'all',
   sortBy: 'default',
@@ -93,15 +94,22 @@ const state = {
   llamaRunning: false,
   llamaStarting: false,
   llamaPendingLaunch: false,
+  llamaParallel: 1,
   pillMode: 'conn',
   settings_tab: 'config',
   active_preset_id: 'default',
   pvDirty: false,
+  pvUseExample: false,
   ptItems: [],
   ptMode: 'off',
   ptDisabled: new Set(),
   ptSelected: new Set(),
   ptSelAnchor: null,
+  ptSearch: '',
+  ptGroupFilter: '',
+  ptEditIdx: -1,
+  ptAddMode: true,
+  ptDirty: false,
   settings_scroll_to: null,
   thumbCache: new Map(),
   pixaiTaggerEnabled: false,
@@ -152,12 +160,20 @@ function _positionPanel(el) {
   const btn = el.querySelector('.dd-btn');
   const panel = el.querySelector('.dd-panel');
   const r = btn.getBoundingClientRect();
+  const GAP = 6, EDGE = 8;
   panel.style.position = 'fixed';
-  panel.style.top = (r.bottom + 6) + 'px';
   const pw = panel.offsetWidth || 150;
-  panel.style.left = Math.min(r.left, window.innerWidth - pw - 8) + 'px';
+  panel.style.left = Math.min(Math.max(EDGE, r.left), Math.max(EDGE, window.innerWidth - pw - EDGE)) + 'px';
   panel.style.minWidth = r.width + 'px';
-  panel.style.maxHeight = Math.max(120, window.innerHeight - r.bottom - 14) + 'px';
+  const below = window.innerHeight - r.bottom - GAP - EDGE;
+  const above = r.top - GAP - EDGE;
+  if (panel.offsetHeight > below && above > below) {
+    panel.style.maxHeight = Math.max(120, above) + 'px';
+    panel.style.top = Math.max(EDGE, r.top - GAP - panel.offsetHeight) + 'px';
+  } else {
+    panel.style.maxHeight = Math.max(120, below) + 'px';
+    panel.style.top = (r.bottom + GAP) + 'px';
+  }
 }
 function setDropdownValue(el, val) {
   el.querySelectorAll('.dd-opt').forEach(o => o.classList.toggle('active', o.dataset.value === val));
@@ -190,11 +206,11 @@ function _placeTip(target) {
     _tipBox.className = 'hover-tip';
     document.body.appendChild(_tipBox);
   }
-  _tipBox.classList.toggle('light', !!(target.classList && target.classList.contains('selected-info')));
+  _tipBox.classList.toggle('wide', !!(target.classList && target.classList.contains('selected-info')));
   _tipBox.textContent = text;
   _tipBox.classList.add('show');
   const r = target.getBoundingClientRect();
-  if (_tipBox.classList.contains('light')) {
+  if (_tipBox.classList.contains('wide')) {
     _tipBox.style.maxWidth = (window.innerWidth - Math.max(8, r.left) - 15) + 'px';
   } else {
     _tipBox.style.maxWidth = '';
@@ -401,6 +417,24 @@ function createLimiter(max) {
   });
 }
 
+function makeDebouncedSave(ms, saveNow) {
+  let timer = null;
+  const runNow = () => {
+    clearTimeout(timer);
+    timer = null;
+    saveNow();
+  };
+  return {
+    runNow,
+    schedule(immediate) {
+      if (immediate) { runNow(); return; }
+      clearTimeout(timer);
+      timer = setTimeout(runNow, ms);
+    },
+    flush() { if (timer) runNow(); },
+  };
+}
+
 function pickSelection(sel, anchor, id, e, rangeIds) {
   e = e || {};
   if (e.ctrlKey || e.metaKey) {
@@ -459,6 +493,7 @@ window.__ui = {
     }).catch(() => {});
   },
   setProgress(cur, tot) {
+    if (state.stopRequested) return;
     const pct = tot > 0 ? Math.round(cur / tot * 100) : 0;
     $('#prog-bar').style.width = pct + '%';
     $('#prog-num').textContent = tot > 0 ? `${cur}/${tot} (${pct}%)` : '';
@@ -511,10 +546,10 @@ window.__ui = {
   onProcessDone(summary, scanResult) {
     state.processing = false;
     state.gpuBusy = false;
-    $('#btn-stop').classList.remove('active');
-    $('#btn-stop').classList.add('done');
+    state.stopRequested = false;
     $('#prog-bar').className = 'done';
     updateMiniProg();
+    updateStartBtn();
     if (scanResult && !scanResult.error) {
       loadFromResult(scanResult, true);
     } else {
@@ -543,28 +578,21 @@ function withTimeout(promise, ms) {
 }
 
 function updateLlamaPill(st) {
-  const dot = $('#conn-dot'), label = $('#conn-label'), pill = $('#conn-pill');
+  const dot = $('#conn-dot');
   if (!dot || !st) return;
-  const hint = '；点击进入本地推理配置';
-  let cls, text, title;
+  let cls, text;
   if (st.starting) {
     cls = 'yellow'; text = '正在启动';
-    title = '本地推理服务正在启动…' + hint;
   } else if (st.running) {
     cls = 'green'; text = '运行中';
-    title = '本地推理服务运行中'
-      + (st.model ? '；模型: ' + String(st.model).split(/[\\/]/).pop() : '')
-      + (st.port ? '；端口: ' + st.port : '') + hint;
   } else if (st.launch_failed) {
     cls = 'red'; text = '启动失败';
-    title = '启动失败: ' + String(st.launch_failed) + hint;
   } else {
     cls = 'gray'; text = '未启动';
-    title = '本地推理服务未启动（点击「开始处理」会自动启动）' + hint;
   }
   dot.className = 'conn-dot ' + cls;
-  label.textContent = text;
-  pill.dataset.tip = title;
+  const pill = $('#conn-pill');
+  if (pill) pill.setAttribute('aria-label', 'AI 服务：' + text);
 }
 
 let _llamaPollTimer = null;
@@ -595,28 +623,42 @@ function stopLlamaPillPolling() {
 }
 
 function updateConnectionUI(r) {
-  const dot = $('#conn-dot'), label = $('#conn-label'), pill = $('#conn-pill');
+  const dot = $('#conn-dot');
   if (!dot) return;
   if (state.llamaIntegration) return;
   state.aiConnected = !!r.ok;
   dot.className = 'conn-dot ' + (r.ok ? 'green' : 'red');
-  label.textContent = r.ok ? 'AI 已连接' : '连接失败';
-  const addr = r.base_url ? '；服务地址: ' + r.base_url : '';
-  pill.dataset.tip = (r.ok ? '已连接' : (r.message || '连接失败')) + addr + '；点击配置';
+  const pill = $('#conn-pill');
+  if (pill) pill.setAttribute('aria-label', 'AI 服务：' + (r.ok ? '已连接' : '连接失败'));
   updateStartBtn();
+}
+
+function currentTask() {
+  if (state.processing) return 'process';
+  if (state.installing) return 'install';
+  if (state.gpuBusy) return 'gpu';
+  return null;
 }
 
 function updateStartBtn() {
   const btn = $('#btn-start');
   if (!btn) return;
+  const task = currentTask();
+  if (task) {
+    btn.disabled = false;
+    btn.classList.add('stopping');
+    btn.dataset.tip = state.stopRequested ? '正在停止…'
+      : task === 'install' ? '停止安装' : '停止处理';
+    return;
+  }
+  btn.classList.remove('stopping');
   const ready = state.llamaIntegration || state.aiConnected;
-  btn.disabled = !ready || state.pending.length === 0 || state.processing || state.gpuBusy || state.llamaPendingLaunch;
+  btn.disabled = !ready || state.pending.length === 0 || state.llamaPendingLaunch;
   btn.dataset.tip = !ready ? '请等待 AI 服务连接'
     : state.pending.length === 0 ? '请先添加视频'
     : state.llamaPendingLaunch ? '本地推理服务启动中…'
     : state.llamaIntegration && !state.aiConnected ? '本地推理服务未就绪，点击自动启动'
-    : (state.processing || state.gpuBusy) ? '正在处理中…' : '开始处理';
-  if (typeof updateSelToolbar === 'function') updateSelToolbar();
+    : '开始处理';
 }
 
 let _connInflight = null;

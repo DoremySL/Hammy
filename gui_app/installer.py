@@ -1,6 +1,4 @@
-"""installer.py — 扩展模块共享安装基础设施（UV + 镜像 + GPU 检测 + 子进程工具）。
-
-"""
+"""installer.py — 扩展模块共享安装基础设施（UV + 镜像 + GPU 检测 + 子进程工具）。"""
 from __future__ import annotations
 
 import collections
@@ -28,21 +26,58 @@ UV_CACHE_DIR = UV_RUNTIME_DIR / "cache"    # UV 下载缓存（UV_CACHE_DIR 指�
 
 # ── 通用 PyPI 镜像（timm/Pillow/faster-whisper 等）──
 PYPI_MIRRORS = {
+    "sjtu": {"name": "上海交通大学", "url": "https://mirror.sjtu.edu.cn/pypi/web/simple"},
     "nju": {"name": "南京大学", "url": "https://mirrors.nju.edu.cn/pypi/web/simple"},
-    "tsinghua": {"name": "清华大学", "url": "https://pypi.tuna.tsinghua.edu.cn/simple"},
-    "aliyun": {"name": "阿里云", "url": "https://mirrors.aliyun.com/pypi/simple"},
+    "official": {"name": "PyPI 官方", "url": "https://pypi.org/simple"},
 }
-DEFAULT_PYPI_MIRROR = "nju"
+DEFAULT_PYPI_MIRROR = "sjtu"
 
-# ── PyTorch CUDA wheels 专用镜像（仅 PixAI 需要）──
-PYTORCH_MIRRORS = {
-    "nju-cu128": {"name": "南京大学 (CUDA 12.8)", "url": "https://mirrors.nju.edu.cn/pytorch/whl/cu128"},
-    "nju-cu121": {"name": "南京大学 (CUDA 12.1)", "url": "https://mirrors.nju.edu.cn/pytorch/whl/cu121"},
-    "nju-cu118": {"name": "南京大学 (CUDA 11.8)", "url": "https://mirrors.nju.edu.cn/pytorch/whl/cu118"},
-    "nju-cpu": {"name": "南京大学 (CPU)", "url": "https://mirrors.nju.edu.cn/pytorch/whl/cpu"},
-    "official-cu128": {"name": "PyTorch 官方 (CUDA 12.8)", "url": "https://download.pytorch.org/whl/cu128"},
+# ── PyTorch 版本档位（PixAI / 标签向量检索）──
+# 仅保留 PyTorch 2.14 稳定版的构建；cuda = 依赖的 CUDA 版本（空 = CPU 版）
+PYTORCH_VERSIONS = {
+    "cu132": {"name": "CUDA 13.2", "tag": "cu132", "cuda": "13.2", "desc": "驱动 580 及以上"},
+    "cu126": {"name": "CUDA 12.6", "tag": "cu126", "cuda": "12.6", "desc": "驱动 560 ~ 579"},
+    "cpu": {"name": "CPU", "tag": "cpu", "cuda": "", "desc": "无 N 卡或驱动过旧"},
 }
-DEFAULT_PYTORCH_MIRROR = "nju-cu128"
+DEFAULT_PYTORCH_VERSION = "cu132"
+
+# ── PyTorch 下载站点（须同时提供 torch 索引与 PyPI 索引）──
+PYTORCH_SITES = {
+    "sjtu": {
+        "name": "上海交通大学", "desc": "国内高速，依赖同源",
+        "torch_base": "https://mirror.sjtu.edu.cn/pytorch-wheels",
+        "pypi": "https://mirror.sjtu.edu.cn/pypi/web/simple",
+    },
+    "nju": {
+        "name": "南京大学", "desc": "交大不通时的备用站点",
+        "torch_base": "https://mirrors.nju.edu.cn/pytorch/whl",
+        "pypi": "https://mirrors.nju.edu.cn/pypi/web/simple",
+    },
+    "official": {
+        "name": "PyTorch 官方", "desc": "download.pytorch.org，国内较慢",
+        "torch_base": "https://download.pytorch.org/whl",
+        "pypi": "https://pypi.org/simple",
+    },
+}
+DEFAULT_PYTORCH_SITE = "sjtu"
+
+
+def resolve_pytorch(version: str = "", site: str = "") -> Dict[str, Any]:
+    """把（版本档位, 站点）解析为 torch 索引与 PyPI 索引地址；非法值回落到默认。"""
+    ver_key = version if version in PYTORCH_VERSIONS else DEFAULT_PYTORCH_VERSION
+    site_key = site if site in PYTORCH_SITES else DEFAULT_PYTORCH_SITE
+    ver = PYTORCH_VERSIONS[ver_key]
+    st = PYTORCH_SITES[site_key]
+    return {
+        "version": ver_key,
+        "version_name": ver["name"],
+        "site": site_key,
+        "site_name": st["name"],
+        "tag": ver["tag"],
+        "torch_url": f"{st['torch_base'].rstrip('/')}/{ver['tag']}",
+        "pypi_url": st["pypi"],
+        "is_cpu": ver["tag"] == "cpu",
+    }
 
 # ── 超时 ──
 UV_TIMEOUT_SEC = 120.0
@@ -57,15 +92,43 @@ RC_CANCEL = -2
 log = make_logger("installer")
 
 
+# ── CUDA 版本挑选（扩展功能安装的统一推荐规则）──
+
+def ver_tuple(v: str) -> Tuple[int, ...]:
+    """把 '12.4' 解析为 (12, 4)，用于精确版本比较（避免 float 误判 12.10→12.1）。"""
+    try:
+        return tuple(int(x) for x in str(v).split("."))
+    except (ValueError, TypeError):
+        return (0,)
+
+
+def pick_cuda_version(cuda_max: str, candidates: List[Tuple[str, str]]) -> Optional[str]:
+    """在候选 [(id, 所需 CUDA 版本)]（按所需版本降序）中挑出 <= cuda_max 的最高档；无匹配返回 None。"""
+    if not cuda_max:
+        return None
+    cm = ver_tuple(cuda_max)
+    for key, req in candidates:
+        if req and ver_tuple(req) <= cm:
+            return key
+    return None
+
+
+# PyTorch 档位候选（按所需 CUDA 版本降序）
+_PYTORCH_CUDA_CANDIDATES: List[Tuple[str, str]] = sorted(
+    ((k, v["cuda"]) for k, v in PYTORCH_VERSIONS.items() if v["cuda"]),
+    key=lambda kv: ver_tuple(kv[1]), reverse=True,
+)
+
+
 # ── 镜像 / GPU 检测 ──
 
 def detect_gpu() -> Dict[str, Any]:
-    """检测 NVIDIA GPU，返回型号/驱动版本/驱动支持的最高 CUDA 版本/推荐的 torch 镜像 ID。"""
+    """检测 NVIDIA GPU：型号 / 驱动版本 / 驱动支持的 CUDA 上限 + 推荐档位。"""
     result = {
         "has_nvidia": False,
         "gpu_name": "",
         "driver_version": "",
-        "cuda_max": "",        # 驱动支持的最高 CUDA 版本（如 "12.8"），来自 nvidia-smi 表头
+        "cuda_max": "",        # 驱动支持的最高 CUDA 版本（如 "13.2"），来自 nvidia-smi 表头
         "recommended": "cpu",
     }
     try:
@@ -84,7 +147,7 @@ def detect_gpu() -> Dict[str, Any]:
                 result["gpu_name"] = parts[0]
                 result["driver_version"] = parts[1]
                 result["cuda_max"] = _query_cuda_version()
-                result["recommended"] = _recommend_cuda(result["cuda_max"], result["driver_version"])
+                result["recommended"] = _recommend_cuda(result["cuda_max"])
     except Exception:
         pass
     return result
@@ -101,7 +164,7 @@ def _query_cuda_version() -> str:
         )
         out, _ = p.communicate(timeout=5)
         if p.returncode == 0:
-            # 新驱动(R580+)表头为 CUDA UMD Version: 13.3；旧版英文 CUDA Version: 13.3；中文 Windows CUDA 版本: 13.3
+            # 表头：新版 CUDA UMD Version: 13.3 / 英文 CUDA Version: / 中文 CUDA 版本:
             patterns = [
                 r"CUDA\s+UMD\s+Version\s*:?\s*([\d.]+)",
                 r"CUDA\s+Version\s*:?\s*([\d.]+)",
@@ -116,57 +179,27 @@ def _query_cuda_version() -> str:
     return ""
 
 
-def _recommend_cuda(cuda_max: str, driver_version: str = "") -> str:
-    """根据驱动支持的最高 CUDA 版本推荐 PyTorch CUDA 镜像 ID。"""
-    def _by_ceiling(ver: str) -> str:
-        try:
-            parts = ver.split(".")
-            major = int(parts[0])
-            minor = int(parts[1]) if len(parts) > 1 else 0
-        except (ValueError, IndexError):
-            return ""
-        if (major, minor) >= (12, 8):
-            return "nju-cu128"
-        if (major, minor) >= (12, 1):
-            return "nju-cu121"
-        if (major, minor) >= (11, 8):
-            return "nju-cu118"
-        return "cpu"
-
-    def _by_driver(ver: str) -> str:
-        try:
-            major = int(ver.split(".")[0])
-        except (ValueError, IndexError):
-            return "cpu"
-        if major >= 570:
-            return "nju-cu128"
-        if major >= 525:
-            return "nju-cu121"
-        if major >= 452:
-            return "nju-cu118"
-        return "cpu"
-
-    if cuda_max:
-        r = _by_ceiling(cuda_max)
-        if r:
-            return r
-    if driver_version:
-        return _by_driver(driver_version)
-    return "cpu"
+def _recommend_cuda(cuda_max: str) -> str:
+    """按 cuda_max 推荐 PyTorch 档位；候选都装不了就用 cpu。"""
+    return pick_cuda_version(cuda_max, _PYTORCH_CUDA_CANDIDATES) or "cpu"
 
 
 def get_mirror_groups(groups: List[str]) -> Dict[str, Any]:
-    """返回指定镜像分组 + GPU 检测（供前端动态渲染选择弹窗）。
-        Args:
-        groups: 需要的镜像组，如 ["pytorch", "pypi"]（PixAI）或 ["pypi"]（Whisper）
-    """
+    """返回指定镜像分组 + GPU 检测（供前端渲染选择弹窗）；groups 如 ["pytorch", "pypi"] 或 ["pypi"]。"""
     result: Dict[str, Any] = {}
     if "pypi" in groups:
         result["pypi"] = [{"id": k, "name": v["name"], "url": v["url"]} for k, v in PYPI_MIRRORS.items()]
         result["default_pypi"] = DEFAULT_PYPI_MIRROR
     if "pytorch" in groups:
-        result["pytorch"] = [{"id": k, "name": v["name"], "url": v["url"]} for k, v in PYTORCH_MIRRORS.items()]
-        result["default_pytorch"] = DEFAULT_PYTORCH_MIRROR
+        result["pytorch_versions"] = [
+            {"id": k, "name": v["name"], "desc": v.get("desc", "")} for k, v in PYTORCH_VERSIONS.items()
+        ]
+        result["default_version"] = DEFAULT_PYTORCH_VERSION
+        result["pytorch_sites"] = [
+            {"id": k, "name": v["name"], "desc": v.get("desc", ""), "url": v["torch_base"]}
+            for k, v in PYTORCH_SITES.items()
+        ]
+        result["default_site"] = DEFAULT_PYTORCH_SITE
         result["gpu"] = detect_gpu()  # 仅 PyTorch 安装需要 GPU 检测
     return result
 
@@ -302,7 +335,6 @@ def run_subprocess_streaming(
 
 
 def venv_python_path(venv_dir: Path) -> Path:
-    """返回指定虚拟环境中的 python 可执行文件路径。"""
     if sys.platform == "win32":
         return venv_dir / "Scripts" / "python.exe"
     return venv_dir / "bin" / "python"
@@ -463,7 +495,6 @@ def ensure_uv(pypi_url: str, log_fn: Optional[Callable[[str], None]] = None,
 # ── 缓存管理 ──
 
 def clean_uv_cache(log_fn: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
-    """清理 UV 包缓存，释放磁盘空间。"""
     if not UV_CACHE_DIR.is_dir():
         return {"ok": True, "message": "缓存目录不存在，无需清理"}
     uv = find_uv()
@@ -472,7 +503,6 @@ def clean_uv_cache(log_fn: Optional[Callable[[str], None]] = None) -> Dict[str, 
         rc, _, _ = run_subprocess([uv, "cache", "clean"], UV_TIMEOUT_SEC)
         cleaned = (rc == 0)
     if not cleaned:
-        # UV 不可用或命令失败：直接删除缓存目录
         shutil.rmtree(UV_CACHE_DIR, ignore_errors=True)
         UV_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     log("已清理 UV 包缓存", log_fn)

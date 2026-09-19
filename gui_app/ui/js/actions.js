@@ -1,23 +1,26 @@
 /* ════════════════════════════════════════════════════════════
    处理
    ════════════════════════════════════════════════════════════ */
+let _procSeq = 0;
 async function startProcessing(paths, label) {
+  if (state.processing) return;
+  const token = ++_procSeq;
   state.processing = true;
   state.gpuBusy = true;
-  $('#btn-start').disabled = true;
-  $('#btn-stop').classList.add('active');
-  $('#btn-stop').classList.remove('done');
+  state.stopRequested = false;
   $('#log').innerHTML = '';
   $('#prog-bar').style.width = '0%';
   $('#prog-bar').className = 'active';
   $('#prog-num').textContent = '处理中…';
   gotoLog();
   updateMiniProg();
+  updateStartBtn();
   toast(label);
   const reset = () => {
+    if (_procSeq !== token || state.stopRequested) return;
     state.processing = false;
     state.gpuBusy = false;
-    $('#btn-stop').classList.remove('active');
+    updateStartBtn();
     updateStats();
   };
   try {
@@ -32,21 +35,16 @@ async function startProcessing(paths, label) {
   }
 }
 
-$('#btn-start').addEventListener('click', async () => {
-  if (state.processing || state.llamaPendingLaunch || !state.pending.length) return;
-  if (state.llamaIntegration && !state.aiConnected) {
-    const ok = await ensureLlamaReady();
-    if (!ok) return;
-  }
-  if (state.processing || !state.pending.length || !state.aiConnected) return;
-  const paths = state.pending.map(v => v.path);
-  await startProcessing(paths, '开始处理…');
-});
-$('#btn-stop').addEventListener('click', async () => {
-  if (state.installing) {
+async function stopCurrentTask(task) {
+  if (state.stopRequested) return;
+  gotoLog();
+  if (task === 'install') {
     try {
       const res = await apiCall('stop_install');
       if (res && res.ok) {
+        state.stopRequested = true;
+        $('#prog-num').textContent = '停止中…';
+        updateStartBtn();
         toast(res.message || '正在停止安装…', 'info');
       } else {
         toast((res && res.error) || '无运行中的安装', 'dim');
@@ -56,20 +54,21 @@ $('#btn-stop').addEventListener('click', async () => {
     }
     return;
   }
-  if (state.gpuBusy && !state.processing) {
+  if (task === 'gpu') {
     try {
       const res = await apiCall('stop_gpu_task');
       if (res && res.ok) {
+        state.stopRequested = true;
+        $('#prog-num').textContent = '停止中…';
+        updateStartBtn();
         toast(res.message || '正在停止，进行中的步骤完成后生效', 'info');
       } else {
         state.gpuBusy = false;
-        $('#btn-stop').classList.remove('active');
         updateStartBtn();
         toast((res && res.error) || '无运行中的任务', 'dim');
       }
     } catch (e) {
       state.gpuBusy = false;
-      $('#btn-stop').classList.remove('active');
       updateStartBtn();
       toast('停止失败: ' + ((e && e.message) || e), 'err');
     }
@@ -78,25 +77,41 @@ $('#btn-stop').addEventListener('click', async () => {
   try {
     const res = await apiCall('stop');
     if (res && res.ok) {
+      state.stopRequested = true;
+      $('#prog-num').textContent = '停止中…';
+      updateStartBtn();
       toast('已发送停止请求');
     } else {
       state.processing = false;
       state.gpuBusy = false;
-      $('#btn-stop').classList.remove('active');
+      updateStartBtn();
       updateStats();
       toast((res && res.error) || '无运行中的任务', 'dim');
     }
   } catch (e) {
     state.processing = false;
     state.gpuBusy = false;
-    $('#btn-stop').classList.remove('active');
+    updateStartBtn();
     updateStats();
     toast('停止失败: ' + ((e && e.message) || e), 'err');
   }
+}
+
+$('#btn-start').addEventListener('click', async () => {
+  const task = currentTask();
+  if (task) { await stopCurrentTask(task); return; }
+  if (state.llamaPendingLaunch || !state.pending.length) return;
+  if (state.llamaIntegration && !state.aiConnected) {
+    const ok = await ensureLlamaReady();
+    if (!ok) return;
+  }
+  if (state.processing || !state.pending.length || !state.aiConnected) return;
+  const paths = state.pending.map(v => v.path);
+  await startProcessing(paths, '开始处理…');
 });
 
 async function processSelected() {
-  if (state.processing || state.gpuBusy) return;
+  if (state.processing || state.gpuBusy || state.installing || state.llamaPendingLaunch) return;
   if (!state.llamaIntegration && !state.aiConnected) return;
   const pendingSel = [...state.selected]
     .map(id => findVideoById(id))
@@ -226,9 +241,8 @@ async function exportToFolder(withNfo) {
 
 async function withGpuBusy(progText, apiFn) {
   state.gpuBusy = true;
+  state.stopRequested = false;
   updateStartBtn();
-  $('#btn-stop').classList.add('active');
-  $('#btn-stop').classList.remove('done');
   gotoLog();
   $('#prog-bar').style.width = '0%';
   $('#prog-bar').className = 'active';
@@ -237,8 +251,8 @@ async function withGpuBusy(progText, apiFn) {
     return await apiFn();
   } finally {
     state.gpuBusy = false;
+    state.stopRequested = false;
     updateStartBtn();
-    $('#btn-stop').classList.remove('active');
   }
 }
 
@@ -392,7 +406,8 @@ function showContextMenu(e, v) {
   }) : [];
   const gTop = [];
   if (pendingIds.length) {
-    const noProcess = !(state.llamaIntegration || state.aiConnected) || state.processing || state.gpuBusy;
+    const noProcess = !(state.llamaIntegration || state.aiConnected) || state.processing
+      || state.gpuBusy || state.installing || state.llamaPendingLaunch;
     gTop.push({ label: `处理选中视频（${pendingIds.length} 个）`, fn: () => processSelected(), disabled: noProcess });
   }
   if (!state.processing && !state.gpuBusy) {

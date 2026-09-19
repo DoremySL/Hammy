@@ -129,7 +129,7 @@ class ProcessingMixin:
             )
 
     def stop(self) -> Dict[str, Any]:
-        if self._runner:
+        if self._runner and self._runner.is_running:
             self._runner.stop()
             return {"ok": True}
         return {"ok": False, "error": "无运行中的任务"}
