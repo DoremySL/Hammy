@@ -126,12 +126,13 @@ function animateModalBody() {
 }
 
 const CFG_FIELDS_AI = [
-  { group: 'AI 服务', noTitle: true, cols: 4, fields: [
+  { group: 'AI 服务', noTitle: true, cols: 4, connectBtn: true, fields: [
     { sec: 'ai', key: 'model', label: '模型名称', type: 'text', span: 2, help: '需支持多模态', default: 'model' },
     { sec: 'ai', key: 'base_url', label: 'API 地址', type: 'url', span: 2, help: 'OpenAI 兼容 /v1', default: 'http://localhost:8080/v1' },
     { sec: 'ai', key: 'api_key', label: 'API 密钥', type: 'password', span: 2, help: '本地 AI 服务通常无需填写', default: 'not-needed' },
     { sec: 'ai', key: 'ai_workers', label: '并发数', type: 'number', min: 1, help: '同时发起的 AI 请求数，越大越快但更占内存/显存；开启本地推理集成后由「并发线程 -np」接管', default: 4 },
-  ], divider: true, cols2: 3, fields2: [
+  ]},
+  { group: 'AI 生成参数', noTitle: true, cols: 3, fields: [
     { sec: 'ai', key: 'max_tokens', label: '最大生成长度', type: 'number', min: 1, help: '单次 AI 输出的 Token 上限，改动提示词或开启思考时可按需加大', default: 3000 },
     { sec: 'ai', key: 'temperature', label: '温度', type: 'number', min: 0, max: 2, step: 0.1, help: '采样随机性，越高越有创意但可能偏离主题，越低越稳定', default: 0.6 },
     { sec: 'ai', key: 'top_p', label: 'Top-p', type: 'number', min: 0, max: 1, step: 0.05, help: '核采样阈值，与温度共同控制输出多样性', default: 0.8 },
@@ -221,18 +222,20 @@ function renderConfigTab(cfg) {
   const aiMasked = !!(state.llamaEnabled && state.llamaIntegration);
   for (const g of CFG_FIELDS_AI) {
     const gd = renderCfgGroup(g, cfg);
-    const btnField = document.createElement('div');
-    btnField.className = 'field';
-    btnField.style.justifyContent = 'flex-end';
-    const saveTestBtn = document.createElement('button');
-    saveTestBtn.className = 'btn';
-    saveTestBtn.id = 'btn-save-and-test';
-    saveTestBtn.textContent = '测试连接';
-    saveTestBtn.style.width = '100%';
-    saveTestBtn.onclick = saveConfigAndTest;
-    btnField.appendChild(saveTestBtn);
-    gd.querySelector('.grid-4, .grid-3, .grid-2').appendChild(btnField);
-    if (aiMasked) {
+    if (g.connectBtn) {
+      const btnField = document.createElement('div');
+      btnField.className = 'field';
+      btnField.style.justifyContent = 'flex-end';
+      const saveTestBtn = document.createElement('button');
+      saveTestBtn.className = 'btn';
+      saveTestBtn.id = 'btn-save-and-test';
+      saveTestBtn.textContent = '测试连接';
+      saveTestBtn.style.width = '100%';
+      saveTestBtn.onclick = saveConfigAndTest;
+      btnField.appendChild(saveTestBtn);
+      gd.querySelector('.grid-4, .grid-3, .grid-2').appendChild(btnField);
+    }
+    if (aiMasked && g.connectBtn) {
       const w = gd.querySelector('input[data-key="ai_workers"]');
       if (w) {
         w.value = Math.max(1, Number(state.llamaParallel) || 1);
@@ -249,10 +252,8 @@ function renderConfigTab(cfg) {
         '<div class="ai-mask-title">' + icon('warning') + ' 已优先使用本地推理</div>' +
         '<div class="ai-mask-sub">AI 请求改走本地服务，基础连接设置暂不生效，下方的参数依然生效。</div>';
       wrap.appendChild(mask);
-      body.appendChild(gd);
-    } else {
-      body.appendChild(gd);
     }
+    body.appendChild(gd);
   }
   for (const g of CFG_FIELDS_PROCESSING) {
     body.appendChild(renderCfgGroup(g, cfg));
@@ -320,12 +321,6 @@ function renderCfgGroup(g, cfg) {
     return grid;
   };
   gd.appendChild(buildGrid(g.fields, g.cols));
-  if (g.divider) {
-    const dv = document.createElement('div');
-    dv.className = 'group-divider';
-    gd.appendChild(dv);
-  }
-  if (g.fields2) gd.appendChild(buildGrid(g.fields2, g.cols2 || g.cols));
   gd.querySelectorAll('.eye-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const inp = btn.parentElement.querySelector('input');

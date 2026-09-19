@@ -3,25 +3,15 @@
    ════════════════════════════════════════════════════════════ */
 let _detailSeq = 0;
 
-async function showDetail(v) {
+function showDetail(v) {
   if (v.status === 'pending' && (state.whisperEnabled || state.pixaiTaggerEnabled)) {
     showPendingDetail(v);
     return;
   }
-  const seq = ++_detailSeq;
+  ++_detailSeq;
   switchTab('detail');
   const d = $('#detail');
-  d.innerHTML = '<div class="empty">加载中…</div>';
-  let data;
-  try { data = await apiCall('get_nfo', v.id); }
-  catch (e) { if (seq === _detailSeq) d.innerHTML = '<div class="empty">读取 NFO 失败</div>'; return; }
-
-  if (seq !== _detailSeq) return;
-  if (!data || !data.ok) {
-    d.innerHTML = `<div class="empty">该视频暂无 NFO${data && data.error ? '（' + esc(data.error) + '）' : ''}</div>`;
-    return;
-  }
-  const tags = (data.tags || []).map(t =>
+  const tags = (v.tags || []).map(t =>
     `<button class="chip" data-tag="${esc(t)}">${esc(t)}</button>`).join('')
     || '<span class="filemeta">无标签</span>';
   d.innerHTML = `
@@ -29,7 +19,7 @@ async function showDetail(v) {
       <div class="chips">${tags}</div>
     </div>
     <div class="row">
-      <div class="plot">${esc(data.plot || '—')}</div>
+      <div class="plot">${esc(v.plot || '—')}</div>
     </div>`;
   d.querySelectorAll('.chip').forEach(ch => {
     ch.addEventListener('click', () => onTagClick(ch.dataset.tag));

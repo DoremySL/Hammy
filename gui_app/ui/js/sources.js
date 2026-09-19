@@ -42,7 +42,7 @@ function renderSources() {
   const dd = document.createElement('button');
   dd.className = 'src-action';
   dd.id = 'btn-dedup';
-  dd.innerHTML = icon('dedup', '14px') + ' 移除重复视频';
+  dd.innerHTML = icon('dedup', '14px') + ' 清理重复';
   dd.dataset.tip = '扫描并移除重复视频';
   dd.onclick = findDuplicates;
   bar.appendChild(dd);

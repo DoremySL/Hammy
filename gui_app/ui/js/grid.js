@@ -26,8 +26,11 @@ function loadFromResult(result, preserveScroll) {
       if (state.pending.length) state.view = 'pending';
       else if (state.processed.length) state.view = 'processed';
       else state.view = 'failed';
-      $$('.pill.clickable[data-view]').forEach(p =>
-        p.classList.toggle('active', p.dataset.view === state.view));
+      $$('.pill.clickable[data-view]').forEach(p => {
+        const on = p.dataset.view === state.view;
+        p.classList.toggle('active', on);
+        p.setAttribute('aria-pressed', String(on));
+      });
     }
   }
   if (preserveScroll) refreshGridData();
@@ -755,8 +758,11 @@ function switchView(view) {
   state.selected = new Set();
   state.selAnchor = null;
   state.primaryId = null;
-  $$('.pill.clickable[data-view]').forEach(p =>
-    p.classList.toggle('active', p.dataset.view === view));
+  $$('.pill.clickable[data-view]').forEach(p => {
+    const on = p.dataset.view === view;
+    p.classList.toggle('active', on);
+    p.setAttribute('aria-pressed', String(on));
+  });
   const noMeta = view !== 'processed';
   ['tags', 'title', 'plot'].forEach(m => {
     setDropdownDisabled($('#searchMode'), m, noMeta);

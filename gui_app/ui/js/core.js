@@ -592,7 +592,10 @@ function updateLlamaPill(st) {
   }
   dot.className = 'conn-dot ' + cls;
   const pill = $('#conn-pill');
-  if (pill) pill.setAttribute('aria-label', 'AI 服务：' + text);
+  if (pill) {
+    pill.setAttribute('aria-label', 'AI 服务：' + text);
+    pill.setAttribute('data-tip', 'AI 服务：' + text);
+  }
 }
 
 let _llamaPollTimer = null;
@@ -629,7 +632,11 @@ function updateConnectionUI(r) {
   state.aiConnected = !!r.ok;
   dot.className = 'conn-dot ' + (r.ok ? 'green' : 'red');
   const pill = $('#conn-pill');
-  if (pill) pill.setAttribute('aria-label', 'AI 服务：' + (r.ok ? '已连接' : '连接失败'));
+  if (pill) {
+    const tip = 'AI 服务：' + (r.ok ? '已连接' : '连接失败');
+    pill.setAttribute('aria-label', tip);
+    pill.setAttribute('data-tip', tip);
+  }
   updateStartBtn();
 }
 

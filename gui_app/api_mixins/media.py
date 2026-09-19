@@ -1,4 +1,4 @@
-"""MediaMixin — 视频探针、缩略图、NFO 读取/导出、还原、失败文件移回。"""
+"""MediaMixin — 视频探针、缩略图、NFO 导出、还原、失败文件移回。"""
 from __future__ import annotations
 
 import os
@@ -25,7 +25,7 @@ from ..workspace_store import (
     update_adhoc_path,
     write_json,
 )
-from ..workspace_service import find_cached_nfo, restore_video, restore_videos
+from ..workspace_service import restore_video, restore_videos
 
 
 def _recycle_files(paths: List[str]) -> Tuple[List[str], List[str]]:
@@ -81,42 +81,7 @@ class MediaMixin:
         """同步获取缩略图 data URL（带缓存）。"""
         return discovery.generate_thumbnail(path, vid)
 
-    # ── NFO / 详情 ──
-
-    def get_nfo(self, vid: str) -> Dict[str, Any]:
-        """读取缓存的 NFO（按 id）。同时附带 history.original_name 供前端区分显示。"""
-        hist = get_history_by_id(vid)
-        result: Dict[str, Any] = {"ok": False, "id": vid}
-        if hist:
-            result["file_original_name"] = hist.get("original_name", "")
-            result["processed_at"] = hist.get("processed_at", 0)
-
-        # 查找缓存 NFO（按 <stable_id>.nfo 命名）
-        cached_nfo = find_cached_nfo(vid)
-        if cached_nfo is None:
-            # 兜底：尝试读视频同目录的 NFO
-            if hist:
-                vp = hist.get("new_path") or hist.get("original_path") or ""
-                if vp:
-                    sibling = Path(vp).with_suffix(".nfo")
-                    if sibling.exists():
-                        cached_nfo = sibling
-        if cached_nfo is None or not cached_nfo.exists():
-            result["error"] = "NFO 不存在"
-            return result
-        try:
-            import xml.etree.ElementTree as ET
-            tree = ET.parse(str(cached_nfo))
-            root = tree.getroot()
-            result["ok"] = True
-            for tag in ("title", "originaltitle", "plot", "runtime", "premiered", "year"):
-                node = root.find(tag)
-                result[tag] = node.text if node is not None and node.text else ""
-            result["tags"] = [t.text for t in root.findall("tag") if t.text]
-            return result
-        except Exception as e:
-            result["error"] = str(e)
-            return result
+    # ── NFO 导出 ──
 
     def export_nfo(self, vid: str) -> Dict[str, Any]:
         """把缓存 NFO 复制到视频目录。"""

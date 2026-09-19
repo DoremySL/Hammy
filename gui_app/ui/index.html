@@ -39,20 +39,19 @@
 <main>
   <section class="pane top">
     <div class="pane-head">
+      <button class="conn-pill" id="conn-pill" type="button" aria-label="AI 服务状态" data-tip="AI 服务状态">
+        <span class="conn-dot yellow" id="conn-dot"></span>
+      </button>
       <div class="stats">
-        <span class="pill clickable" id="conn-pill" aria-label="AI 服务状态">
-          <span class="conn-dot yellow" id="conn-dot"></span>
-        </span>
-        <span class="pill-sep"></span>
-        <span class="pill clickable" data-view="pending">
-          <b id="stat-pending">0</b> 待处理
-        </span>
-        <span class="pill clickable" data-view="processed">
-          <b id="stat-processed">0</b> 已处理
-        </span>
-        <span class="pill clickable" data-view="failed">
-          <b id="stat-failed">0</b> 已排除
-        </span>
+        <button class="pill clickable" type="button" data-view="pending" aria-pressed="false">
+          <b id="stat-pending">0</b><span class="lbl">待处理</span>
+        </button>
+        <button class="pill clickable" type="button" data-view="processed" aria-pressed="false">
+          <b id="stat-processed">0</b><span class="lbl">已处理</span>
+        </button>
+        <button class="pill clickable" type="button" data-view="failed" aria-pressed="false">
+          <b id="stat-failed">0</b><span class="lbl">已排除</span>
+        </button>
       </div>
       <div class="mini-prog-box" id="miniProgBox">
         <svg class="mini-prog" id="miniProg" viewBox="0 0 24 24">

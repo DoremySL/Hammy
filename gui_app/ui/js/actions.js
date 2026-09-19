@@ -17,7 +17,7 @@ async function startProcessing(paths, label) {
   updateStartBtn();
   toast(label);
   const reset = () => {
-    if (_procSeq !== token || state.stopRequested) return;
+    if (_procSeq !== token) return;
     state.processing = false;
     state.gpuBusy = false;
     updateStartBtn();
