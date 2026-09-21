@@ -1,7 +1,7 @@
 """视频文件发现。"""
 import os
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from .env import VIDEO_EXTS_CERTAIN, VIDEO_EXTS_AMBIGUOUS
 from .dedup import DUPLICATES_DIR
@@ -15,22 +15,32 @@ _SKIP_DIRS = frozenset({"_failed", DUPLICATES_DIR})
 # ── MPEG-TS 魔数嗅探常量 ──
 _TS_SYNC_BYTE = 0x47
 _TS_PACKET_SIZE = 188
+_TS_M2TS_PACKET_SIZE = 192  # m2ts（BDAV）：每包前 4 字节时间戳
 _TS_SYNC_CHECKS = 4  # 校验前 4 个包的 sync byte
 
 
-def is_mpeg_ts(path: str) -> bool:
-    """读文件头判断是否为 MPEG-TS 视频。"""
+def mpegts_packet_size(path: str) -> Optional[int]:
     try:
         with open(to_long_path(path), "rb") as f:
-            header = f.read(_TS_PACKET_SIZE * _TS_SYNC_CHECKS)
+            header = f.read(_TS_M2TS_PACKET_SIZE * _TS_SYNC_CHECKS)
     except OSError:
-        return False
-    if len(header) < _TS_PACKET_SIZE:
-        return False
-    return all(
+        return None
+    if len(header) >= _TS_PACKET_SIZE * _TS_SYNC_CHECKS and all(
         header[i * _TS_PACKET_SIZE] == _TS_SYNC_BYTE
         for i in range(_TS_SYNC_CHECKS)
-    )
+    ):
+        return _TS_PACKET_SIZE
+    if len(header) >= 5 + _TS_M2TS_PACKET_SIZE * (_TS_SYNC_CHECKS - 1) and all(
+        header[4 + i * _TS_M2TS_PACKET_SIZE] == _TS_SYNC_BYTE
+        for i in range(_TS_SYNC_CHECKS)
+    ):
+        return _TS_M2TS_PACKET_SIZE
+    return None
+
+
+def is_mpeg_ts(path: str) -> bool:
+    """读文件头判断是否为 MPEG-TS 视频（含 m2ts 的 192 字节包）。"""
+    return mpegts_packet_size(path) is not None
 
 
 def is_video_file(path: str) -> bool:

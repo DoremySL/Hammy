@@ -42,10 +42,17 @@ function renderSources() {
   const dd = document.createElement('button');
   dd.className = 'src-action';
   dd.id = 'btn-dedup';
-  dd.innerHTML = icon('dedup', '14px') + ' 清理重复';
+  dd.innerHTML = '清理重复';
   dd.dataset.tip = '扫描并移除重复视频';
   dd.onclick = findDuplicates;
   bar.appendChild(dd);
+  const fx = document.createElement('button');
+  fx.className = 'src-action';
+  fx.id = 'btn-format-fix';
+  fx.innerHTML = '格式修复';
+  fx.dataset.tip = '补全无后缀视频，待处理流式封装视频转 MP4';
+  fx.onclick = openFormatFix;
+  bar.appendChild(fx);
   const clr = document.createElement('button');
   clr.className = 'src-action danger';
   clr.innerHTML = icon('trash', '14px') + ' 清空源';
@@ -430,4 +437,270 @@ $('#dedupOk').addEventListener('click', confirmDedup);
 $('#dedupBg').addEventListener('click', (e) => { if (e.target === $('#dedupBg')) closeDedup(); });
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && $('#dedupBg').classList.contains('show')) closeDedup();
+});
+
+/* ════════════════════════════════════════════════════════════
+   格式修复
+   ════════════════════════════════════════════════════════════ */
+let _fixGen = 0;
+let _fixItems = [];     // 无后缀文件 {path,name,dir,size,ok,ext,reason,codecs,checked}
+let _fixTs = [];        // 待处理流式封装 {path,name,dir,size_str,checked,fresh}
+let _fixTsOn = false;
+let _fixBusy = false;
+
+function openFormatFix() {
+  const gen = ++_fixGen;
+  _fixTsOn = false;
+  $('#fixBg').classList.add('show');
+  _fixBusy = true;
+  renderFixScanning('正在扫描可修复项…');
+  callApi('scan_fixable').then(r => {
+    _fixBusy = false;
+    if (gen !== _fixGen) return;
+    if (!r) { renderFixInterlude('扫描失败，请重试'); return; }
+    if (r.error) { renderFixInterlude(r.error); return; }
+    _fixItems = (r.extensionless || []).map(it => ({ ...it, checked: !!it.ok }));
+    _fixTs = (r.ts_pending || []).map(it => ({ ...it, checked: true, fresh: false }));
+    renderFix();
+  });
+}
+
+function renderFix() {
+  const body = $('#fixBody');
+  body.innerHTML = '';
+  const intro = document.createElement('div');
+  intro.className = 'fix-intro';
+  intro.textContent = '扫描源文件夹中缺少后缀的视频文件，识别真实格式并补上后缀；无法识别或不支持的文件将跳过。';
+  body.appendChild(intro);
+
+  const group = document.createElement('div');
+  group.className = 'dedup-group';
+  const title = document.createElement('div');
+  title.className = 'fix-group-title';
+  title.textContent = `无后缀文件（${_fixItems.length}）`;
+  group.appendChild(title);
+  if (!_fixItems.length) {
+    const empty = document.createElement('div');
+    empty.className = 'fix-empty';
+    empty.textContent = '未发现无后缀文件';
+    group.appendChild(empty);
+  }
+  for (const it of _fixItems) group.appendChild(makeFixRow(it));
+  body.appendChild(group);
+
+  if (_fixTs.length || _fixTsOn) {
+    const tg = document.createElement('div');
+    tg.className = 'dedup-group';
+    const label = document.createElement('label');
+    label.className = 'switch';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = _fixTsOn;
+    cb.onchange = () => {
+      const top = body.scrollTop;
+      _fixTsOn = cb.checked;
+      renderFix();
+      body.scrollTop = top;
+    };
+    label.appendChild(cb);
+    label.appendChild(document.createTextNode(' 将待处理的流式封装视频转存为MP4，提升抽帧与播放兼容性'));
+    tg.appendChild(label);
+    if (_fixTsOn) {
+      const hint = document.createElement('div');
+      hint.className = 'fix-hint';
+      hint.textContent = '仅转换待处理列表中的流式封装视频（含刚补全后缀的）；MP4 失败时自动改转 MKV';
+      tg.appendChild(hint);
+      for (const t of _fixTs) tg.appendChild(makeFixTsRow(t));
+    }
+    body.appendChild(tg);
+  }
+  $('#fixOk').textContent = '开始修复';
+  updateFixSub();
+}
+
+function makeFixRow(it) {
+  const row = document.createElement('div');
+  row.className = 'fix-row' + (it.ok ? (it.checked ? ' on' : '') : ' off');
+  if (it.ok) {
+    row.onclick = () => {
+      it.checked = !it.checked;
+      row.classList.toggle('on', it.checked);
+      updateFixSub();
+    };
+  }
+  row.innerHTML =
+    '<span class="fix-check"></span>' +
+    `<span class="fix-name" data-tip="${esc(it.path)}">${esc(it.name)}</span>` +
+    (it.ok
+      ? `<span class="fix-info">${esc((it.codecs || '').toUpperCase())}</span>` +
+        `<span class="fix-arrow">→ ${esc(it.ext)}</span>`
+      : `<span class="fix-why">${esc(it.reason || '无法识别')}</span>`);
+  return row;
+}
+
+function makeFixTsRow(t) {
+  const row = document.createElement('div');
+  row.className = 'fix-row' + (t.checked ? ' on' : '');
+  row.onclick = () => {
+    t.checked = !t.checked;
+    row.classList.toggle('on', t.checked);
+    updateFixSub();
+  };
+  row.innerHTML =
+    '<span class="fix-check"></span>' +
+    `<span class="fix-name" data-tip="${esc(t.path)}">${esc(t.name)}</span>` +
+    (t.fresh ? '<span class="fix-new">新补全</span>' : '') +
+    `<span class="fix-info">${esc(t.size_str || '')}</span>` +
+    '<span class="fix-arrow">→ .mp4</span>';
+  return row;
+}
+
+function updateFixSub() {
+  const n = _fixItems.filter(it => it.ok && it.checked).length;
+  const t = _fixTsOn ? _fixTs.filter(x => x.checked).length : 0;
+  $('#fixSub').textContent = `将补全 ${n} 个后缀` + (_fixTsOn ? ` · 转换 ${t} 个视频` : '');
+  $('#fixOk').disabled = _fixBusy || (!n && !t);
+}
+
+function renderFixScanning(msg) {
+  $('#fixBody').innerHTML = '<div class="dedup-interlude"><div class="dedup-spinner"></div>' +
+    `<div>${esc(msg || '正在处理…')}</div></div>`;
+  $('#fixSub').textContent = '';
+  $('#fixOk').disabled = true;
+}
+
+function renderFixInterlude(msg) {
+  $('#fixBody').innerHTML = `<div class="dedup-interlude"><div>${esc(msg)}</div></div>`;
+  $('#fixSub').textContent = '';
+  $('#fixOk').disabled = true;
+}
+
+function baseName(p) {
+  return p.replace(/\\/g, '/').split('/').pop();
+}
+
+async function confirmFix() {
+  if (_fixBusy) return;
+  const renamePaths = _fixItems.filter(it => it.ok && it.checked).map(it => it.path);
+  if (!renamePaths.length && !(_fixTsOn && _fixTs.some(t => t.checked))) {
+    toast('未选择任何修复项', 'err');
+    renderFix();
+    return;
+  }
+  const gen = ++_fixGen;
+  _fixBusy = true;
+  const renamedList = [];
+  const skipList = [];
+  const tsWasOn = _fixTsOn;
+  let freshTs = false;
+  if (renamePaths.length) {
+    renderFixScanning('正在补全后缀…');
+    const r = await callApi('apply_renames', renamePaths);
+    if (gen !== _fixGen) return;
+    if (!r || r.error) {
+      _fixBusy = false;
+      renderFixInterlude('补全失败: ' + ((r && r.error) || '请重试'));
+      return;
+    }
+    renamedList.push(...(r.fix_renamed || []));
+    skipList.push(...(r.fix_skipped || []));
+    loadFromResult(r);
+    const done = new Set(renamedList.map(it => it.from));
+    _fixItems = _fixItems.filter(it => !done.has(it.path));
+    for (const it of renamedList) {
+      if (!['.ts', '.mts', '.m2ts'].includes(it.ext)) continue;
+      freshTs = true;
+      _fixTs.push({ path: it.to, name: baseName(it.to), dir: '',
+                    size_str: it.size_str || '', checked: true, fresh: true });
+    }
+    if (freshTs && !tsWasOn) {
+      _fixTsOn = true;
+      for (const t of _fixTs) if (!t.fresh) t.checked = false;
+    }
+    renderFix();
+  }
+  const queue = _fixTsOn ? _fixTs.filter(t => t.checked) : [];
+  const converted = [];
+  const skippedTs = [];
+  const fails = [];
+  let mp4Cnt = 0, mkvCnt = 0;
+  for (let i = 0; i < queue.length; i++) {
+    if (gen !== _fixGen) return;
+    renderFixScanning(`正在转换 ${i + 1}/${queue.length}：${queue[i].name}`);
+    const r = await callApi('convert_ts', queue[i].path);
+    if (gen !== _fixGen) return;
+    if (r && r.ok) {
+      converted.push({ name: queue[i].name, to: r.out ? baseName(r.out) : '',
+                       raw: r.out || '' });
+      if (r.container === 'mp4') mp4Cnt++; else mkvCnt++;
+    } else if (r && r.skipped) {
+      skippedTs.push({ name: queue[i].name, reason: r.reason || '已跳过' });
+    } else {
+      fails.push({ name: queue[i].name, reason: (r && r.reason) || '转换失败' });
+    }
+  }
+  const rr = await callApi('scan');
+  _fixBusy = false;
+  if (gen !== _fixGen) {
+    if (rr) loadFromResult(rr);
+    return;
+  }
+  if (rr) loadFromResult(rr);
+  renderFixResult(renamedList, skipList, converted, mp4Cnt, mkvCnt, skippedTs, fails);
+}
+
+function renderFixResult(renamedList, skipList, converted, mp4Cnt, mkvCnt, skippedTs, fails) {
+  const body = $('#fixBody');
+  body.innerHTML = '';
+  const div = document.createElement('div');
+  div.className = 'dedup-interlude';
+  const lines = [];
+  if (renamedList.length) lines.push(`已补全 ${renamedList.length} 个后缀`);
+  if (converted.length) {
+    lines.push(`已转换 ${converted.length} 个流式封装视频（MP4 ${mp4Cnt}${mkvCnt ? ` · MKV ${mkvCnt}` : ''}）`);
+  }
+  if (!lines.length) lines.push('未执行任何修复');
+  let html = `<div>${lines.map(esc).join('，')}</div>`;
+  const detail = [];
+  for (const it of renamedList) {
+    detail.push(`<div title="${esc(it.to)}">${esc(baseName(it.from))} → ${esc(baseName(it.to))}</div>`);
+  }
+  for (const it of converted) {
+    detail.push(`<div title="${esc(it.raw)}">${esc(it.name)} → ${esc(it.to)}</div>`);
+  }
+  if (detail.length) {
+    html += '<div class="fix-done">' + detail.join('') + '</div>';
+  }
+  const failRows = [...skipList.map(s => `${s.name}：${s.reason}`),
+                    ...skippedTs.map(s => `${s.name}：${s.reason}`),
+                    ...fails.map(f => `${f.name}：${f.reason}`)];
+  if (failRows.length) {
+    html += '<div class="fix-fails">' +
+      failRows.map(x => `<div>${esc(x)}</div>`).join('') + '</div>';
+  }
+  div.innerHTML = html;
+  body.appendChild(div);
+  $('#fixSub').textContent = '完成';
+  $('#fixOk').disabled = true;
+}
+
+function closeFix() {
+  const wasBusy = _fixBusy;
+  _fixGen++;
+  _fixBusy = false;
+  $('#fixBg').classList.remove('show');
+  _fixItems = [];
+  _fixTs = [];
+  if (wasBusy) {
+    apiCall('cancel_format_fix').catch(() => {});
+    callApi('scan').then(r => { if (r) loadFromResult(r); });
+  }
+}
+
+$('#btn-closefix').addEventListener('click', closeFix);
+$('#fixCancel').addEventListener('click', closeFix);
+$('#fixOk').addEventListener('click', confirmFix);
+$('#fixBg').addEventListener('click', (e) => { if (e.target === $('#fixBg')) closeFix(); });
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && $('#fixBg').classList.contains('show')) closeFix();
 });

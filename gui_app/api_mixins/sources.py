@@ -17,12 +17,13 @@ from ..workspace_store import (
     add_adhoc_files,
     add_root,
     clear_sources,
+    load_manifest,
     read_json,
     remove_adhoc,
     remove_root,
     update_json,
 )
-from batch_rename import dedup
+from batch_rename import dedup, format_fix
 
 _similar_lock = threading.Lock()
 _similar_stop: Optional[threading.Event] = None   # 当前相似扫描的取消事件；None = 无扫描
@@ -386,6 +387,64 @@ class SourcesMixin:
         result["dedup_failed"] = len(errors)
         result["dedup_history_removed"] = hist_removed
         return result
+
+    # ── 格式修复 ──
+
+    def scan_fixable(self) -> Dict[str, Any]:
+        m = load_manifest()
+        roots = [r for r in m.get("roots", []) if os.path.isdir(r)]
+        format_fix.reset_cancel()
+        try:
+            extensionless = format_fix.scan_extensionless(roots)
+        except Exception as e:
+            return {"error": f"扫描失败: {e}"}
+        ts_pending = []
+        for e in discovery.scan_all().get("pending", []):
+            if str(e.get("name", "")).lower().endswith(format_fix.STREAM_EXTS):
+                ts_pending.append({
+                    "path": e["path"], "name": e["name"], "dir": e["dir"],
+                    "size": e.get("size", 0),
+                    "size_str": _fmt_size(e.get("size", 0)),
+                })
+        return {"roots": len(roots), "extensionless": extensionless,
+                "ts_pending": ts_pending}
+
+    def apply_renames(self, paths: List[str]) -> Dict[str, Any]:
+        if not isinstance(paths, (list, tuple)) or not paths:
+            return {"error": "没有需要补全后缀的文件"}
+        renamed: List[Dict[str, Any]] = []
+        skipped: List[Dict[str, Any]] = []
+        for p in paths:
+            if not isinstance(p, str) or not p:
+                continue
+            name = Path(p).name
+            r = format_fix.detect_video(p)
+            if not r.get("ok"):
+                skipped.append({"path": p, "name": name,
+                                "reason": r.get("reason", "无法识别")})
+                continue
+            dest, err = format_fix.add_extension(p, r["ext"])
+            if dest is None:
+                skipped.append({"path": p, "name": name, "reason": err})
+                continue
+            renamed.append({"from": p, "to": dest, "ext": r["ext"],
+                            "size_str": _fmt_size(r.get("size", 0))})
+        result = self.scan()
+        result["fix_renamed"] = renamed
+        result["fix_skipped"] = skipped
+        return result
+
+    def convert_ts(self, path: str) -> Dict[str, Any]:
+        if not isinstance(path, str) or not path:
+            return {"ok": False, "reason": "参数错误"}
+        done = discovery.processed_paths()
+        if os.path.normcase(os.path.normpath(path)) in done:
+            return {"ok": False, "skipped": True, "reason": "已处理，跳过"}
+        return format_fix.convert_ts(path)
+
+    def cancel_format_fix(self) -> Dict[str, Any]:
+        format_fix.request_cancel()
+        return {"ok": True}
 
     # ── 扫描 ──
 

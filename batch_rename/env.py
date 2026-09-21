@@ -7,7 +7,7 @@ import subprocess
 LONG_PATH_PREFIX = "\\\\?\\"
 # 视频扩展名分级：CERTAIN 直接收集；AMBIGUOUS 需魔数嗅探确认
 VIDEO_EXTS_CERTAIN = frozenset(
-    ".mp4 .mov .avi .mkv .m4v .wmv .flv .webm .mts .m2ts .mpg .mpeg .vob .3gp .3g2".split()
+    ".mp4 .mov .avi .mkv .m4v .wmv .flv .webm .mts .m2ts .mpg .mpeg .vob .3gp .3g2 .rm .rmvb".split()
 )
 VIDEO_EXTS_AMBIGUOUS = frozenset({".ts"})
 
