@@ -97,16 +97,16 @@
     html:not(.light) .theme-toggle .t-sun{opacity:0;transform:translate(-50%,-50%) rotate(90deg) scale(.5)}
     html:not(.light) .theme-toggle .t-moon{opacity:1;transform:translate(-50%,-50%) rotate(0) scale(1)}
   }
-  .conn-pill{display:grid;place-items:center;width:26px;height:26px;flex-shrink:0;margin-right:4px;
+  .conn-pill{display:grid;place-items:center;width:28px;height:28px;flex-shrink:0;margin-right:4px;
     border-radius:var(--r-md);border:1px solid var(--border);background:var(--panel-2);
     transition:background .15s,border-color .15s}
   .conn-pill:hover{border-color:var(--accent);background:var(--panel)}
   .stats{display:flex;gap:2px;flex-wrap:nowrap;align-items:center;flex-shrink:0;
-    background:var(--panel-2);border:1px solid var(--border);border-radius:var(--r-lg);padding:2px}
+    background:var(--panel-2);border:1px solid var(--border);border-radius:var(--r-md);padding:2px}
   .stats .pill[data-view="pending"]{--sem:var(--accent);--sem-soft:var(--accent-soft);--sem-text:color-mix(in srgb,var(--accent-text) 78%,var(--text))}
   .stats .pill[data-view="processed"]{--sem:var(--ok);--sem-soft:var(--ok-soft);--sem-text:var(--ok-text)}
   .stats .pill[data-view="failed"]{--sem:var(--err);--sem-soft:var(--err-soft);--sem-text:color-mix(in srgb,var(--err) 78%,var(--text))}
-  .stats .pill.clickable[data-view]{padding:2.35px 12px 3.65px;min-height:24px;font-size:12px;gap:6px;
+  .stats .pill.clickable[data-view]{padding:0 12px 1px;min-height:22px;font-size:12px;gap:6px;
     border-radius:var(--r-md)}
   .stats .pill.clickable[data-view] b{font-size:13px;color:var(--sem-text)}
   .stats .pill.clickable[data-view] .lbl{font-size:11px;color:color-mix(in srgb,var(--muted) 72%,var(--text))}
@@ -194,11 +194,11 @@
   .pane-head .right #btn-select-all .ic{stroke-width:2.2}
   .pane-head .right #btn-refresh:hover,
   .pane-head .right #btn-select-all:hover{color:var(--accent-text);border-color:var(--accent)}
-  .sort-dd .dd-btn{padding:5px 14px;font-size:12px;font-weight:500;border:1px solid var(--border);
+  .sort-dd .dd-btn{padding:4.5px 14px 5.5px;font-size:12px;font-weight:500;border:1px solid var(--border);
     border-radius:var(--r-md);background:var(--panel-2)}
   .sort-dd .dd-btn:hover,.sort-dd.open .dd-btn{border-color:var(--accent);color:var(--accent-text)}
   .sort-dd .dd-panel{min-width:150px}
-  .src-pill{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:var(--r-md);
+  .src-pill{display:inline-flex;align-items:center;gap:6px;padding:4.5px 10px 5.5px;border-radius:var(--r-md);
     background:var(--panel-2);border:1px solid var(--border);color:var(--muted);font-size:12px;
     font-weight:500;cursor:pointer;transition:.15s;white-space:nowrap}
   .src-pill:hover{border-color:var(--accent);color:var(--accent-text)}
@@ -663,12 +663,22 @@
     justify-content:center;padding:40px 20px;color:var(--faint);text-align:center;overflow:auto}
   .empty-state .empty-inner{display:flex;flex-direction:column;align-items:center;
     justify-content:center;margin:auto}
-  .empty-state .icon{width:78px;height:78px;border-radius:50%;display:grid;place-items:center;
+  .empty-state .icon{--hammy-idle:grayscale(1) opacity(.75);
+    width:78px;height:78px;border-radius:50%;display:grid;place-items:center;
     padding:0;font-family:inherit;background:var(--panel-2);border:1px solid var(--border);
     color:var(--faint);font-size:30px;margin-bottom:20px;cursor:pointer;
     transition:background .18s,color .18s,border-color .18s,transform .18s}
+  @media (prefers-color-scheme:dark){
+    html:not(.light) .empty-state .icon{--hammy-idle:grayscale(1) brightness(.72) opacity(.92)}
+  }
+  html.dark .empty-state .icon{--hammy-idle:grayscale(1) brightness(.72) opacity(.92)}
+  .empty-state .icon .ic-hammy{width:50px;height:50px;
+    filter:var(--hammy-idle);transition:filter .22s ease}
   .empty-state .icon:hover{background:var(--accent-soft);border-color:var(--accent);
     color:var(--accent-text)}
+  .empty-state .icon:hover .ic-hammy,
+  .empty-state .icon:focus-visible .ic-hammy,
+  .empty-state .icon:active .ic-hammy{filter:none}
   .empty-state .icon:active{transform:translateY(0) scale(.96)}
   .empty-state .icon:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   .empty-state p{font-size:14px;margin:4px 0;line-height:1.6;color:var(--muted)}
