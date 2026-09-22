@@ -220,15 +220,19 @@ function renderDedup() {
     box.className = 'dedup-group';
     const cards = document.createElement('div');
     cards.className = 'dedup-cards';
-    for (const it of g.items) cards.appendChild(makeDedupCard(it));
+    box.appendChild(cards);
+    body.appendChild(box);
+    for (const it of g.items) {
+      const card = makeDedupCard(it);
+      cards.appendChild(card);
+      attachDedupThumb(card.querySelector('.dedup-thumb'), it.video, it);
+    }
     const size = document.createElement('div');
     size.className = 'dedup-gsize';
     size.textContent = g.kind === 'identical'
       ? `完全相同 · ${g.items.length} 份 · 单文件 ${g.sizeStr}`
       : `同内容不同版本 · ${g.items.length} 份`;
-    box.appendChild(cards);
     box.appendChild(size);
-    body.appendChild(box);
   }
   $('#dedupOk').style.display = '';
   updateDedupSub();
@@ -252,7 +256,6 @@ function makeDedupCard(it) {
     updateDedupSub();
   };
   card.oncontextmenu = (e) => showDedupCtxMenu(e, it);
-  attachDedupThumb(card.querySelector('.dedup-thumb'), v, it);
   if (v && (!v.resolution || !v.duration || !v.codec || !v.audio_codec)) {
     loadProbe(v).then(() => {
       if (card.isConnected) card.querySelector('.dedup-meta').innerHTML = dedupMetaHtml(it);
