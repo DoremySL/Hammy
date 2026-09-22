@@ -130,12 +130,12 @@ async function moveOut() {
     .map(id => findVideoById(id))
     .filter(v => v && (v.status === 'failed' || v.status === 'duplicate'));
   if (!sel.length) { toast('未选中排除视频', 'err'); return; }
-  toast(`正在移回 ${sel.length} 个视频…`);
+  toastBusy(`正在移回 ${sel.length} 个视频…`);
   const paths = sel.map(v => v.path);
   const r = await callApi('move_failed_out', paths);
   if (!r) return;
   if (r.ok) {
-    if (r.scan && !r.scan.error) loadFromResult(r.scan);
+    if (r.scan && !r.scan.error) loadFromResult(r.scan, true);
     const errN = (r.errors || []).length;
     toast(errN ? `移回完成，${errN} 个失败` : `已将 ${r.moved} 个视频移回上级目录`, errN ? 'err' : 'ok', true);
   } else {
@@ -146,12 +146,12 @@ async function recycleVideos(ids) {
   const n = ids.length;
   if (!n) return;
   if (!await showConfirm(`确定把 ${n} 个视频移入回收站吗？\n\n之后如需恢复，可从系统回收站还原。`, { okText: '移入回收站', danger: true })) return;
-  toast(`正在移入回收站 ${n} 个视频…`);
+  toastBusy(`正在移入回收站 ${n} 个视频…`);
   const paths = ids.map(id => findVideoById(id)).filter(Boolean).map(v => v.path);
   const r = await callApi('move_to_recycle', paths);
   if (!r) return;
   if (r.ok) {
-    if (r.scan && !r.scan.error) loadFromResult(r.scan);
+    if (r.scan && !r.scan.error) loadFromResult(r.scan, true);
     const errN = (r.errors || []).length;
     toast(errN ? `移入完成，${errN} 个失败` : `已将 ${r.moved} 个视频移入回收站`, errN ? 'err' : 'ok', true);
   } else {
@@ -163,46 +163,47 @@ async function recycleVideos(ids) {
    导出 NFO / 还原 / 资源管理器
    ════════════════════════════════════════════════════════════ */
 async function exportNfo(vid) {
-  toast('正在导出…');
+  toastBusy('正在导出…');
   const r = await callApi('export_nfo', vid);
   if (!r) return;
   toast(r.ok ? r.message : '导出失败: ' + (r.message || ''), r.ok ? 'ok' : 'err', true);
 }
 async function exportNfoBatch(vids) {
   if (!vids.length) return;
-  toast(`正在导出 ${vids.length} 个…`);
+  toastBusy(`正在导出 ${vids.length} 个…`);
   const r = await callApi('export_nfo_batch', vids);
   if (!r) return;
   toast(`导出成功 ${r.ok_count} 个${r.failed_count ? '，失败 ' + r.failed_count + ' 个' : ''}`, r.failed_count ? 'err' : 'ok', true);
 }
 async function generatePosters(ids) {
-  toast(`正在生成 ${ids.length} 张缩略图…`);
+  toastBusy(`正在生成 ${ids.length} 张缩略图…`);
   const r = await callApi('generate_posters', ids);
   if (!r) return;
   toast(`已生成 ${r.ok_count} 个${r.failed_count ? '，失败 ' + r.failed_count + ' 个' : ''}`, r.failed_count ? 'err' : 'ok', true);
 }
 async function restoreVideo(vid) {
   if (!await showConfirm('确定还原该视频的初始文件名吗？\n\n还原后：\n• 视频会恢复为初始文件名\n• 视频目录里已导出的 NFO 会被删除\n• 已处理记录会被清除', { okText: '还原' })) return;
+  toastBusy('正在还原该视频…');
   const r = await callApi('restore', vid);
   if (!r) return;
   if (r.ok) {
-    toast(r.message, 'ok');
+    toast(r.message, 'ok', true);
     const sr = await callApi('scan');
-    if (sr) loadFromResult(sr);
+    if (sr) loadFromResult(sr, true);
   } else {
-    toast('还原失败: ' + (r.message || ''), 'err');
+    toast('还原失败: ' + (r.message || ''), 'err', true);
   }
 }
 async function restoreBatch(vids) {
   if (!vids.length) return;
   if (!await showConfirm(`确定批量还原 ${vids.length} 个视频的初始文件名吗？\n\n还原后：\n• 视频会恢复为初始文件名\n• 已导出的 NFO 会被删除\n• 已处理记录会被清除`, { okText: '还原' })) return;
-  toast(`正在还原 ${vids.length} 个…`);
+  toastBusy(`正在还原 ${vids.length} 个…`);
   const r = await callApi('restore_batch', vids);
   if (!r) return;
   if (r.ok_count != null) {
     toast(`已还原成功 ${r.ok_count} 个${r.failed_count ? '，失败 ' + r.failed_count + ' 个' : ''}`, r.failed_count ? 'err' : 'ok', true);
     const sr = await callApi('scan');
-    if (sr) loadFromResult(sr);
+    if (sr) loadFromResult(sr, true);
   } else {
     toast('批量还原失败', 'err', true);
   }
@@ -221,11 +222,11 @@ async function exportToFolder(withNfo) {
   if (!folders || !folders.length) return;
   const dest = folders[0];
   const items = sel.map(v => ({ id: v.id, path: v.path }));
-  toast(`正在导出 ${items.length} 个视频…`);
+  toastBusy(`正在导出 ${items.length} 个视频…`);
   const r = await callApi('export_to_folder', items, dest, withNfo);
   if (!r) return;
   if (r.ok) {
-    if (r.scan && !r.scan.error) loadFromResult(r.scan);
+    if (r.scan && !r.scan.error) loadFromResult(r.scan, true);
     const errN = (r.errors || []).length;
     let msg = `已导出 ${r.moved} 个视频`;
     if (withNfo && r.nfo_count) {
@@ -346,12 +347,12 @@ async function exportSrt(ids) {
   if (!videos.length) { toast('未选中有效视频', 'err'); return; }
   if (!(await ensureTranscribed(ids))) { toast('转录未完成，已取消导出', 'warn'); return; }
   const items = videos.map(v => [v.id, v.path]);
-  toast(`正在导出 ${items.length} 个字幕…`);
+  toastBusy(`正在导出 ${items.length} 个字幕…`);
   const r = await callApi('export_srt', items);
   if (r && r.ok) {
-    toast(`已导出 ${r.exported} 个 SRT 字幕`, 'ok');
+    toast(`已导出 ${r.exported} 个 SRT 字幕`, 'ok', true);
   } else {
-    toast('导出失败: ' + ((r && r.errors && r.errors[0]) || ''), 'err');
+    toast('导出失败: ' + ((r && r.errors && r.errors[0]) || ''), 'err', true);
   }
 }
 

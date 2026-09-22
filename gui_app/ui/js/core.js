@@ -220,6 +220,7 @@ function _placeTip(target) {
   let top = r.top - th - 8;
   const below = top < 8;
   if (below) top = r.bottom + 8;
+  top = Math.max(8, Math.min(top, window.innerHeight - th - 8));
   _tipBox.classList.toggle('below', below);
   _tipBox.style.left = left + 'px';
   _tipBox.style.top = top + 'px';
@@ -245,15 +246,19 @@ function ddArrow(cls) {
 
 function toast(msg, kind, replace, dur) {
   const wrap = $('#toast-wrap');
-  if (replace && wrap.lastChild) wrap.lastChild.remove();
+  if (replace) {
+    const st = wrap.querySelectorAll('.toast-item.sticky');
+    const t = st.length ? st[0] : wrap.lastChild;
+    if (t) t.remove();
+  }
   if (wrap.lastChild && wrap.lastChild.textContent === msg) wrap.lastChild.remove();
+  const ms = dur !== undefined ? dur : (kind === 'err' ? 4000 : 2600);
   const el = document.createElement('div');
-  el.className = 'toast-item';
+  el.className = 'toast-item' + (ms > 0 ? '' : ' sticky');
   el.textContent = msg;
   wrap.appendChild(el);
-  while (wrap.children.length > 4) wrap.firstChild.remove();
+  while (wrap.children.length > 4 && !wrap.firstElementChild.classList.contains('sticky')) wrap.firstElementChild.remove();
   requestAnimationFrame(() => el.classList.add('show'));
-  const ms = dur !== undefined ? dur : (kind === 'err' ? 4000 : 2600);
   if (ms > 0) setTimeout(() => {
     el.classList.remove('show');
     el.classList.add('hide');
@@ -261,6 +266,7 @@ function toast(msg, kind, replace, dur) {
     setTimeout(() => el.remove(), 400);
   }, ms);
 }
+function toastBusy(msg) { toast(msg, null, false, 0); }
 function showConfirm(msg, opts) {
   opts = opts || {};
   const bg = $('#confirmBg');

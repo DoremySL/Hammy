@@ -3,6 +3,8 @@
    ════════════════════════════════════════════════════════════ */
 function renderSources() {
   const bar = $('#sourceBar');
+  const prevScroll = $('.src-scroll');
+  const prevLeft = prevScroll ? prevScroll.scrollLeft : 0;
   bar.innerHTML = '';
   if (!state.roots.length && !state.adhoc_files.length) {
     setSourceBar(false);
@@ -59,6 +61,8 @@ function renderSources() {
   clr.dataset.tip = '从源列表移除，不删除磁盘文件和已处理记录';
   clr.onclick = clearSources;
   bar.appendChild(clr);
+  const scNew = $('.src-scroll');
+  if (scNew && prevLeft) scNew.scrollLeft = prevLeft;
   updateSrcFades();
 }
 
@@ -90,7 +94,7 @@ function shortPath(p) {
 }
 async function removeSource(path, isAdhoc) {
   const r = await callApi('remove_source', path, isAdhoc);
-  if (r) loadFromResult(r);
+  if (r) loadFromResult(r, true);
 }
 
 /* ════════════════════════════════════════════════════════════
@@ -99,7 +103,7 @@ async function removeSource(path, isAdhoc) {
 async function addFolder() {
   const r = await callApi('pick_folders');
   if (!r || !r.length) return;
-  toast('正在扫描…', null, false, 0);
+  toastBusy('正在扫描…');
   const result = await callApi('add_sources', r);
   if (!result) return;
   if (result.error) { loadFromResult(result); return; }
@@ -117,7 +121,7 @@ async function addFolder() {
 async function addFiles() {
   const r = await callApi('pick_files');
   if (!r || !r.length) return;
-  toast('正在扫描…', null, false, 0);
+  toastBusy('正在扫描…');
   const result = await callApi('add_sources', r);
   if (!result) return;
   if (result.error) { loadFromResult(result); return; }
@@ -140,7 +144,7 @@ $('#emptyAdd').addEventListener('click', addFolder);
    ════════════════════════════════════════════════════════════ */
 $('#btn-refresh').addEventListener('click', async () => {
   if (!state.roots.length && !state.adhoc_files.length) return;
-  toast('正在刷新…');
+  toastBusy('正在刷新…');
   const r = await callApi('scan');
   if (!r) return;
   loadFromResult(r);
@@ -419,7 +423,7 @@ async function confirmDedup() {
   if (gen !== _dedupGen) return;
   if (!r) { showDedupInterlude('移除失败，请重试', false); return; }
   if (r.error) { showDedupInterlude('移除失败: ' + r.error, false); return; }
-  loadFromResult(r);
+  loadFromResult(r, true);
   const moved = r.dedup_moved != null ? r.dedup_moved : paths.length;
   const failed = r.dedup_failed || 0;
   const cleaned = r.dedup_history_removed || 0;
@@ -604,7 +608,7 @@ async function confirmFix() {
     }
     renamedList.push(...(r.fix_renamed || []));
     skipList.push(...(r.fix_skipped || []));
-    loadFromResult(r);
+    loadFromResult(r, true);
     const done = new Set(renamedList.map(it => it.from));
     _fixItems = _fixItems.filter(it => !done.has(it.path));
     for (const it of renamedList) {
@@ -642,10 +646,10 @@ async function confirmFix() {
   const rr = await callApi('scan');
   _fixBusy = false;
   if (gen !== _fixGen) {
-    if (rr) loadFromResult(rr);
+    if (rr) loadFromResult(rr, true);
     return;
   }
-  if (rr) loadFromResult(rr);
+  if (rr) loadFromResult(rr, true);
   renderFixResult(renamedList, skipList, converted, mp4Cnt, mkvCnt, skippedTs, fails);
 }
 
@@ -693,7 +697,7 @@ function closeFix() {
   _fixTs = [];
   if (wasBusy) {
     apiCall('cancel_format_fix').catch(() => {});
-    callApi('scan').then(r => { if (r) loadFromResult(r); });
+    callApi('scan').then(r => { if (r) loadFromResult(r, true); });
   }
 }
 

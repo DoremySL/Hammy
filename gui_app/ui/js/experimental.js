@@ -857,8 +857,9 @@ function _makeModelDownloader(cfg) {
       </div>`;
     $('#dlBackground').addEventListener('click', () => close(true));
     $('#dlCancel').addEventListener('click', () => {
+      if (!dl.active) return;
       apiCall('model_cancel_download').catch(() => {});
-      toast('正在取消下载…', 'info');
+      toastBusy('正在取消下载…');
     });
   }
   function onProgress(ev) {
@@ -931,10 +932,10 @@ function _makeModelDownloader(cfg) {
     const err = !ev || ev.error;
     const cancelled = !!(ev && ev.cancelled);
     const failed = (ev && ev.failed) || [];
-    if (err) toast('模型下载失败: ' + ((ev && ev.error) || '未知错误'), 'err');
-    else if (cancelled) toast('模型下载已取消，已下载部分保留', 'info');
-    else if (failed.length) toast(`模型下载完成: 成功 ${ev.downloaded} 个，失败 ${failed.length} 个`, 'err');
-    else toast(`模型下载完成，已下载 ${ev.downloaded} 个模型文件`, 'ok');
+    if (err) toast('模型下载失败: ' + ((ev && ev.error) || '未知错误'), 'err', true);
+    else if (cancelled) toast('模型下载已取消，已下载部分保留', 'info', true);
+    else if (failed.length) toast(`模型下载完成: 成功 ${ev.downloaded} 个，失败 ${failed.length} 个`, 'err', true);
+    else toast(`模型下载完成，已下载 ${ev.downloaded} 个模型文件`, 'ok', true);
     const c = shown();
     if (c) showResult(c.box, ev);
     if (!err && !cancelled) cfg.afterDone();
@@ -1584,7 +1585,7 @@ async function launchLlama() {
   }
   const startBtn = $('#btn-llama-toggle');
   if (startBtn) { startBtn.disabled = true; startBtn.textContent = '启动中…'; }
-  toast('正在启动本地推理服务…');
+  toastBusy('正在启动本地推理服务…');
   state.llamaPendingLaunch = true;
   const heroBadge = document.querySelector('.llama-hero-title .exp-badge');
   if (heroBadge) { heroBadge.className = 'exp-badge warn'; heroBadge.innerHTML = icon('refresh') + ' 正在启动'; }
@@ -1597,17 +1598,17 @@ async function launchLlama() {
   try {
     const r = await apiCall('launch_llama', model, params);
     if (r && r.ok) {
-      toast('llama-server 已启动', 'ok');
+      toast('llama-server 已启动', 'ok', true);
       if (!state.llamaIntegration && !state.aiConnected) {
         checkConnection().then(ok => { if (ok) toast('模型加载完成，AI 服务已自动重连', 'ok'); });
       }
     } else if (r && r.cancelled) {
-      toast('已停止启动', 'ok');
+      toast('已停止启动', 'ok', true);
     } else {
-      toast('启动失败: ' + ((r && r.error) || '').slice(0, 200), 'err');
+      toast('启动失败: ' + ((r && r.error) || '').slice(0, 200), 'err', true);
     }
   } catch (e) {
-    toast('启动失败: ' + ((e && e.message) || e), 'err');
+    toast('启动失败: ' + ((e && e.message) || e), 'err', true);
   } finally {
     state.llamaPendingLaunch = false;
     stopLlamaPillPolling();
@@ -1684,19 +1685,20 @@ async function upgradeLlama() {
     if (st) syncLlamaState(st);
   } catch (e) {  }
   if (state.llamaRunning || state.llamaStarting) {
-    toast('正在停止本地推理服务…', 'info');
+    toastBusy('正在停止本地推理服务…');
     try {
       await apiCall('stop_llama');
       const st = await apiCall('get_llama_status');
       if (st) syncLlamaState(st);
     } catch (e) {
-      toast('停止失败: ' + ((e && e.message) || e) + '，已取消升级', 'err');
+      toast('停止失败: ' + ((e && e.message) || e) + '，已取消升级', 'err', true);
       return;
     }
     if (state.llamaRunning || state.llamaStarting) {
-      toast('服务未能停止，已取消升级', 'err');
+      toast('服务未能停止，已取消升级', 'err', true);
       return;
     }
+    toast('已停止本地推理服务', 'ok', true);
   }
   showLlamaCudaDialog();
 }

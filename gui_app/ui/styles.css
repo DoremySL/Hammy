@@ -102,12 +102,12 @@
     transition:background .15s,border-color .15s}
   .conn-pill:hover{border-color:var(--accent);background:var(--panel)}
   .stats{display:flex;gap:2px;flex-wrap:nowrap;align-items:center;flex-shrink:0;
-    background:var(--panel-2);border:1px solid var(--border);border-radius:var(--r-md);padding:2px}
+    background:var(--panel-2);border:1px solid var(--border);border-radius:var(--r-md);padding:2px;height:28px}
   .stats .pill[data-view="pending"]{--sem:var(--accent);--sem-soft:var(--accent-soft);--sem-text:color-mix(in srgb,var(--accent-text) 78%,var(--text))}
   .stats .pill[data-view="processed"]{--sem:var(--ok);--sem-soft:var(--ok-soft);--sem-text:var(--ok-text)}
   .stats .pill[data-view="failed"]{--sem:var(--err);--sem-soft:var(--err-soft);--sem-text:color-mix(in srgb,var(--err) 78%,var(--text))}
   .stats .pill.clickable[data-view]{padding:0 12px 1px;min-height:22px;font-size:12px;gap:6px;
-    border-radius:var(--r-md)}
+    border-radius:calc(var(--r-md) - 3px)}
   .stats .pill.clickable[data-view] b{font-size:13px;color:var(--sem-text)}
   .stats .pill.clickable[data-view] .lbl{font-size:11px;color:color-mix(in srgb,var(--muted) 72%,var(--text))}
   .stats .pill.clickable[data-view]:not(.has-items) b{color:var(--faint);font-weight:600}
@@ -169,10 +169,10 @@
   .pane.bottom.collapsed .pane-head{border-bottom-color:transparent}
   /* ── 迷你进度环 ── */
   .mini-prog-box{display:none;align-items:center;flex-shrink:0;
-    background:var(--bar-bg);border:1px solid var(--border);border-radius:var(--r-md);padding:2px;margin:0 2px;
+    background:var(--bar-bg);border:1px solid var(--border);border-radius:var(--r-md);padding:2px;margin:0 2px;height:28px;
     transition:background .15s,border-color .15s}
   .mini-prog-box.show{display:flex}
-  .mini-prog{width:22px;height:22px;flex-shrink:0;align-self:center;margin:0 1px}
+  .mini-prog{width:22px;height:22px;flex-shrink:0;align-self:center}
   .mini-prog .mp-bg{fill:none;stroke:var(--border-strong);stroke-width:3;opacity:.55}
   .mini-prog .mp-fg{fill:none;stroke:var(--accent);stroke-width:3;stroke-linecap:round;
     stroke-dasharray:71.98;stroke-dashoffset:71.98;
@@ -195,12 +195,12 @@
   .pane-head .right #btn-refresh:hover,
   .pane-head .right #btn-select-all:hover{color:var(--accent-text);border-color:var(--accent)}
   .sort-dd .dd-btn{padding:4.5px 14px 5.5px;font-size:12px;font-weight:500;border:1px solid var(--border);
-    border-radius:var(--r-md);background:var(--panel-2)}
+    border-radius:var(--r-md);background:var(--panel-2);height:28px}
   .sort-dd .dd-btn:hover,.sort-dd.open .dd-btn{border-color:var(--accent);color:var(--accent-text)}
   .sort-dd .dd-panel{min-width:150px}
   .src-pill{display:inline-flex;align-items:center;gap:6px;padding:4.5px 10px 5.5px;border-radius:var(--r-md);
     background:var(--panel-2);border:1px solid var(--border);color:var(--muted);font-size:12px;
-    font-weight:500;cursor:pointer;transition:.15s;white-space:nowrap}
+    font-weight:500;cursor:pointer;transition:.15s;white-space:nowrap;height:28px}
   .src-pill:hover{border-color:var(--accent);color:var(--accent-text)}
   .src-pill .chevron{width:10px;height:6px;transition:transform .2s;flex-shrink:0}
   .src-pill.expanded .chevron{transform:rotate(180deg)}
@@ -594,7 +594,8 @@
   .hover-tip{position:fixed;z-index:200;pointer-events:none;opacity:0;
     background:var(--panel-2);color:var(--text);padding:7px 12px;border-radius:var(--r-md);
     font-size:11.5px;font-weight:600;white-space:pre-wrap;
-    width:max-content;max-width:260px;box-shadow:0 6px 18px rgba(0,0,0,.22);line-height:1.5;
+    width:max-content;max-width:min(520px,70vw);overflow-wrap:anywhere;
+    box-shadow:0 6px 18px rgba(0,0,0,.22);line-height:1.5;
     transform:translateY(3px);transition:opacity .18s,transform .18s}
   .hover-tip.show{opacity:1;transform:translateY(0)}
   .hover-tip.below{transform:translateY(-3px)}

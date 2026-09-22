@@ -8,9 +8,14 @@ function loadFromResult(result, preserveScroll) {
   state.failed = result.failed || [];
   state.roots = result.roots || [];
   state.adhoc_files = result.adhoc_files || [];
-  state.sourceFilter = null;
-  state.search = '';
-  $('#searchInput').value = '';
+  if (preserveScroll) {
+    if (state.sourceFilter && !state.roots.includes(state.sourceFilter)
+        && !state.adhoc_files.includes(state.sourceFilter)) state.sourceFilter = null;
+  } else {
+    state.sourceFilter = null;
+    state.search = '';
+    $('#searchInput').value = '';
+  }
   const allIds = new Set([...state.pending, ...state.processed, ...state.failed].map(x => x.id));
   state.selected = new Set([...state.selected].filter(id => allIds.has(id)));
   if (state.selAnchor && !allIds.has(state.selAnchor)) state.selAnchor = null;
@@ -354,11 +359,18 @@ function refreshGridData() {
   updateSortDropdown();
   _vsList = currentList();
   updateSelectAllBtn();
+  const hasSources = state.roots.length || state.adhoc_files.length;
+  $('#gridWrap').style.display = (_vsList.length || hasSources) ? 'block' : 'none';
+  $('#emptyState').style.display = (_vsList.length || hasSources) ? 'none' : 'flex';
   _vsStartRow = -1; _vsEndRow = -1;
   if (_thumbLoader) _thumbLoader.destroy();
   _thumbLoader = null;
   _cardMap.clear();
   $('#grid').innerHTML = '';
+  if (!_vsList.length) {
+    $('#gridInner').style.height = '0';
+    return;
+  }
   _markLayoutDirty();
   _calcLayout();
   _renderVisible();
