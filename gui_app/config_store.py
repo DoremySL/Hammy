@@ -140,9 +140,6 @@ _PIXAI_KEY_MAP = {
     "enabled": "pixai_tagger_enabled",
     "classify": "pixai_classify",
     "frames": "pixai_frames",
-    "short_side": "pixai_short_side",
-    "crop_square": "pixai_crop_square",
-    "crop_portrait": "pixai_crop_portrait",
     "threshold": "pixai_threshold",
 }
 _WHISPER_KEY_MAP = {
@@ -165,8 +162,7 @@ _LLAMA_KEYS = frozenset({"llama_enabled", "llama_integrate"})
 
 def _pixai_defaults() -> Dict[str, Any]:
     """pixai 模块配置默认值（文件缺失/损坏时的兜底）。"""
-    return {"enabled": False, "classify": True, "frames": 15, "short_side": 448,
-            "crop_square": False, "crop_portrait": False, "threshold": 0.9}
+    return {"enabled": False, "classify": True, "frames": 15, "threshold": 0.9}
 
 
 def _whisper_defaults() -> Dict[str, Any]:

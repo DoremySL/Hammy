@@ -16,6 +16,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 from batch_rename.subprocess_registry import register_subprocess, unregister_subprocess
 from batch_rename.env import SUBPROCESS_KWARGS
+from batch_rename.config import Config
+from batch_rename.video import probe_and_extract_keyframes
 from .env import APP_ROOT, PYTHON_EXE, make_logger
 from . import installer
 from .installer import (
@@ -33,27 +35,27 @@ VENV_DIR = PIXAI_TAGGER_DIR / "venv"
 # 模型根目录，hf 布局 models/<author>/<repo>/（经 models_downloader 从魔搭下载）
 MODEL_DIR = PIXAI_TAGGER_DIR / "models"
 
-MAIN_REPO = "pixai-labs/pixai-tagger-v0.9"
+MAIN_REPO = "pixai-labs/pixai-tagger-v1.0"
 CLS_REPO = "deepghs/anime_real_cls"  # 二次元/真实二分类预筛模型
 
 CHARACTER_THRESHOLD = 0.9
-# 预筛三分层阈值：中位数 >= 高阈值 → anime；<= 低阈值 → real；
-# 中间为不确定（照常打标，附 UNC 角标）。
-# 高阈值留足余量以容忍异常帧（纯色转场/动漫元素贴片等）被误打高分；
-# 低阈值略降以扩大「不确定」窗口，拿不准时走照常打标而非错误跳过。
+# 无角色 ≥0.9 时，从 ≥0.65 的候选里取最高 1 个兜底（宁缺毋滥）
+CHARACTER_FALLBACK_THRESHOLD = 0.65
+COPYRIGHT_THRESHOLD = 0.9
+# 预筛三分层（按帧 anime 分数中位数）：≥高阈值二次元、≤低阈值真实、中间不确定照常打标
 ANIME_CLS_THRESHOLD = 0.72
 REAL_CLS_THRESHOLD = 0.50
 
-_WEIGHTS_FILE = "model_v0.9.pth"
-_TAGS_FILE = "tags_v0.9_13k.json"
-_MAPPING_FILE = "char_ip_map.json"
+# v1.0 模型仓库文件（transformers 布局，trust_remote_code 加载仓库内模型代码）
+_MODEL_FILES = ("model.safetensors", "config.json",
+                "preprocessor_config.json", "tagger_pipeline.py")
 _CLS_CKPT_FILE = "model.ckpt"
 _CLS_MODEL_SUBDIR = "mobilenetv3_v1.4_dist"  # 模型子目录名（轻量版，约 32MB）
 
 # 子进程超时（推理含双模型加载，按视频数量线性放大）
 _INSTALL_TIMEOUT_SEC = 900.0    # torch 体积大，安装可能很慢
 _INFERENCE_BASE_SEC = 240.0     # 推理基础超时（双模型加载 + 少量帧）
-_INFERENCE_PER_VIDEO_SEC = 60.0  # 每增加一个视频放宽的余量（CPU 推理 ~1.4s/帧）
+_INFERENCE_PER_VIDEO_SEC = 120.0  # 每增加一个视频放宽的余量（1008px 推理，CPU 尤其重）
 
 
 _log = make_logger("pixai_tagger")
@@ -74,10 +76,9 @@ def get_mirrors_info() -> Dict[str, Any]:
 
 
 def _main_model_dir() -> Optional[Path]:
-    """主模型目录（models/<author>/<repo>/，缺任一权重文件视为未安装）。"""
+    """主模型目录（models/<author>/<repo>/，缺任一模型文件视为未安装）。"""
     d = MODEL_DIR / MAIN_REPO
-    return d if all((d / f).is_file()
-                    for f in (_WEIGHTS_FILE, _TAGS_FILE, _MAPPING_FILE)) else None
+    return d if all((d / f).is_file() for f in _MODEL_FILES) else None
 
 
 def _find_cls_model_path() -> Optional[Path]:
@@ -111,15 +112,7 @@ def install_dependencies(
     log_fn: Optional[Callable[[str], None]] = None,
     stop_event: Optional[threading.Event] = None,
 ) -> Dict[str, Any]:
-    """安装 pixai-tagger 全部依赖（uv + venv + torch/timm + 两个模型）。
-        Args:
-        pytorch_version: PyTorch 版本档位（cu132/cu126/cpu）
-        site: 下载站点 ID（sjtu/nju/official），torch 与通用依赖都走该站点
-        log_fn: 实时日志回调
-        stop_event: 安装取消事件，取消返回 {"cancelled": True}
-        Returns:
-        {"ok": bool, "error": str|None}
-    """
+    """安装全部依赖（uv + venv + torch/timm/transformers + 两个模型），返回 {"ok", "error"}。"""
     plan = resolve_pytorch(pytorch_version, site)
     torch_url = plan["torch_url"]
     pypi_url = plan["pypi_url"]
@@ -173,7 +166,7 @@ def install_dependencies(
         return {"ok": False, "error": f"安装 torch 失败: {out[-500:]}"}
 
     # ── 步骤 4 ──
-    _log("━━ 步骤 4/6：安装 torchvision + timm/Pillow/requests ━━", log_fn)
+    _log("━━ 步骤 4/6：安装 torchvision + timm/transformers/Pillow/requests ━━", log_fn)
     if is_cpu:
         rc, out = _run_subprocess_streaming(
             [uv, "pip", "install", "--python", venv_py,
@@ -194,10 +187,10 @@ def install_dependencies(
         return r
     if rc != 0:
         return {"ok": False, "error": f"安装 torchvision 失败: {out[-500:]}"}
-    _log("→ timm, Pillow, requests…", log_fn)
+    _log("→ timm, transformers, Pillow, requests…", log_fn)
     rc, out = _run_subprocess_streaming(
         [uv, "pip", "install", "--python", venv_py,
-         "timm", "Pillow", "requests",
+         "timm", "transformers", "Pillow", "requests",
          "--index-url", pypi_url],
         _INSTALL_TIMEOUT_SEC, log_fn, stop_event,
     )
@@ -213,7 +206,6 @@ def install_dependencies(
     if not models_downloader.begin_download():
         return {"ok": False, "busy": True, "error": "已有下载任务进行中，请稍后再试"}
     try:
-        # 1.27GB 的 model_v0.9.pth 下载期间日志不能全程静默，按 5% 折算成日志行
         last_pct = {"v": -1}
 
         def _dl_log(msg: str):
@@ -227,9 +219,9 @@ def install_dependencies(
                     _log(f"  {Path(ev['file']).name} {int(ev['pct'] * 100)}%"
                          f"（{_fmt_size(ev['done'])}/{_fmt_size(ev['total'])}）", log_fn)
 
-        _log("━━ 步骤 5/6：从魔搭下载 PixAI Tagger 模型 ━━", log_fn)
+        _log("━━ 步骤 5/6：从魔搭下载 PixAI Tagger v1.0 模型 ━━", log_fn)
         dl = models_downloader.download_files(
-            "ms", MAIN_REPO, [_WEIGHTS_FILE, _TAGS_FILE, _MAPPING_FILE],
+            "ms", MAIN_REPO, list(_MODEL_FILES),
             str(MODEL_DIR), log_fn=_dl_log, progress_cb=_model_progress,
             cancel_event=stop_event, cleanup_on_cancel=True)
         if dl.get("cancelled"):
@@ -281,16 +273,50 @@ def remove_pixai_tagger() -> Dict[str, Any]:
             "message": "已删除 pixai-tagger 文件夹" if existed else "目录不存在，无需删除"}
 
 
-# ── 推理（标签获取 / 二次元预筛） ──
+# ── 抽帧与推理（标签获取 / 二次元预筛） ──
+
+_NO_STOP = threading.Event()
+
+
+def extract_frames_for_tagger(video_path: str,
+                              stop_event: Optional[threading.Event] = None,
+                              frame_count: int = 15,
+                              frame_max_side: int = 640) -> List[str]:
+    """复用主流程抽帧（点位 × 每点 1 帧），返回 JPEG base64 帧列表（驻留内存）。
+    v1.0 模型内部等比缩放+填充至 1008×1008，无需短边压缩与裁剪。"""
+    if stop_event is None:
+        stop_event = _NO_STOP
+    if stop_event.is_set():
+        return []
+    cfg = Config(sampling_points=max(1, frame_count), frames_per_point=1,
+                 frame_max_side=max(64, frame_max_side))
+    cfg.validate()
+    _, frames = probe_and_extract_keyframes(video_path, cfg, stop_event)
+    return [f.b64 for f in frames]
+
 
 def _inference_timeout(video_count: int) -> float:
     return _INFERENCE_BASE_SEC + _INFERENCE_PER_VIDEO_SEC * max(1, video_count)
 
 
+def apply_char_tag_rules(merged: Dict[str, float],
+                         char_threshold: float = CHARACTER_THRESHOLD,
+                         fallback_threshold: float = CHARACTER_FALLBACK_THRESHOLD,
+                         ) -> Dict[str, float]:
+    """角色阈值规则（规格说明，分析子进程脚本内为同逻辑实现）：
+    置信度 >char_threshold 的全部保留；一个都没有时取 >fallback_threshold 中
+    分数最高的 1 个兜底；仍没有则返回空（宁缺毋滥）。"""
+    kept = {t: p for t, p in merged.items() if p > char_threshold}
+    if not kept and merged:
+        best = max(merged.items(), key=lambda x: x[1])
+        if best[1] > fallback_threshold:
+            kept = {best[0]: best[1]}
+    return kept
+
+
 class AnalyzeStream:
-    """交互式分析子进程：启动即加载双模型（与抽帧并行），stdin 逐视频送入、stdout 流式回传。
-        {"video_result": {...}}（单子进程串行，响应顺序 = 请求顺序）
-    """
+    """交互式分析子进程：启动即加载双模型（与抽帧并行），stdin 逐视频送入、
+    stdout 流式回传 {"video_result": {...}}（单子进程串行，响应顺序 = 请求顺序）。"""
 
     def __init__(self, params: Dict[str, Any], video_count: int,
                  stop_event=None,
@@ -496,6 +522,8 @@ def start_analyze_stream(
     anime_threshold: float = ANIME_CLS_THRESHOLD,
     real_threshold: float = REAL_CLS_THRESHOLD,
     tag_threshold: float = CHARACTER_THRESHOLD,
+    ip_threshold: float = COPYRIGHT_THRESHOLD,
+    char_fallback_threshold: float = CHARACTER_FALLBACK_THRESHOLD,
     stop_event=None,
     on_log: Optional[Callable[[str], None]] = None,
     on_video_result: Optional[Callable[[Dict[str, Any]], None]] = None,
@@ -518,6 +546,8 @@ def start_analyze_stream(
         "anime_threshold": anime_threshold,
         "real_threshold": real_threshold,
         "tag_threshold": tag_threshold,
+        "ip_threshold": ip_threshold,
+        "char_fallback_threshold": char_fallback_threshold,
     }
     try:
         return AnalyzeStream(params, video_count,
@@ -537,10 +567,10 @@ os.environ['HF_HUB_OFFLINE'] = '1'
 os.environ['TRANSFORMERS_OFFLINE'] = '1'
 
 import torch
-import torch.nn as nn
 import torchvision.transforms as transforms
 from PIL import Image, ImageStat
 import timm
+from transformers import pipeline
 
 def plog(msg):
     print(json.dumps({'log': msg}, ensure_ascii=False), flush=True)
@@ -557,84 +587,54 @@ cls_model_path = params.get('cls_model_path') or ''
 skip_real = bool(params.get('skip_real', False))
 cls_threshold = float(params.get('anime_threshold', 0.72))
 real_threshold = float(params.get('real_threshold', 0.50))
-tag_threshold = float(params.get('tag_threshold', 0.9))
+char_threshold = float(params.get('tag_threshold', 0.9))
+char_fallback = float(params.get('char_fallback_threshold', 0.65))
+ip_threshold = float(params.get('ip_threshold', 0.9))
 
-weights_file = model_dir / 'model_v0.9.pth'
-tags_file = model_dir / 'tags_v0.9_13k.json'
-mapping_file = model_dir / 'char_ip_map.json'
-
-for f, label in ((weights_file, '模型权重'), (tags_file, '标签文件'), (mapping_file, 'IP映射文件')):
-    if not f.exists():
-        print(json.dumps({'error': f'{label}不存在: {f}'}))
+for fname in ('model.safetensors', 'config.json', 'preprocessor_config.json', 'tagger_pipeline.py'):
+    if not (model_dir / fname).is_file():
+        print(json.dumps({'error': f'模型文件缺失: {model_dir / fname}'}))
         sys.exit(1)
-
-# ── 加载标签与 IP 映射 ──
-with tags_file.open('r', encoding='utf-8') as f:
-    tag_info = json.load(f)
-tag_map = tag_info['tag_map']
-gen_tag_count = tag_info['tag_split']['gen_tag_count']
-index_to_tag = {v: k for k, v in tag_map.items()}
-with mapping_file.open('r', encoding='utf-8') as f:
-    char_ip_mapping = json.load(f)
-
-# ── 构建标签获取模型 ──
-class TaggingHead(nn.Module):
-    def __init__(self, input_dim, num_classes):
-        super().__init__()
-        self.head = nn.Sequential(nn.Linear(input_dim, num_classes))
-    def forward(self, x):
-        return torch.nn.functional.sigmoid(self.head(x))
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 # use_fp16 在 warmup 精度自测后确定（GTX 16 系等无 Tensor Core 的卡 fp16 反而慢）
 
-# ── 预筛模型（与主模型总是一起安装；缺失时降级为不预筛直接标签获取）──
+# ── 预筛模型（缺失时降级为不预筛直接标签获取）──
 has_cls = bool(cls_model_path) and Path(cls_model_path).exists()
 cls_model = None
 if has_cls:
     cls_model = timm.create_model('mobilenetv3_large_100', pretrained=False, num_classes=2)
-    # ckpt 为 PyTorch Lightning 格式且含 numpy 标量，可信来源，weights_only=False
+    # ckpt 为 Lightning 格式且含 numpy 标量（可信来源），weights_only=False
     ckpt = torch.load(str(cls_model_path), map_location=device, weights_only=False)
     state_dict = ckpt.get('state_dict', ckpt) if isinstance(ckpt, dict) else ckpt
-    # 过滤非权重项（total_ops/total_params 等）+ 逐层去除可能的前缀
     filtered = {}
     for k, v in state_dict.items():
         if 'total_ops' in k or 'total_params' in k or not isinstance(v, torch.Tensor):
             continue
-        new_key = k
         for prefix in ('model.', 'backbone.', 'module.'):
-            if new_key.startswith(prefix):
-                new_key = new_key[len(prefix):]
-        filtered[new_key] = v
+            if k.startswith(prefix):
+                k = k[len(prefix):]
+        filtered[k] = v
     cls_model.load_state_dict(filtered, strict=False)
     cls_model.to(device)
     cls_model.eval()
 else:
     plog('未找到预筛模型，跳过预筛直接标签获取')
 
-# ── 标签获取模型 ──
-encoder = timm.create_model('eva02_large_patch14_448', pretrained=False)
-encoder.reset_classifier(0)
-tag_model = nn.Sequential(encoder, TaggingHead(1024, 13461))
-states_dict = torch.load(str(weights_file), map_location=device, weights_only=True)
-tag_model.load_state_dict(states_dict)
-tag_model.to(device)
-tag_model.eval()
+# ── 标签获取模型：trust_remote_code 加载仓库内模型代码；输入 1008×1008
+# 由 RescalePadProcessor 内部等比缩放+填充，无需预压缩/裁剪 ──
+tagger = pipeline(model=str(model_dir), image_processor=str(model_dir),
+                  trust_remote_code=True, device=device)
+# 一次前向同时取角色兜底候选（>0.65）与 IP 达标标签（>0.9），阈值规则在跨帧合并后收口
+_TAG_THRESHOLD = {'character': char_fallback, 'copyright': ip_threshold}
 
-# ── 预处理 ──
-tag_transform = transforms.Compose([
-    transforms.Resize((448, 448)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
-])
 cls_transform = transforms.Compose([
     transforms.Resize((384, 384)),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
 ])
 
-# ── 坏帧过滤：过暗帧（片头尾黑场/转场/字幕底）与纯色帧（纯色转场/虚焦/灰场）
-# 会让预筛误判；纯色帧对二分类模型是分布外输入，打分不可信
+# ── 坏帧过滤：过暗帧与纯色帧会让预筛打分不可信 ──
 _DARK_BRIGHTNESS = 15.0  # 亮度低于此值的帧视为坏帧
 
 def _mean_brightness(image):
@@ -654,37 +654,35 @@ def _is_flat_frame(image):
     r, gr, b = ImageStat.Stat(rgb).mean
     return (max(r, gr, b) - min(r, gr, b)) / 255.0 < 0.05
 
-# ── warmup：双模型各跑一次 dummy 前向，预热 CUDA kernel/cuDNN 与显存分配器，
-# 避免首个视频推理撞上初始化开销造成首次毛刺。
-# CUDA 下同时按前向耗时在 fp32/fp16 间自适应选优（无 Tensor Core 的卡 fp16 反而更慢，
-# 不能盲目启用）。──
+# ── warmup 预热；CUDA 下按前向耗时在 fp32/fp16 间自适应选优（无 Tensor Core 的卡 fp16 反而慢）──
 use_fp16 = False
 try:
     _dummy = torch.zeros(1, 3, 384, 384).to(device)
     with torch.inference_mode():
         if cls_model is not None:
             cls_model(_dummy)
-    _dummy = torch.zeros(1, 3, 448, 448).to(device)
+    _dummy_img = Image.new('RGB', (384, 216))
     with torch.inference_mode():
-        tag_model(_dummy)
+        tagger(_dummy_img)
     if device == 'cuda':
-        def _time_fwd(model, x, dtype, iters=2):
-            model.to(dtype)
-            x = x.to(dtype)
+        def _time_tag(iters=2):
             with torch.inference_mode():
-                model(x)
+                tagger(_dummy_img)
                 torch.cuda.synchronize()
                 t0 = time.perf_counter()
                 for _ in range(iters):
-                    model(x)
+                    tagger(_dummy_img)
                 torch.cuda.synchronize()
             return (time.perf_counter() - t0) / iters
-        t_fp32 = _time_fwd(tag_model, _dummy, torch.float32)
-        t_fp16 = _time_fwd(tag_model, _dummy, torch.float16)
+        t_fp32 = _time_tag()
+        tagger.model.half()
+        t_fp16 = _time_tag()
         use_fp16 = t_fp16 < t_fp32
+        if not use_fp16:
+            tagger.model.float()
         plog(f'精度自测: fp32 {t_fp32*1000:.0f}ms/次, fp16 {t_fp16*1000:.0f}ms/次'
              f' → 使用 {"fp16" if use_fp16 else "fp32"}')
-    del _dummy
+    del _dummy_img
     try:
         torch.cuda.empty_cache()
     except Exception:
@@ -692,15 +690,13 @@ try:
 except Exception as _e:
     plog(f'warmup 失败（忽略）: {_e}')
     use_fp16 = False
-# 自测结论统一应用：双模型保持同一 dtype
 if use_fp16:
     if cls_model is not None:
         cls_model.half()
-    tag_model.half()
+    tagger.model.half()
 else:
     if cls_model is not None:
         cls_model.float()
-    tag_model.float()
 
 def pil_to_rgb(image):
     if image.mode in ('RGBA', 'P'):
@@ -712,8 +708,7 @@ def pil_to_rgb(image):
     return image.convert('RGB')
 
 def decode_frames(b64_list):
-    '''base64 → PIL Image（内存解码，不落盘）；坏帧返回 None 占位。
-    单帧失败不记日志：该视频最终会以「分析失败: 帧解码失败」在父进程呈现。'''
+    '''base64 → PIL Image；坏帧返回 None 占位（该视频最终报「帧解码失败」）。'''
     frames = []
     for b64 in b64_list:
         try:
@@ -746,49 +741,55 @@ def _run_cls_frames(tensors):
             raise
         return _run_cls_frames(tensors[:mid]) + _run_cls_frames(tensors[mid:])
 
-def _run_tag_frames(tensors):
-    '''标签获取：全部帧一次 batch 前向，逐帧 sigmoid + 逐标签跨帧 max 合并
-    （预处理已在预取线程完成）；CUDA OOM 时对半拆分重试。'''
-    merged = {}
+def _apply_char_rules(merged):
+    '''角色阈值规则（与父进程 apply_char_tag_rules 同逻辑）：>0.9 全保留；
+    没有则取 >0.65 中最高 1 个兜底；仍没有为空。'''
+    kept = {t: p for t, p in merged.items() if p > char_threshold}
+    if not kept and merged:
+        best = max(merged.items(), key=lambda x: x[1])
+        if best[1] > char_fallback:
+            kept = {best[0]: best[1]}
+    return kept
+
+def _run_tag_frames(imgs):
+    '''标签获取：全部帧一次 batch 走 pipeline（内部等比缩放+填充），取
+    character/copyright 两类候选，逐标签跨帧 max 合并；CUDA OOM 时对半拆分重试。
+    pipeline 返回形态：batch 输入为 list（每项 {"results": {...}}），单图为 dict。'''
     try:
-        batch = torch.stack(tensors)
-        if use_fp16:
-            batch = batch.half()
-        if device == 'cuda':
-            batch = batch.pin_memory().to(device, non_blocking=True)
-        else:
-            batch = batch.to(device)
-        with torch.inference_mode():
-            probs = tag_model(batch)
-        for prob in probs:
-            char_probs = prob[gen_tag_count:]
-            indices = (char_probs > tag_threshold).nonzero(as_tuple=True)[0]
-            for idx in indices:
-                global_idx = idx.item() + gen_tag_count
-                tag_name = index_to_tag.get(global_idx)
-                score = float(char_probs[idx])
-                if tag_name and (tag_name not in merged or score > merged[tag_name]):
-                    merged[tag_name] = score
-        return merged
+        out = tagger(imgs, threshold=_TAG_THRESHOLD)
+        items = out if isinstance(out, list) else [out]
+        char_m, ip_m = {}, {}
+        for it in items:
+            r = it.get('results') if isinstance(it, dict) else None
+            if not isinstance(r, dict):
+                continue
+            for t, p in (r.get('character') or {}).items():
+                if t not in char_m or p > char_m[t]:
+                    char_m[t] = p
+            for t, p in (r.get('copyright') or {}).items():
+                if t not in ip_m or p > ip_m[t]:
+                    ip_m[t] = p
+        return char_m, ip_m
     except torch.cuda.OutOfMemoryError:
         try:
             torch.cuda.empty_cache()
         except Exception:
             pass
-        mid = len(tensors) // 2
+        mid = len(imgs) // 2
         if mid == 0:
             raise
-        left = _run_tag_frames(tensors[:mid])
-        right = _run_tag_frames(tensors[mid:])
-        for k, v in right.items():
-            if k not in left or v > left[k]:
-                left[k] = v
-        return left
+        lc, li = _run_tag_frames(imgs[:mid])
+        rc, ri = _run_tag_frames(imgs[mid:])
+        for k, v in rc.items():
+            if k not in lc or v > lc[k]:
+                lc[k] = v
+        for k, v in ri.items():
+            if k not in li or v > li[k]:
+                li[k] = v
+        return lc, li
 
-# ── 预取：后台线程读 stdin → JSON 解析 → 帧解码 → 双模型 transform，产出就绪
-# tensor 入有界队列；主线程只做 GPU 推理，视频间不留 CPU 间隙。
-# 父进程逐行发送 {"index","name","frames"}；stdin EOF（close）即正常结束。
-# 队列项：就绪请求 {'vi','name','cls_t','tag_t'} / 待回传错误 {'report'} / EOF 哨兵 None。
+# ── 预取线程：stdin → 解码/坏帧过滤/预筛 transform 入有界队列，主线程只做推理；
+# 父进程逐行发送 {"index","name","frames"}，stdin EOF 即正常结束 ──
 import threading
 _prefetch_q = queue.Queue(maxsize=2)
 
@@ -825,15 +826,12 @@ def _prefetch_reader():
         try:
             cls_t = ([cls_transform(im) for im in imgs]
                      if cls_model is not None else [])
-            tag_t = [tag_transform(im) for im in imgs]
         except Exception as e:
             _prefetch_q.put({'report': {'index': vi, 'name': name,
                                         'error': f'帧预处理异常: {e}'}})
             continue
-        finally:
-            del imgs  # transform 完成即释放 PIL 帧
         _prefetch_q.put({'vi': vi, 'name': name,
-                         'cls_t': cls_t, 'tag_t': tag_t})
+                         'cls_t': cls_t, 'imgs': imgs})
     _prefetch_q.put(None)  # stdin EOF → 正常结束
 
 threading.Thread(target=_prefetch_reader, name='prefetch', daemon=True).start()
@@ -846,7 +844,7 @@ while True:
         report(item['report'])
         continue
     vi, name = item['vi'], item['name']
-    cls_t, tag_t = item['cls_t'], item['tag_t']
+    cls_t, imgs = item['cls_t'], item['imgs']
 
     is_anime = None  # None = 不确定
     anime_score = 0.0
@@ -878,26 +876,23 @@ while True:
     if skip_real and cls_ok and is_anime is False:
         report({'index': vi, 'name': name, 'anime_score': anime_score,
                 'is_anime': False, 'character_tags': [], 'ip_tags': []})
-        del tag_t
+        del imgs
         continue
 
-    # ── 标签获取（逐标签跨帧 max 合并 + char_ip_map IP 并集）──
+    # ── 标签获取（character/copyright 跨帧 max 合并 + 阈值规则收口）──
     try:
-        char_scores = _run_tag_frames(tag_t)
+        char_merged, ip_merged = _run_tag_frames(imgs)
     except Exception as e:
         report({'index': vi, 'name': name, 'error': f'标签获取异常: {e}'})
-        del tag_t
+        del imgs
         continue
-    del tag_t  # 处理完成即释放该视频 tensor
-    ip_set = set()
-    for char_tag in char_scores:
-        if char_tag in char_ip_mapping:
-            ip_set.update(char_ip_mapping[char_tag])
+    del imgs  # 处理完成即释放该视频 PIL 帧
+    char_scores = _apply_char_rules(char_merged)
     result = {
         'index': vi, 'name': name,
         'character_tags': [{'name': k, 'score': round(v, 4)}
                            for k, v in sorted(char_scores.items(), key=lambda x: -x[1])],
-        'ip_tags': [{'name': ip} for ip in sorted(ip_set)],
+        'ip_tags': [{'name': ip} for ip in sorted(ip_merged)],
     }
     # 预筛成功时才附带分类信息（供前端 ANIME/REAL/UNC 角标）
     if cls_ok:

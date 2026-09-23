@@ -59,15 +59,11 @@ function _collectExperimentalData() {
   if (topN !== null) topN = Math.min(100, Math.max(1, topN));
   put('rag_vec_top_n', topN);
   put('rag_vec_model', ddl('#ragvec-model-dd') || '');
-  put('pixai_classify', chk('#pixai-classify'));
+  const clsDd = ddl('#pixai-classify-dd');
+  put('pixai_classify', clsDd === null ? null : clsDd === '1');
   let frames = num('#pixai-frames');
   if (frames !== null) frames = Math.max(1, frames);
   put('pixai_frames', frames);
-  let ss = num('#pixai-short-side');
-  if (ss !== null) ss = Math.max(64, ss);
-  put('pixai_short_side', ss);
-  put('pixai_crop_square', chk('#pixai-crop-square'));
-  put('pixai_crop_portrait', chk('#pixai-crop-portrait'));
   let thr = num('#pixai-threshold');
   if (thr !== null) thr = Math.min(0.99, Math.max(0.5, thr));
   put('pixai_threshold', thr);
@@ -567,22 +563,23 @@ function _renderPixaiSection(exp, pStatus) {
       <div id="pixai-cfg-panel" class="exp-cfg-panel" style="display:${state.settingsOpen.has('pixai-cfg') ? 'block' : 'none'}">
         <div class="exp-input-row">
           <div class="field">
-            <label data-tip="每个视频采样的帧数上限（短视频固定头中尾 3 帧）：越多识别越全面，耗时越长">采样帧数</label>
+            <label data-tip="每个视频的采样点位数，每点位取 1 帧（短视频固定头中尾 3 帧）：越多识别越全面，耗时越长">采样帧数</label>
             <input type="number" id="pixai-frames" min="1" value="${exp.pixai_frames || 15}"/>
           </div>
           <div class="field">
-            <label data-tip="图片短边像素：越小越快越省资源，越大细节越清楚">短边分辨率</label>
-            <input type="number" id="pixai-short-side" min="64" step="16" value="${exp.pixai_short_side || 448}"/>
-          </div>
-          <div class="field">
-            <label data-tip="角色标签的置信度阈值，越高越严格（0.5–0.99）">置信度阈值</label>
+            <label data-tip="角色标签的置信度阈值，越高越严格（0.5–0.99）；无达标角色时取 0.65 以上最高 1 个兜底；IP 固定 0.9">角色阈值</label>
             <input type="number" id="pixai-threshold" min="0.5" max="0.99" step="0.01" value="${exp.pixai_threshold || 0.9}"/>
           </div>
-        </div>
-        <div class="exp-switch-row">
-          <label class="switch"><input type="checkbox" id="pixai-classify" ${exp.pixai_classify === true ? 'checked' : ''}/><span class="tip-text" data-tip="开启后非二次元作品跳过标签获取（角标 REAL 无 IP）；关闭则全部视频都获取标签">跳过非二次元作品</span></label>
-          <label class="switch" data-tip="横屏视频中心裁剪为正方形后再识别，避免两侧内容挤压变形"><input type="checkbox" id="pixai-crop-square" ${exp.pixai_crop_square === true ? 'checked' : ''}/> 横屏裁剪正方形</label>
-          <label class="switch" data-tip="竖屏视频从顶部偏下裁剪为正方形后再识别，避免画面上下拉伸变形"><input type="checkbox" id="pixai-crop-portrait" ${exp.pixai_crop_portrait === true ? 'checked' : ''}/> 竖屏裁剪正方形</label>
+          <div class="field">
+            <label data-tip="开启后非二次元作品跳过标签获取（角标 REAL 无 IP）；关闭则全部视频都获取标签">跳过非二次元作品</label>
+            <div class="dd" id="pixai-classify-dd">
+              <button class="dd-btn" type="button"><span class="dd-label">${exp.pixai_classify === true ? '开启' : '关闭'}</span>${ddArrow()}</button>
+              <div class="dd-panel">
+                <div class="dd-opt${exp.pixai_classify === true ? ' active' : ''}" data-value="1">开启</div>
+                <div class="dd-opt${exp.pixai_classify === true ? '' : ' active'}" data-value="0">关闭</div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>`;
@@ -602,14 +599,12 @@ function _bindPixaiEvents(pStatus) {
 
   _bindCardToggle('pixai');
 
-  ['#pixai-frames', '#pixai-short-side', '#pixai-threshold'].forEach(sel => {
+  ['#pixai-frames', '#pixai-threshold'].forEach(sel => {
     const el = $(sel);
     if (el) el.addEventListener('input', () => scheduleExperimentalSave());
   });
-  ['#pixai-classify', '#pixai-crop-square', '#pixai-crop-portrait'].forEach(sel => {
-    const el = $(sel);
-    if (el) el.addEventListener('change', () => scheduleExperimentalSave(true));
-  });
+  const clsDd = $('#pixai-classify-dd');
+  if (clsDd) initDropdown(clsDd, () => scheduleExperimentalSave(true));
 
   const clearBtn = $('#btn-pixai-clear-tags');
   if (clearBtn) clearBtn.addEventListener('click', async () => {

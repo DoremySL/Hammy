@@ -256,8 +256,10 @@ class ExperimentalMixin:
         """对选中视频执行 PixAI 标签获取。
         items: [[video_id, video_path], ...]，id 为前端视频对象的稳定 ID
         """
-        from ..pixai_tagger import get_status, start_analyze_stream, ANIME_CLS_THRESHOLD
-        from ..pixai_frames import extract_frames_for_tagger
+        from ..pixai_tagger import (get_status, start_analyze_stream,
+                                    extract_frames_for_tagger,
+                                    ANIME_CLS_THRESHOLD, CHARACTER_FALLBACK_THRESHOLD,
+                                    COPYRIGHT_THRESHOLD)
         from batch_rename.dependencies import ffmpeg_tools
         from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
@@ -267,9 +269,7 @@ class ExperimentalMixin:
 
         pcfg = load_pixai_config()
         frames_n = max(1, safe_int(pcfg.get("frames"), 15))
-        short_side = max(64, safe_int(pcfg.get("short_side"), 448))
-        crop_square = bool(pcfg.get("crop_square", False))
-        crop_portrait = bool(pcfg.get("crop_portrait", False))
+        frame_max_side = max(64, safe_int((load_config().get("video") or {}).get("frame_max_side"), 640))
         threshold = min(0.99, max(0.5, safe_float(pcfg.get("threshold"), 0.9)))
         skip_real = bool(pcfg.get("classify", False))
 
@@ -305,6 +305,8 @@ class ExperimentalMixin:
                 skip_real=skip_real,
                 anime_threshold=ANIME_CLS_THRESHOLD,
                 tag_threshold=threshold,
+                ip_threshold=COPYRIGHT_THRESHOLD,
+                char_fallback_threshold=CHARACTER_FALLBACK_THRESHOLD,
                 stop_event=_gpu_stop_event,
                 on_log=_push_log,
                 on_video_result=None,  # 结果统一在主循环取（next_result），避免跨线程进度竞争
@@ -312,7 +314,7 @@ class ExperimentalMixin:
             if stream is None:
                 return self._pixai_engine_unavailable(
                     vid_list, video_paths, results, frames_n,
-                    short_side, crop_square, crop_portrait, total)
+                    frame_max_side, total)
 
             # 第二步（流水线）：抽帧线程池 + 有界背压 + send-ahead 管道
             # （抽帧为 ffmpeg 等待型 IO，CPU 线程池即可；并发 6 路喂饱管道）
@@ -419,8 +421,7 @@ class ExperimentalMixin:
                         break
                     futures[ex.submit(extract_frames_for_tagger, vpath,
                                       _gpu_stop_event,
-                                      frames_n, short_side, crop_square,
-                                      crop_portrait)] = i
+                                      frames_n, frame_max_side)] = i
                 # 排空剩余抽帧任务（流水线中断后不再送推理，在途任务直接丢弃）
                 while futures and pipeline_ok:
                     for f in wait(futures, return_when=FIRST_COMPLETED)[0]:
@@ -489,12 +490,11 @@ class ExperimentalMixin:
 
     def _pixai_engine_unavailable(self, vid_list: List, video_paths: List,
                                   results: Dict[str, Any], frames_n: int,
-                                  short_side: int, crop_square: bool,
-                                  crop_portrait: bool,
+                                  frame_max_side: int,
                                   total: int) -> Dict[str, Any]:
         """引擎启动失败降级：仍尝试抽帧——全部抽帧失败时结果仅抽帧失败（ok）；
         有抽帧成功视频时整体失败（该视频无法分析）。"""
-        from ..pixai_frames import extract_frames_for_tagger
+        from ..pixai_tagger import extract_frames_for_tagger
         _push_log("分析引擎启动失败，正在尝试抽帧…", "err")
         any_frames = False
         for i, vpath in enumerate(video_paths):
@@ -503,8 +503,7 @@ class ExperimentalMixin:
             vid, name = vid_list[i], Path(vpath).name
             try:
                 frames = extract_frames_for_tagger(
-                    vpath, _gpu_stop_event, frames_n, short_side,
-                    crop_square, crop_portrait)
+                    vpath, _gpu_stop_event, frames_n, frame_max_side)
             except Exception:
                 frames = None
             if frames:

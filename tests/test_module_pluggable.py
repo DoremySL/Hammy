@@ -528,7 +528,7 @@ class TestModuleConfigStore(_WorkspaceTestCase):
         self.assertEqual(cfg["frames"], 8)
         self.assertEqual(cfg["threshold"], 0.75)
         self.assertIs(cfg["classify"], False)
-        self.assertEqual(cfg["short_side"], 448)  # 未覆盖键保留默认
+        self.assertNotIn("short_side", cfg)  # v1.0 起废弃键不再注入默认值
 
     def test_pixai_corrupt_tolerated(self):
         from gui_app.config_store import load_pixai_config, update_pixai_config
