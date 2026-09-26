@@ -139,9 +139,10 @@ const flushPendingLlamaSave = _llamaSave.flush;
 function renderExperimentalPage(cfg, uvStatus, llamaStatus, pStatus, wStatus, rvStatus) {
   const body = $('#modal-body');
   const exp = (cfg && cfg.experimental) || {};
+  const anyModuleInstalled = [llamaStatus, pStatus, wStatus, rvStatus].some(s => s && s.dir_exists);
   body.innerHTML = `
     <div class="exp-page">
-      <div class="exp-intro">安装占用大量硬盘空间，运行时消耗较高的硬件资源，仅推荐显存≥6GB的N卡用户尝试</div>
+      ${anyModuleInstalled ? '' : '<div class="exp-intro">安装占用大量硬盘空间，运行时消耗较高的硬件资源，仅推荐显存≥6GB的N卡用户尝试</div>'}
       ${_renderLlamaSection(llamaStatus)}
       ${_renderPixaiSection(exp, pStatus)}
       ${_renderWhisperSection(exp, wStatus)}

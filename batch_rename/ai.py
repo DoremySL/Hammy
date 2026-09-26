@@ -359,16 +359,14 @@ def _handle_retryable_error(e: Exception, attempt: int, max_attempts: int,
 
 
 _REFINE_INSTRUCTION = (
-    "下面是根据首轮分析结果与视频信息检索到的候选标签（可能包含与画面无关的条目）。\n"
-    "请结合画面与候选标签，对首轮 JSON 做整体修订：\n"
-    "1. tags：将确实匹配视频内容的候选标签并入；无法确认匹配的候选不要采用；"
-    "与候选同义的自造表述统一为候选标签的写法。\n"
-    "2. plot：用候选标签中的规范用词润色与补充首轮 plot，使描述更准确完整；"
-    "仍须符合首轮对 plot 的字数与风格要求，不得提及候选列表或检索来源本身。\n"
-    "3. title：可用候选标签优化用词，仍须符合首轮对 title 的格式与字数要求。\n"
-    "4. thumb_time（如首轮输出含该字段）：保持首轮结果不变。\n"
-    "输出修订后的完整 JSON（结构、字段顺序与首轮要求完全一致），不要输出任何其他内容。\n\n"
+    "请结合画面对首轮 JSON 做整体修订，候选仅供参考，一切以画面为准：\n"
+    "1. tags：确实匹配视频内容的候选，按候选关键词原文并入；无法确认匹配的不要采用；"
+    "与候选同义的首轮自造表述统一为候选写法；若无任何候选确实匹配，保持首轮 tags 不变。\n"
+    "2. plot：仅当候选用词确实更准确时，用它润色与补充首轮 plot；"
+    "不得提及候选列表或检索来源本身。\n"
+    "3. title：可用候选优化用词。\n"
 )
+_REFINE_TAIL = "输出修订后的完整 JSON（结构、字段顺序与首轮要求完全一致），不要输出任何其他内容。"
 
 
 def _refine_round(client: OpenAIClient, model: str, messages: list,
@@ -391,7 +389,10 @@ def _refine_round(client: OpenAIClient, model: str, messages: list,
         return result._replace(recalled=0, recalled_keywords=[])
     keywords = [it["keyword"] for it in candidates]
 
-    refine_prompt = _REFINE_INSTRUCTION + tag_recall.build_candidates_section(candidates)
+    # frame_time_tags==2 时提示模板才含 thumb_time 字段，修订项随之插入
+    thumb_line = "4. thumb_time：保持首轮结果不变。\n" if config.frame_time_tags == 2 else ""
+    refine_prompt = (tag_recall.build_candidates_section(candidates) + "\n\n"
+                     + _REFINE_INSTRUCTION + thumb_line + _REFINE_TAIL)
     msgs = messages + [
         {"role": "assistant", "content": result.raw},
         {"role": "user", "content": refine_prompt},
