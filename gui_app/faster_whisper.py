@@ -17,6 +17,7 @@ from .installer import (
     venv_python_path,
     run_subprocess_streaming as _run_subprocess_streaming,
     run_venv_script as _run_venv_script,
+    InstallSteps,
 )
 
 # ── 路径常量 ──
@@ -166,6 +167,7 @@ def install_dependencies(pypi_mirror: str = DEFAULT_PYPI_MIRROR,
     pypi_url = PYPI_MIRRORS.get(pypi_mirror, PYPI_MIRRORS[DEFAULT_PYPI_MIRROR])["url"]
     WHISPER_DIR.mkdir(parents=True, exist_ok=True)
     model_key = model if model in WHISPER_MODELS else DEFAULT_MODEL
+    steps = InstallSteps(4)
 
     def _cancelled() -> Optional[Dict[str, Any]]:
         """用户取消：返回取消结果；未取消返回 None。"""
@@ -175,6 +177,7 @@ def install_dependencies(pypi_mirror: str = DEFAULT_PYPI_MIRROR,
         return None
 
     # ── 步骤 1 ──
+    steps.push(1)
     _log("━━ 步骤 1/4：检测 UV ━━", log_fn)
     uv = _ensure_uv(pypi_url, log_fn, stop_event)
     r = _cancelled()
@@ -185,6 +188,7 @@ def install_dependencies(pypi_mirror: str = DEFAULT_PYPI_MIRROR,
     _log(f"UV 就绪: {uv}", log_fn)
 
     # ── 步骤 2 ──
+    steps.push(2)
     _log("━━ 步骤 2/4：创建虚拟环境 ━━", log_fn)
     if not VENV_DIR.is_dir():
         rc, out = _run_subprocess_streaming(
@@ -200,6 +204,7 @@ def install_dependencies(pypi_mirror: str = DEFAULT_PYPI_MIRROR,
     venv_py = str(venv_python_path(VENV_DIR))
 
     # ── 步骤 3 ──
+    steps.push(3)
     _log(f"━━ 步骤 3/4：安装依赖（镜像: {pypi_url}）━━", log_fn)
     _log("→ faster-whisper + ctranslate2…", log_fn)
     rc, out = _run_subprocess_streaming(
@@ -244,7 +249,11 @@ def install_dependencies(pypi_mirror: str = DEFAULT_PYPI_MIRROR,
                 last_pct10["v"] = pct10
                 _log(f"  {Path(ev['file']).name} {int(ev['pct'] * 100)}%"
                      f"（{_fmt_size(ev['done'])}/{_fmt_size(ev['total'])}）", log_fn)
+            steps.push(4, ((ev.get("idx", 1) - 1) + ev["pct"]) / max(1, ev.get("count", 1)))
+        elif ev.get("type") in ("file_done", "file_skip"):
+            steps.push(4, ev.get("idx", 0) / max(1, ev.get("count", 1)))
 
+    steps.push(4)
     dl = _download_model(model_key, log_fn=log_fn, progress_cb=_install_progress,
                          cancel_event=stop_event, cleanup_on_cancel=True)
     r = _cancelled()
@@ -289,6 +298,8 @@ def remove_faster_whisper() -> Dict[str, Any]:
 def run_transcription_batch(video_paths: List[str],
                             vad: bool = True, language: str = "",
                             batch: bool = False, workers: int = 0,
+                            beam_size: int = 5,
+                            compression_ratio: Optional[float] = 2.4,
                             on_video_done: Optional[Callable[[int, Dict[str, Any]], None]] = None,
                             on_log: Optional[Callable[[str], None]] = None,
                             stop_event=None) -> Dict[str, Any]:
@@ -296,6 +307,7 @@ def run_transcription_batch(video_paths: List[str],
         Args:
         workers: 视频间并发数（0=自动：GPU 4 路 / CPU 串行），同一模型实例
         多线程并发解码，结果按 idx 索引不依赖完成顺序
+        beam_size: 束搜索宽度；compression_ratio: 复读判定阈值（None=不启用）
         on_video_done: 回调 (idx, result_dict)，每完成一个视频触发
         on_log: 子进程阶段日志回调（加载模型 / 开始转录等）
         Returns:
@@ -321,6 +333,8 @@ def run_transcription_batch(video_paths: List[str],
         "language": language,
         "batch": batch,
         "workers": workers,
+        "beam_size": max(1, int(beam_size or 5)),
+        "compression_ratio": compression_ratio,
         "venv_site_packages": str(VENV_DIR / "Lib" / "site-packages"),
     }
 
@@ -385,6 +399,9 @@ model_dir = params['model_dir']
 use_vad = params.get('vad', True)
 language = params.get('language', '') or None
 use_batch = params.get('batch', False)
+beam_size = max(1, int(params.get('beam_size', 5) or 5))
+compression_ratio = params.get('compression_ratio')
+compression_ratio = None if compression_ratio is None else float(compression_ratio)
 site_packages = params.get('venv_site_packages', '')
 
 def plog(msg):
@@ -446,13 +463,15 @@ def transcribe_one(i, vp):
     try:
         if use_batch:
             segments, info = model.transcribe(
-                vp, beam_size=5, language=language,
+                vp, beam_size=beam_size, language=language,
+                compression_ratio_threshold=compression_ratio,
                 batch_size=16,
                 vad_filter=use_vad, vad_parameters=vad_params,
             )
         else:
             segments, info = model.transcribe(
-                vp, beam_size=5, language=language,
+                vp, beam_size=beam_size, language=language,
+                compression_ratio_threshold=compression_ratio,
                 vad_filter=use_vad, vad_parameters=vad_params,
             )
         srt_lines = []

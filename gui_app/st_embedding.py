@@ -22,6 +22,7 @@ from .installer import (
     run_subprocess_streaming as _run_subprocess_streaming,
     _terminate_proc,
     venv_python_path,
+    InstallSteps,
 )
 
 ST_DIR = APP_ROOT / "st-embedding"
@@ -184,6 +185,7 @@ def install_dependencies(
     pypi_url = plan["pypi_url"]
     meta = _model_def(model)
     model_key = meta["key"]
+    steps = InstallSteps(5)
 
     ST_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -193,6 +195,7 @@ def install_dependencies(
             return {"ok": False, "cancelled": True, "error": "安装已取消"}
         return None
 
+    steps.push(1)
     _log("━━ 步骤 1/5：检测 UV ━━", log_fn)
     uv = _ensure_uv(pypi_url, log_fn, stop_event)
     if r := _cancelled():
@@ -201,6 +204,7 @@ def install_dependencies(
         return {"ok": False, "error": "UV 安装失败"}
     _log(f"UV 就绪: {uv}", log_fn)
 
+    steps.push(2)
     _log("━━ 步骤 2/5：创建虚拟环境 ━━", log_fn)
     if not VENV_DIR.is_dir():
         rc, out = _run_subprocess_streaming(
@@ -214,6 +218,7 @@ def install_dependencies(
     venv_py = str(venv_python_path(VENV_DIR))
     _log("虚拟环境就绪", log_fn)
 
+    steps.push(3)
     _log(f"━━ 步骤 3/5：安装 torch（{plan['version_name']} · {plan['site_name']}）━━", log_fn)
     rc, out = _run_subprocess_streaming(
         [uv, "pip", "install", "--python", venv_py,
@@ -225,6 +230,7 @@ def install_dependencies(
     if rc != 0:
         return {"ok": False, "error": f"安装 torch 失败: {out[-500:]}"}
 
+    steps.push(4)
     _log("━━ 步骤 4/5：安装 sentence-transformers + modelscope ━━", log_fn)
     rc, out = _run_subprocess_streaming(
         [uv, "pip", "install", "--python", venv_py,
@@ -252,7 +258,11 @@ def install_dependencies(
                 last_mark["v"] = mark
                 _log(f"  {Path(ev['file']).name} {int(ev['pct'] * 100)}%"
                      f"（{_fmt_size(ev['done'])}/{_fmt_size(ev['total'])}）", log_fn)
+            steps.push(5, ((ev.get("idx", 1) - 1) + ev["pct"]) / max(1, ev.get("count", 1)))
+        elif ev.get("type") in ("file_done", "file_skip"):
+            steps.push(5, ev.get("idx", 0) / max(1, ev.get("count", 1)))
 
+    steps.push(5)
     dl = _download_model(model_key, log_fn=log_fn, progress_cb=_install_progress,
                          stop_event=stop_event)
     if r := _cancelled():

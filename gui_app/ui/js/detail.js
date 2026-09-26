@@ -71,7 +71,7 @@ async function showPendingDetail(v) {
       `<button class="chip" data-web-tag="${esc(t.name)}">${esc(t.name)} <small>${t.score != null ? (t.score * 100).toFixed(0) : '—'}%</small></button>`).join('')
       || '<span class="filemeta">未识别到角色</span>';
     const ipTags = (pixai.ip_tags || []).map(t =>
-      `<button class="chip" data-web-tag="${esc(t.name)}">${esc(t.name)}</button>`).join('')
+      `<button class="chip" data-web-tag="${esc(t.name)}">${esc(t.name)} <small>${t.score != null ? (t.score * 100).toFixed(0) : '—'}%</small></button>`).join('')
       || '<span class="filemeta">未识别到IP</span>';
     html += `
     <div class="row">

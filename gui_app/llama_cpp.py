@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .env import APP_ROOT
-from .installer import detect_gpu, pick_cuda_version, start_cancel_watcher, ver_tuple as _ver_tuple
+from .installer import detect_gpu, pick_cuda_version, start_cancel_watcher, InstallSteps, ver_tuple as _ver_tuple
 from .js_push import js_pusher
 from batch_rename.env import SUBPROCESS_KWARGS
 from batch_rename.subprocess_registry import register_subprocess, unregister_subprocess
@@ -815,6 +815,8 @@ def install(build_sel: str, log_fn=None, proxy: str = "",
     if _llama_proc is not None and _llama_proc.poll() is None:
         return {"ok": False, "error": f"llama-server 正在运行（PID {_llama_proc.pid}），请先停止服务再安装/更新"}
 
+    steps = InstallSteps(3)
+    steps.push(1)
     try:
         _check_cancel()
         release = get_latest_release_assets(stop_event=stop_event)
@@ -864,7 +866,11 @@ def install(build_sel: str, log_fn=None, proxy: str = "",
                     log_fn(f"  [{ev['file']}] {int(ev['pct'] * 100)}%"
                            f"（{ev['done'] // (1024 * 1024)}"
                            f"/{ev['total'] // (1024 * 1024)} MB）")
+                steps.push(2, ((ev.get("idx", 1) - 1) + ev["pct"]) / max(1, ev.get("count", 1)))
+            elif ev.get("type") in ("file_done", "file_skip"):
+                steps.push(2, ev.get("idx", 0) / max(1, ev.get("count", 1)))
 
+        steps.push(2)
         from . import models_downloader
         r = models_downloader.download_urls(items, str(LLAMA_DIR), log_fn=log_fn,
                                             progress_cb=_dl_progress,
@@ -882,6 +888,7 @@ def install(build_sel: str, log_fn=None, proxy: str = "",
             return {"ok": False, "error": f"下载失败: {errs or r.get('error') or '未知错误'}"}
 
         _check_cancel()
+        steps.push(3)
         log_fn(("两个压缩包下载完成，开始解压…" if build.get("cudart_url")
                 else "压缩包下载完成，开始解压…"))
         log_fn("解压预编译二进制…")

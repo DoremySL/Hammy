@@ -504,6 +504,13 @@ window.__ui = {
     $('#prog-bar').style.width = pct + '%';
     $('#prog-num').textContent = tot > 0 ? `${cur}/${tot} (${pct}%)` : '';
   },
+  installProgress(pct) {
+    if (!state.installing) return;
+    const bar = $('#prog-bar');
+    if (!bar) return;
+    bar.className = 'active';
+    bar.style.width = Math.max(0, Math.min(100, Number(pct) || 0)) + '%';
+  },
   hfDownloadProgress(ev) {
     if (typeof window.__onHfDownloadProgress === 'function') window.__onHfDownloadProgress(ev);
   },

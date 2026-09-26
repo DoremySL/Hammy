@@ -258,8 +258,7 @@ class ExperimentalMixin:
         """
         from ..pixai_tagger import (get_status, start_analyze_stream,
                                     extract_frames_for_tagger,
-                                    ANIME_CLS_THRESHOLD, CHARACTER_FALLBACK_THRESHOLD,
-                                    COPYRIGHT_THRESHOLD)
+                                    ANIME_CLS_THRESHOLD, TAG_THRESHOLD)
         from batch_rename.dependencies import ffmpeg_tools
         from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
@@ -270,8 +269,9 @@ class ExperimentalMixin:
         pcfg = load_pixai_config()
         frames_n = max(1, safe_int(pcfg.get("frames"), 15))
         frame_max_side = max(64, safe_int((load_config().get("video") or {}).get("frame_max_side"), 640))
-        threshold = min(0.99, max(0.5, safe_float(pcfg.get("threshold"), 0.9)))
+        threshold = min(1, max(0.1, safe_float(pcfg.get("threshold"), TAG_THRESHOLD)))
         skip_real = bool(pcfg.get("classify", False))
+        precision = str(pcfg.get("precision") or "auto")
 
         if not ffmpeg_tools.ffmpeg:
             try:
@@ -305,8 +305,8 @@ class ExperimentalMixin:
                 skip_real=skip_real,
                 anime_threshold=ANIME_CLS_THRESHOLD,
                 tag_threshold=threshold,
-                ip_threshold=COPYRIGHT_THRESHOLD,
-                char_fallback_threshold=CHARACTER_FALLBACK_THRESHOLD,
+                ip_threshold=threshold,
+                precision=precision,
                 stop_event=_gpu_stop_event,
                 on_log=_push_log,
                 on_video_result=None,  # 结果统一在主循环取（next_result），避免跨线程进度竞争
@@ -667,6 +667,9 @@ class ExperimentalMixin:
         use_batch = cfg_exp.get("whisper_batch", False)
         # 视频间转录并发（0 = 自动：GPU 4 路 / CPU 串行；显式值由脚本按视频数收敛）
         workers = max(0, safe_int(cfg_exp.get("whisper_workers"), 0))
+        beam_size = max(1, safe_int(cfg_exp.get("whisper_beam_size"), 5))
+        cr_raw = cfg_exp.get("whisper_compression_ratio", 2.4)
+        compression_ratio = None if cr_raw is None else safe_float(cr_raw, 2.4)
 
         if not _gpu_task_lock.acquire(blocking=False):
             return {"ok": False, "results": {}, "error": "已有 GPU 任务在运行，请等待完成后再试"}
@@ -714,6 +717,7 @@ class ExperimentalMixin:
             batch_result = run_transcription_batch(
                 video_paths, vad=use_vad, language=language, batch=use_batch,
                 workers=workers,
+                beam_size=beam_size, compression_ratio=compression_ratio,
                 on_video_done=_on_done, on_log=_push_log,
                 stop_event=_gpu_stop_event,
             )

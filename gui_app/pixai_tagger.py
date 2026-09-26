@@ -12,7 +12,7 @@ import threading
 import time
 from collections import deque
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from batch_rename.subprocess_registry import register_subprocess, unregister_subprocess
 from batch_rename.env import SUBPROCESS_KWARGS
@@ -24,6 +24,8 @@ from .installer import (
     resolve_pytorch, DEFAULT_PYTORCH_VERSION, DEFAULT_PYTORCH_SITE,
     ensure_uv as _ensure_uv,
     run_subprocess_streaming as _run_subprocess_streaming,
+    run_venv_script as _run_venv_script,
+    InstallSteps,
     UV_TIMEOUT_SEC,
     venv_python_path,
     _terminate_proc,
@@ -38,10 +40,9 @@ MODEL_DIR = PIXAI_TAGGER_DIR / "models"
 MAIN_REPO = "pixai-labs/pixai-tagger-v1.0"
 CLS_REPO = "deepghs/anime_real_cls"  # 二次元/真实二分类预筛模型
 
-CHARACTER_THRESHOLD = 0.9
-# 无角色 ≥0.9 时，从 ≥0.65 的候选里取最高 1 个兜底（宁缺毋滥）
-CHARACTER_FALLBACK_THRESHOLD = 0.65
-COPYRIGHT_THRESHOLD = 0.9
+TAG_THRESHOLD = 0.66
+# 角色得分 = 最高置信度 + (初筛出现次数-1)*CHAR_FREQ_WEIGHT，初筛阈值 = TAG_THRESHOLD*0.3
+CHAR_FREQ_WEIGHT = 0.1
 # 预筛三分层（按帧 anime 分数中位数）：≥高阈值二次元、≤低阈值真实、中间不确定照常打标
 ANIME_CLS_THRESHOLD = 0.72
 REAL_CLS_THRESHOLD = 0.50
@@ -112,10 +113,11 @@ def install_dependencies(
     log_fn: Optional[Callable[[str], None]] = None,
     stop_event: Optional[threading.Event] = None,
 ) -> Dict[str, Any]:
-    """安装全部依赖（uv + venv + torch/timm/transformers + 两个模型），返回 {"ok", "error"}。"""
+    """安装全部依赖（uv + venv + torch/timm + 两个模型 + 精度自测），返回 {"ok", "error"}。"""
     plan = resolve_pytorch(pytorch_version, site)
     torch_url = plan["torch_url"]
     pypi_url = plan["pypi_url"]
+    steps = InstallSteps(7)
 
     PIXAI_TAGGER_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -127,7 +129,8 @@ def install_dependencies(
         return None
 
     # ── 步骤 1 ──
-    _log("━━ 步骤 1/6：检测 UV ━━", log_fn)
+    steps.push(1)
+    _log("━━ 步骤 1/7：检测 UV ━━", log_fn)
     uv = _ensure_uv(pypi_url, log_fn, stop_event)
     r = _cancelled()
     if r:
@@ -137,7 +140,8 @@ def install_dependencies(
     _log(f"UV 就绪: {uv}", log_fn)
 
     # ── 步骤 2 ──
-    _log("━━ 步骤 2/6：创建虚拟环境 ━━", log_fn)
+    steps.push(2)
+    _log("━━ 步骤 2/7：创建虚拟环境 ━━", log_fn)
     if not VENV_DIR.is_dir():
         rc, out = _run_subprocess_streaming(
             [uv, "venv", str(VENV_DIR), "--python", PYTHON_EXE],
@@ -153,7 +157,8 @@ def install_dependencies(
 
     # ── 步骤 3 ──
     is_cpu = plan["is_cpu"]
-    _log(f"━━ 步骤 3/6：安装 torch（{plan['version_name']} · {plan['site_name']}）━━", log_fn)
+    steps.push(3)
+    _log(f"━━ 步骤 3/7：安装 torch（{plan['version_name']} · {plan['site_name']}）━━", log_fn)
     rc, out = _run_subprocess_streaming(
         [uv, "pip", "install", "--python", venv_py,
          "torch", "--index-url", torch_url],
@@ -166,7 +171,8 @@ def install_dependencies(
         return {"ok": False, "error": f"安装 torch 失败: {out[-500:]}"}
 
     # ── 步骤 4 ──
-    _log("━━ 步骤 4/6：安装 torchvision + timm/transformers/Pillow/requests ━━", log_fn)
+    steps.push(4)
+    _log("━━ 步骤 4/7：安装 torchvision + timm/transformers/Pillow/requests ━━", log_fn)
     if is_cpu:
         rc, out = _run_subprocess_streaming(
             [uv, "pip", "install", "--python", venv_py,
@@ -218,8 +224,18 @@ def install_dependencies(
                     last_pct["v"] = pct5
                     _log(f"  {Path(ev['file']).name} {int(ev['pct'] * 100)}%"
                          f"（{_fmt_size(ev['done'])}/{_fmt_size(ev['total'])}）", log_fn)
+                steps.push(5, ((ev.get("idx", 1) - 1) + ev["pct"]) / max(1, ev.get("count", 1)))
+            elif ev.get("type") in ("file_done", "file_skip"):
+                steps.push(5, ev.get("idx", 0) / max(1, ev.get("count", 1)))
 
-        _log("━━ 步骤 5/6：从魔搭下载 PixAI Tagger v1.0 模型 ━━", log_fn)
+        def _cls_progress(ev: Dict[str, Any]):
+            if ev.get("type") == "progress" and ev.get("pct") is not None:
+                steps.push(6, ev["pct"])
+            elif ev.get("type") in ("file_done", "file_skip"):
+                steps.push(6, 1.0)
+
+        steps.push(5)
+        _log("━━ 步骤 5/7：从魔搭下载 PixAI Tagger v1.0 模型 ━━", log_fn)
         dl = models_downloader.download_files(
             "ms", MAIN_REPO, list(_MODEL_FILES),
             str(MODEL_DIR), log_fn=_dl_log, progress_cb=_model_progress,
@@ -234,10 +250,11 @@ def install_dependencies(
             return {"ok": False, "error": f"模型下载失败: {err or '未知错误'}"}
         _log("PixAI Tagger 模型下载完成", log_fn)
 
-        _log("━━ 步骤 6/6：下载预筛模型（anime_real_cls，约 32MB）━━", log_fn)
+        steps.push(6)
+        _log("━━ 步骤 6/7：下载预筛模型（anime_real_cls，约 32MB）━━", log_fn)
         cls_dl = models_downloader.download_files(
             "ms", CLS_REPO, [f"{_CLS_MODEL_SUBDIR}/{_CLS_CKPT_FILE}"],
-            str(MODEL_DIR), log_fn=_dl_log,
+            str(MODEL_DIR), log_fn=_dl_log, progress_cb=_cls_progress,
             cancel_event=stop_event, cleanup_on_cancel=True)
         if cls_dl.get("cancelled"):
             # 取消只影响预筛模型目录，不动已装好的主模型
@@ -251,8 +268,135 @@ def install_dependencies(
     finally:
         models_downloader.end_download()
 
+    # ── 步骤 7：推理精度自测 ──
+    steps.push(7)
+    _log("━━ 步骤 7/7：推理精度自测 ━━", log_fn)
+    if not is_cpu:
+        # 让出显存：本地推理服务运行中时先停止，测试后恢复
+        from .llama_cpp import pause_for_task, resume_after_task
+        pause_for_task(log_fn=log_fn)
+    try:
+        prec = run_precision_test(log_fn=log_fn, stop_event=stop_event)
+    finally:
+        if not is_cpu:
+            resume_after_task(log_fn=log_fn)
+    if stop_event is not None and stop_event.is_set():
+        return {"ok": False, "cancelled": True, "error": "安装已取消"}
+    if prec:
+        _log(f"精度自测完成：{prec['precision'].upper()}"
+             f"（{prec['gpu'] or 'CPU'}），已设为当前精度选择", log_fn)
+    else:
+        _log("精度自测未完成（不影响使用，精度选择保持「自动」）", log_fn)
+
     _log("━━ 全部完成 ━━", log_fn)
     return {"ok": True, "error": None}
+
+
+# ── 推理精度自测 ──
+
+_PRECISION_TEST_TIMEOUT_SEC = 300.0
+
+
+def run_precision_test(
+    log_fn: Optional[Callable[[str], None]] = None,
+    stop_event: Optional[threading.Event] = None,
+) -> Optional[Dict[str, Any]]:
+    """venv 内实测 tagger fp32/fp16 前向耗时择优，结果写入配置的精度选择并返回。"""
+    py = venv_python_path(VENV_DIR)
+    model_dir = _main_model_dir()
+    if not (py.is_file() and model_dir):
+        return None
+    result: Dict[str, Any] = {}
+
+    def _on_line(line: str):
+        line = line.strip()
+        if not line:
+            return
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            return
+        if isinstance(obj.get("precision_result"), dict):
+            result.update(obj["precision_result"])
+        elif obj.get("log"):
+            _log(str(obj["log"]), log_fn)
+
+    rc, _last, _err = _run_venv_script(
+        VENV_DIR, _PRECISION_TEST_SCRIPT, {"model_dir": str(model_dir)},
+        timeout=_PRECISION_TEST_TIMEOUT_SEC, stop_event=stop_event,
+        on_line=_on_line,
+    )
+    if stop_event is not None and stop_event.is_set():
+        return None
+    if rc != 0 or result.get("precision") not in ("fp16", "fp32"):
+        return None
+    prec = result["precision"]
+    from .config_store import update_pixai_config
+    update_pixai_config(lambda c: c.update(precision=prec) or c)
+    return {"precision": prec, "gpu": str(result.get("gpu") or "")}
+
+
+_PRECISION_TEST_SCRIPT = r"""
+import sys, json, os, time
+os.environ['HF_HUB_OFFLINE'] = '1'
+os.environ['TRANSFORMERS_OFFLINE'] = '1'
+import torch
+from PIL import Image
+from transformers import pipeline
+
+def plog(msg):
+    print(json.dumps({'log': msg}, ensure_ascii=False), flush=True)
+
+with open(sys.argv[1], 'r', encoding='utf-8') as f:
+    params = json.load(f)
+model_dir = params['model_dir']
+
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+gpu = ''
+if device == 'cuda':
+    try:
+        gpu = torch.cuda.get_device_name(0)
+    except Exception:
+        pass
+
+def emit(prec):
+    print(json.dumps({'precision_result': {'precision': prec, 'gpu': gpu}},
+                     ensure_ascii=False), flush=True)
+
+if device != 'cuda':
+    emit('fp32')  # CPU 固定 fp32
+    sys.exit(0)
+
+try:
+    tagger = pipeline(model=model_dir, image_processor=model_dir,
+                      trust_remote_code=True, device=device)
+    img = Image.new('RGB', (384, 216))
+
+    def _time_tag(iters=2):
+        with torch.inference_mode():
+            tagger(img)
+            torch.cuda.synchronize()
+            t0 = time.perf_counter()
+            for _ in range(iters):
+                tagger(img)
+            torch.cuda.synchronize()
+        return (time.perf_counter() - t0) / iters
+
+    with torch.inference_mode():
+        tagger(img)
+    t_fp32 = _time_tag()
+    tagger.model.half()
+    t_fp16 = _time_tag()
+    use_fp16 = t_fp16 < t_fp32
+    if not use_fp16:
+        tagger.model.float()
+    plog(f'精度自测: fp32 {t_fp32*1000:.0f}ms/次, fp16 {t_fp16*1000:.0f}ms/次'
+         f' → 使用 {"fp16" if use_fp16 else "fp32"}')
+    emit('fp16' if use_fp16 else 'fp32')
+except Exception as e:
+    plog(f'精度自测失败: {e}')
+    sys.exit(1)
+"""
 
 
 def remove_pixai_tagger() -> Dict[str, Any]:
@@ -299,19 +443,17 @@ def _inference_timeout(video_count: int) -> float:
     return _INFERENCE_BASE_SEC + _INFERENCE_PER_VIDEO_SEC * max(1, video_count)
 
 
-def apply_char_tag_rules(merged: Dict[str, float],
-                         char_threshold: float = CHARACTER_THRESHOLD,
-                         fallback_threshold: float = CHARACTER_FALLBACK_THRESHOLD,
+def apply_char_tag_rules(char_stats: Dict[str, Tuple[int, float]],
+                         char_threshold: float = TAG_THRESHOLD,
+                         freq_weight: float = CHAR_FREQ_WEIGHT,
                          ) -> Dict[str, float]:
-    """角色阈值规则（规格说明，分析子进程脚本内为同逻辑实现）：
-    置信度 >char_threshold 的全部保留；一个都没有时取 >fallback_threshold 中
-    分数最高的 1 个兜底；仍没有则返回空（宁缺毋滥）。"""
-    kept = {t: p for t, p in merged.items() if p > char_threshold}
-    if not kept and merged:
-        best = max(merged.items(), key=lambda x: x[1])
-        if best[1] > fallback_threshold:
-            kept = {best[0]: best[1]}
-    return kept
+    """角色标签规则（规格说明，分析子进程脚本内为同逻辑实现）。
+
+    char_stats: tag → (初筛内出现次数, 最高置信度)，初筛阈值 = char_threshold*0.3
+    （由 pipeline 抽取时生效）。得分 = 最高置信度 + (次数-1)*freq_weight，
+    得分 > char_threshold 的全部保留，否则返回空。返回 tag → 最高置信度（即显示分数）。"""
+    return {t: mx for t, (cnt, mx) in char_stats.items()
+            if mx + (cnt - 1) * freq_weight > char_threshold}
 
 
 class AnalyzeStream:
@@ -521,9 +663,10 @@ def start_analyze_stream(
     skip_real: bool = False,
     anime_threshold: float = ANIME_CLS_THRESHOLD,
     real_threshold: float = REAL_CLS_THRESHOLD,
-    tag_threshold: float = CHARACTER_THRESHOLD,
-    ip_threshold: float = COPYRIGHT_THRESHOLD,
-    char_fallback_threshold: float = CHARACTER_FALLBACK_THRESHOLD,
+    tag_threshold: float = TAG_THRESHOLD,
+    ip_threshold: float = TAG_THRESHOLD,
+    char_freq_weight: float = CHAR_FREQ_WEIGHT,
+    precision: str = "auto",
     stop_event=None,
     on_log: Optional[Callable[[str], None]] = None,
     on_video_result: Optional[Callable[[Dict[str, Any]], None]] = None,
@@ -547,7 +690,8 @@ def start_analyze_stream(
         "real_threshold": real_threshold,
         "tag_threshold": tag_threshold,
         "ip_threshold": ip_threshold,
-        "char_fallback_threshold": char_fallback_threshold,
+        "char_freq_weight": char_freq_weight,
+        "precision": precision if precision in ("auto", "fp32", "fp16") else "auto",
     }
     try:
         return AnalyzeStream(params, video_count,
@@ -588,8 +732,12 @@ skip_real = bool(params.get('skip_real', False))
 cls_threshold = float(params.get('anime_threshold', 0.72))
 real_threshold = float(params.get('real_threshold', 0.50))
 char_threshold = float(params.get('tag_threshold', 0.9))
-char_fallback = float(params.get('char_fallback_threshold', 0.65))
+char_freq_w = float(params.get('char_freq_weight', 0.1))
+char_prefilter = char_threshold * 0.3
 ip_threshold = float(params.get('ip_threshold', 0.9))
+precision = str(params.get('precision') or 'auto').lower()
+if precision not in ('auto', 'fp32', 'fp16'):
+    precision = 'auto'
 
 for fname in ('model.safetensors', 'config.json', 'preprocessor_config.json', 'tagger_pipeline.py'):
     if not (model_dir / fname).is_file():
@@ -597,7 +745,6 @@ for fname in ('model.safetensors', 'config.json', 'preprocessor_config.json', 't
         sys.exit(1)
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-# use_fp16 在 warmup 精度自测后确定（GTX 16 系等无 Tensor Core 的卡 fp16 反而慢）
 
 # ── 预筛模型（缺失时降级为不预筛直接标签获取）──
 has_cls = bool(cls_model_path) and Path(cls_model_path).exists()
@@ -625,8 +772,9 @@ else:
 # 由 RescalePadProcessor 内部等比缩放+填充，无需预压缩/裁剪 ──
 tagger = pipeline(model=str(model_dir), image_processor=str(model_dir),
                   trust_remote_code=True, device=device)
-# 一次前向同时取角色兜底候选（>0.65）与 IP 达标标签（>0.9），阈值规则在跨帧合并后收口
-_TAG_THRESHOLD = {'character': char_fallback, 'copyright': ip_threshold}
+# 角色按初筛阈值（char_threshold*0.3）抽取以便跨帧计数，IP 按达标阈值抽取；
+# 阈值规则在跨帧合并后收口
+_TAG_THRESHOLD = {'character': char_prefilter, 'copyright': ip_threshold}
 
 cls_transform = transforms.Compose([
     transforms.Resize((384, 384)),
@@ -654,8 +802,18 @@ def _is_flat_frame(image):
     r, gr, b = ImageStat.Stat(rgb).mean
     return (max(r, gr, b) - min(r, gr, b)) / 255.0 < 0.05
 
-# ── warmup 预热；CUDA 下按前向耗时在 fp32/fp16 间自适应选优（无 Tensor Core 的卡 fp16 反而慢）──
+# ── 精度决策：手动指定直接生效；自动 = 每次启动实测择优 ──
 use_fp16 = False
+need_test = False
+if precision == 'fp16':
+    use_fp16 = device == 'cuda'
+    plog('推理精度: fp16（手动指定）' if use_fp16 else '推理精度: fp32（CPU 不适用 fp16）')
+elif precision == 'fp32':
+    plog('推理精度: fp32（手动指定）')
+elif device == 'cuda':
+    need_test = True
+
+# ── warmup 预热 ──
 try:
     _dummy = torch.zeros(1, 3, 384, 384).to(device)
     with torch.inference_mode():
@@ -664,7 +822,7 @@ try:
     _dummy_img = Image.new('RGB', (384, 216))
     with torch.inference_mode():
         tagger(_dummy_img)
-    if device == 'cuda':
+    if need_test:
         def _time_tag(iters=2):
             with torch.inference_mode():
                 tagger(_dummy_img)
@@ -697,6 +855,7 @@ if use_fp16:
 else:
     if cls_model is not None:
         cls_model.float()
+    tagger.model.float()
 
 def pil_to_rgb(image):
     if image.mode in ('RGBA', 'P'):
@@ -718,75 +877,42 @@ def decode_frames(b64_list):
     return frames
 
 def _run_cls_frames(tensors):
-    '''预筛：全部帧一次 batch 前向，返回逐帧 anime 分数（预处理已在预取线程完成）；
-    CUDA OOM 时对半拆分重试。'''
-    try:
-        batch = torch.stack(tensors)
-        if use_fp16:
-            batch = batch.half()
-        if device == 'cuda':
-            batch = batch.pin_memory().to(device, non_blocking=True)
-        else:
-            batch = batch.to(device)
-        with torch.inference_mode():
-            probs = torch.softmax(cls_model(batch), dim=1)
-        return [float(p[0]) for p in probs]  # 索引 0 = anime
-    except torch.cuda.OutOfMemoryError:
-        try:
-            torch.cuda.empty_cache()
-        except Exception:
-            pass
-        mid = len(tensors) // 2
-        if mid == 0:
-            raise
-        return _run_cls_frames(tensors[:mid]) + _run_cls_frames(tensors[mid:])
+    '''预筛：全部帧一次 batch 前向，返回逐帧 anime 分数（预处理已在预取线程完成）。'''
+    batch = torch.stack(tensors)
+    if use_fp16:
+        batch = batch.half()
+    if device == 'cuda':
+        batch = batch.pin_memory().to(device, non_blocking=True)
+    else:
+        batch = batch.to(device)
+    with torch.inference_mode():
+        probs = torch.softmax(cls_model(batch), dim=1)
+    return [float(p[0]) for p in probs]  # 索引 0 = anime
 
-def _apply_char_rules(merged):
-    '''角色阈值规则（与父进程 apply_char_tag_rules 同逻辑）：>0.9 全保留；
-    没有则取 >0.65 中最高 1 个兜底；仍没有为空。'''
-    kept = {t: p for t, p in merged.items() if p > char_threshold}
-    if not kept and merged:
-        best = max(merged.items(), key=lambda x: x[1])
-        if best[1] > char_fallback:
-            kept = {best[0]: best[1]}
-    return kept
+def _apply_char_rules(char_stats):
+    '''角色规则（与父进程 apply_char_tag_rules 同逻辑）：得分 = 最高置信度 +
+    (初筛出现次数-1)*char_freq_w，总分 >char_threshold 全保留，否则为空。'''
+    return {t: mx for t, (cnt, mx) in char_stats.items()
+            if mx + (cnt - 1) * char_freq_w > char_threshold}
 
 def _run_tag_frames(imgs):
-    '''标签获取：全部帧一次 batch 走 pipeline（内部等比缩放+填充），取
-    character/copyright 两类候选，逐标签跨帧 max 合并；CUDA OOM 时对半拆分重试。
-    pipeline 返回形态：batch 输入为 list（每项 {"results": {...}}），单图为 dict。'''
-    try:
-        out = tagger(imgs, threshold=_TAG_THRESHOLD)
-        items = out if isinstance(out, list) else [out]
-        char_m, ip_m = {}, {}
-        for it in items:
-            r = it.get('results') if isinstance(it, dict) else None
-            if not isinstance(r, dict):
-                continue
-            for t, p in (r.get('character') or {}).items():
-                if t not in char_m or p > char_m[t]:
-                    char_m[t] = p
-            for t, p in (r.get('copyright') or {}).items():
-                if t not in ip_m or p > ip_m[t]:
-                    ip_m[t] = p
-        return char_m, ip_m
-    except torch.cuda.OutOfMemoryError:
-        try:
-            torch.cuda.empty_cache()
-        except Exception:
-            pass
-        mid = len(imgs) // 2
-        if mid == 0:
-            raise
-        lc, li = _run_tag_frames(imgs[:mid])
-        rc, ri = _run_tag_frames(imgs[mid:])
-        for k, v in rc.items():
-            if k not in lc or v > lc[k]:
-                lc[k] = v
-        for k, v in ri.items():
-            if k not in li or v > li[k]:
-                li[k] = v
-        return lc, li
+    '''标签获取：全部帧一次 pipeline 调用（内部逐帧等比缩放+填充+B=1 前向），
+    character 跨帧统计 (出现次数, 最高置信度)、copyright 跨帧 max 合并。
+    pipeline 返回形态：列表输入为 list（每项 {"results": {...}}），单图为 dict。'''
+    out = tagger(imgs, threshold=_TAG_THRESHOLD)
+    items = out if isinstance(out, list) else [out]
+    char_stats, ip_m = {}, {}
+    for it in items:
+        r = it.get('results') if isinstance(it, dict) else None
+        if not isinstance(r, dict):
+            continue
+        for t, p in (r.get('character') or {}).items():
+            cnt, mx = char_stats.get(t, (0, 0.0))
+            char_stats[t] = (cnt + 1, p if p > mx else mx)
+        for t, p in (r.get('copyright') or {}).items():
+            if t not in ip_m or p > ip_m[t]:
+                ip_m[t] = p
+    return char_stats, ip_m
 
 # ── 预取线程：stdin → 解码/坏帧过滤/预筛 transform 入有界队列，主线程只做推理；
 # 父进程逐行发送 {"index","name","frames"}，stdin EOF 即正常结束 ──
@@ -879,20 +1005,20 @@ while True:
         del imgs
         continue
 
-    # ── 标签获取（character/copyright 跨帧 max 合并 + 阈值规则收口）──
+    # ── 标签获取（character 计数+最高分统计、copyright max 合并，规则收口）──
     try:
-        char_merged, ip_merged = _run_tag_frames(imgs)
+        char_stats, ip_merged = _run_tag_frames(imgs)
     except Exception as e:
         report({'index': vi, 'name': name, 'error': f'标签获取异常: {e}'})
         del imgs
         continue
     del imgs  # 处理完成即释放该视频 PIL 帧
-    char_scores = _apply_char_rules(char_merged)
+    char_scores = _apply_char_rules(char_stats)
     result = {
         'index': vi, 'name': name,
         'character_tags': [{'name': k, 'score': round(v, 4)}
                            for k, v in sorted(char_scores.items(), key=lambda x: -x[1])],
-        'ip_tags': [{'name': ip} for ip in sorted(ip_merged)],
+        'ip_tags': [{'name': ip, 'score': round(s, 4)} for ip, s in sorted(ip_merged.items())],
     }
     # 预筛成功时才附带分类信息（供前端 ANIME/REAL/UNC 角标）
     if cls_ok:

@@ -65,23 +65,33 @@ function _collectExperimentalData() {
   if (frames !== null) frames = Math.max(1, frames);
   put('pixai_frames', frames);
   let thr = num('#pixai-threshold');
-  if (thr !== null) thr = Math.min(0.99, Math.max(0.5, thr));
+  if (thr !== null) thr = Math.min(1, Math.max(0.1, thr));
   put('pixai_threshold', thr);
+  put('pixai_precision', ddl('#pixai-precision-dd'));
+  put('pixai_prompt_scope', ddl('#pixai-prompt-dd'));
+  put('pixai_recall_scope', ddl('#pixai-recall-dd'));
   put('pixai_tagger_enabled', chk('#pixai-enable-toggle'));
-  put('whisper_vad', chk('#whisper-vad'));
+  const wvad = ddl('#whisper-vad-dd');
+  put('whisper_vad', wvad === null ? null : wvad === '1');
   const lang = $('#whisper-language');
   put('whisper_language', lang ? lang.value.trim() : null);
   let mc = num('#whisper-max-chars');
   if (mc !== null) mc = Math.max(100, mc);
   put('whisper_max_chars', mc);
-  put('whisper_inject_timestamps', chk('#whisper-inject-ts'));
-  put('whisper_batch', chk('#whisper-batch'));
+  const wts = ddl('#whisper-ts-dd');
+  put('whisper_inject_timestamps', wts === null ? null : wts === '1');
+  const wbatch = ddl('#whisper-batch-dd');
+  put('whisper_batch', wbatch === null ? null : wbatch === '1');
   let wv = num('#whisper-workers');
   if (wv !== null) wv = Math.min(16, Math.max(0, wv));
   put('whisper_workers', wv);
   put('whisper_enabled', chk('#whisper-enable-toggle'));
   const wmv = ddl('#whisper-model-dd');
   if (wmv) e.whisper_model = wmv;
+  const wbeam = ddl('#whisper-beam-dd');
+  put('whisper_beam_size', wbeam ? Number(wbeam) : null);
+  const wcr = ddl('#whisper-cr-dd');
+  if (wcr !== null) e.whisper_compression_ratio = wcr === 'none' ? null : Number(wcr);
   return { experimental: e };
 }
 
@@ -148,18 +158,14 @@ function renderExperimentalPage(cfg, uvStatus, llamaStatus, pStatus, wStatus, rv
 }
 
 function _statusBadge(st) {
-  if (st.ready) {
-    if (st.cls_model_exists === false) return `<span class="exp-badge warn">${icon('warning')} 已就绪（预筛模型未下载）</span>`;
-    return `<span class="exp-badge ok">${icon('check')} 已安装就绪</span>`;
-  }
-  if (st.venv_exists && !st.model_exists) return `<span class="exp-badge warn">${icon('warning')} 依赖已装，模型未下载</span>`;
+  if (st.ready) return `<span class="exp-badge ok">${icon('check')} 已安装就绪</span>`;
   if (st.dir_exists) return `<span class="exp-badge warn">${icon('warning')} 安装不完整</span>`;
   return '<span class="exp-badge dim">未安装</span>';
 }
 
 function _installBtns(prefix, st) {
   const install = st.ready ? '' :
-    `<button class="ws-btn fixed-lead" id="btn-${prefix}-install">安装</button>`;
+    `<button class="ws-btn" id="btn-${prefix}-install">安装</button>`;
   return `${install}<button class="ws-btn danger" id="btn-${prefix}-remove" ${!st.dir_exists ? 'disabled' : ''}>卸载</button>`;
 }
 
@@ -473,10 +479,19 @@ function _renderLlamaSection(llamaStatus) {
             <button class="ws-btn" id="btn-llama-resetdir">恢复默认</button>
           </div>
         </div>
-        <div class="exp-switch-row">
-          <label class="switch" data-tip="程序启动时自动启动上次成功运行的模型（无记录时回退到设置页选中的模型）"><input type="checkbox" id="llama-autorun" ${cfg.auto_run ? 'checked' : ''}/> 程序启动时自动运行模型</label>
-          <label class="switch" data-tip="视频处理、字幕翻译与连接检测统一走本地服务；AI 配置页仅基础连接设置暂不生效，进阶采样参数依然生效。"><input type="checkbox" id="llama-integrate" ${cfg.integrate ? 'checked' : ''}/> 本地推理集成</label>
-          <label class="switch" data-tip="开启后 llama-server 输出显示在日志栏，否则在程序终端。"><input type="checkbox" id="llama-showlogs" ${cfg.show_logs ? 'checked' : ''}/> 程序内显示 llama.cpp 日志</label>
+        <div class="exp-input-row">
+          <div class="field">
+            <label data-tip="程序启动时自动启动上次成功运行的模型（无记录时回退到设置页选中的模型）">程序启动时自动运行模型</label>
+            ${_boolDd('llama-autorun-dd', !!cfg.auto_run)}
+          </div>
+          <div class="field">
+            <label data-tip="视频处理、字幕翻译与连接检测统一走本地服务；AI 配置页仅基础连接设置暂不生效，进阶采样参数依然生效">本地推理集成</label>
+            ${_boolDd('llama-integrate-dd', !!cfg.integrate)}
+          </div>
+          <div class="field">
+            <label data-tip="开启后 llama-server 输出显示在日志栏，否则在程序终端">日志显示</label>
+            ${_boolDd('llama-showlogs-dd', !!cfg.show_logs, '日志栏', '程序终端')}
+          </div>
         </div>
       </div>
     </div>`;
@@ -511,16 +526,16 @@ function _bindLlamaEvents(llamaStatus) {
 
   _bindCardToggle('llama');
 
-  const autorun = $('#llama-autorun');
-  if (autorun) autorun.addEventListener('change', () => _saveLlamaGlobals({ auto_run: autorun.checked }));
-  const integrate = $('#llama-integrate');
-  if (integrate) integrate.addEventListener('change', async () => {
-    await _saveLlamaGlobals({ integrate: integrate.checked });
+  const autorun = $('#llama-autorun-dd');
+  if (autorun) initDropdown(autorun, v => _saveLlamaGlobals({ auto_run: v === '1' }));
+  const integrate = $('#llama-integrate-dd');
+  if (integrate) initDropdown(integrate, async v => {
+    await _saveLlamaGlobals({ integrate: v === '1' });
     state.llamaSynced = false;
     await ensureLlamaStateKnown();
   });
-  const showlogs = $('#llama-showlogs');
-  if (showlogs) showlogs.addEventListener('change', () => _saveLlamaGlobals({ show_logs: showlogs.checked }));
+  const showlogs = $('#llama-showlogs-dd');
+  if (showlogs) initDropdown(showlogs, v => _saveLlamaGlobals({ show_logs: v === '1' }));
 
   const pickBtn = $('#btn-llama-pickdir');
   if (pickBtn) pickBtn.addEventListener('click', async () => {
@@ -545,6 +560,18 @@ function _bindLlamaEvents(llamaStatus) {
 function _renderPixaiSection(exp, pStatus) {
   const enabled = !!state.pixaiTaggerEnabled;
   const ready = !!(pStatus && pStatus.ready);
+  const precision = ['auto', 'fp32', 'fp16'].includes(exp.pixai_precision) ? exp.pixai_precision : 'auto';
+  const precisionNames = { auto: '自动', fp32: 'FP32', fp16: 'FP16' };
+  const scopeNames = { char: '仅角色', all: '角色/IP', off: '不使用' };
+  const scopeOf = v => scopeNames[v] ? v : 'char';
+  const scopeDd = (id, val) => `
+    <div class="dd" id="${id}">
+      <button class="dd-btn" type="button"><span class="dd-label">${scopeNames[val]}</span>${ddArrow()}</button>
+      <div class="dd-panel">
+        ${Object.entries(scopeNames).map(([v, t]) =>
+          `<div class="dd-opt${v === val ? ' active' : ''}" data-value="${v}">${t}</div>`).join('')}
+      </div>
+    </div>`;
   return `
     <div class="exp-card ${!enabled ? 'is-disabled' : ''}">
       <div class="exp-card-head">
@@ -567,9 +594,21 @@ function _renderPixaiSection(exp, pStatus) {
             <input type="number" id="pixai-frames" min="1" value="${exp.pixai_frames || 15}"/>
           </div>
           <div class="field">
-            <label data-tip="角色标签的置信度阈值，越高越严格（0.5–0.99）；无达标角色时取 0.65 以上最高 1 个兜底；IP 固定 0.9">角色阈值</label>
-            <input type="number" id="pixai-threshold" min="0.5" max="0.99" step="0.01" value="${exp.pixai_threshold || 0.9}"/>
+            <label data-tip="角色按出现次数加权、IP 取最高置信度，超过该值才输出（0.1–1）">角色/IP阈值</label>
+            <input type="number" id="pixai-threshold" min="0.1" max="1" step="0.01" value="${exp.pixai_threshold || 0.66}"/>
           </div>
+          <div class="field">
+            <label data-tip="CUDA 推理精度：自动 = 每次分析前自测择优；指定 FP32/FP16 则不再自测">推理精度</label>
+            <div class="dd" id="pixai-precision-dd">
+              <button class="dd-btn" type="button"><span class="dd-label">${precisionNames[precision]}</span>${ddArrow()}</button>
+              <div class="dd-panel">
+                ${Object.entries(precisionNames).map(([v, t]) =>
+                  `<div class="dd-opt${v === precision ? ' active' : ''}" data-value="${v}">${t}</div>`).join('')}
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="exp-input-row">
           <div class="field">
             <label data-tip="开启后非二次元作品跳过标签获取（角标 REAL 无 IP）；关闭则全部视频都获取标签">跳过非二次元作品</label>
             <div class="dd" id="pixai-classify-dd">
@@ -579,6 +618,14 @@ function _renderPixaiSection(exp, pStatus) {
                 <div class="dd-opt${exp.pixai_classify === true ? '' : ' active'}" data-value="0">关闭</div>
               </div>
             </div>
+          </div>
+          <div class="field">
+            <label data-tip="AI 重命名提示词注入的识别结果范围">提示词注入</label>
+            ${scopeDd('pixai-prompt-dd', scopeOf(exp.pixai_prompt_scope))}
+          </div>
+          <div class="field">
+            <label data-tip="标签检索（增强模式）召回查询使用的识别结果范围">标签检索</label>
+            ${scopeDd('pixai-recall-dd', scopeOf(exp.pixai_recall_scope))}
           </div>
         </div>
       </div>
@@ -605,6 +652,12 @@ function _bindPixaiEvents(pStatus) {
   });
   const clsDd = $('#pixai-classify-dd');
   if (clsDd) initDropdown(clsDd, () => scheduleExperimentalSave(true));
+  const precDd = $('#pixai-precision-dd');
+  if (precDd) initDropdown(precDd, () => scheduleExperimentalSave(true));
+  const promptDd = $('#pixai-prompt-dd');
+  if (promptDd) initDropdown(promptDd, () => scheduleExperimentalSave(true));
+  const recallDd = $('#pixai-recall-dd');
+  if (recallDd) initDropdown(recallDd, () => scheduleExperimentalSave(true));
 
   const clearBtn = $('#btn-pixai-clear-tags');
   if (clearBtn) clearBtn.addEventListener('click', async () => {
@@ -620,7 +673,7 @@ function _bindPixaiEvents(pStatus) {
 /* ════════════════════════════════════════════════════════════
    安装流程骨架（PixAI / Whisper / llama.cpp / 向量检索共用）
    ════════════════════════════════════════════════════════════ */
-async function runInstallTask(progText, run, onOk) {
+async function runInstallTask(run, onOk) {
   if (state.installing || state.hfDownloading) {
     toast(state.hfDownloading ? '模型下载进行中，请等待完成' : '已有模块正在安装，请等待完成', 'err');
     return;
@@ -633,7 +686,7 @@ async function runInstallTask(progText, run, onOk) {
   const logEmpty = $('#logEmpty'); if (logEmpty) logEmpty.remove();
   $('#prog-bar').style.width = '0%';
   $('#prog-bar').className = 'active';
-  $('#prog-num').textContent = progText;
+  $('#prog-num').textContent = '正在安装';
   updateStartBtn();
   toast('开始安装，请查看日志面板…');
   try {
@@ -661,7 +714,7 @@ async function runInstallTask(progText, run, onOk) {
 }
 
 async function startPixaiInstall(pytorchVersion, site) {
-  await runInstallTask('正在安装 PixAI Tagger…',
+  await runInstallTask(
     () => apiCall('install_pixai_tagger', pytorchVersion, site),
     async () => {
       await apiCall('set_pixai_tagger_enabled', true);
@@ -716,31 +769,82 @@ function _renderWhisperSection(exp, wStatus) {
         </div>
       </div>
       <div id="whisper-cfg-panel" class="exp-cfg-panel" style="display:${state.settingsOpen.has('whisper-cfg') ? 'block' : 'none'}">
-        <div class="whisper-model-row">
+        <div class="exp-input-row">
           <div class="field">
             <label data-tip="转录使用的模型；选择后立即保存，点击未下载的模型可直接下载">当前模型</label>
             ${modelSel}
           </div>
-          <div class="whisper-switches">
-            <label class="switch" data-tip="跳过静音片段再转录，速度更快、更省资源"><input type="checkbox" id="whisper-vad" ${exp.whisper_vad !== false ? 'checked' : ''}/> VAD 过滤静音</label>
-            <label class="switch" data-tip="转录文本注入重命名提示词时发送 [MM:SS] 时间标记，AI 可结合台词时间轴理解内容"><input type="checkbox" id="whisper-inject-ts" ${exp.whisper_inject_timestamps ? 'checked' : ''}/> 发送时间戳</label>
-            <label class="switch" data-tip="GPU 上显著提速，CPU 反而更慢；会影响字幕时间戳准确性"><input type="checkbox" id="whisper-batch" ${exp.whisper_batch ? 'checked' : ''}/> 批处理模式</label>
+          <div class="field">
+            <label data-tip="跳过静音片段再转录，速度更快、更省资源">VAD过滤静音</label>
+            ${_boolDd('whisper-vad-dd', exp.whisper_vad !== false)}
           </div>
-        </div>
-        <div class="grid-3" style="margin-top:10px">
           <div class="field">
             <label data-tip="转录目标语言，留空自动检测；示例：ja（日语）、zh（中文）、en（英文）。ja-1.5B 模型仅支持日语，选择后自动固定为 ja">预期语言</label>
             <input type="text" id="whisper-language" placeholder="自动检测" value="${esc(exp.whisper_language || '')}"/>
           </div>
+        </div>
+        <div class="exp-input-row">
+          <div class="field">
+            <label data-tip="束搜索宽度：越大越准越慢，1 为贪心最快">解码束宽</label>
+            ${_optDd('whisper-beam-dd', [1, 3, 5, 8], ([1, 3, 5, 8].includes(exp.whisper_beam_size) ? exp.whisper_beam_size : 5))}
+          </div>
+          <div class="field">
+            <label data-tip="输出重复超过该压缩比判定为幻觉，升温重试；不启用则关闭该判定">复读判定</label>
+            ${_crDd(exp.whisper_compression_ratio)}
+          </div>
+          <div class="field">
+            <label data-tip="GPU 上显著提速，CPU 反而更慢；会影响字幕时间戳准确性">批处理模式</label>
+            ${_boolDd('whisper-batch-dd', !!exp.whisper_batch)}
+          </div>
+        </div>
+        <div class="exp-input-row">
           <div class="field">
             <label data-tip="同时处理视频的数量；0 = 自动（GPU 4 路 / CPU 1 路）。开启批处理模式时建议设置为 1">并发数</label>
             <input type="number" id="whisper-workers" min="0" max="16" step="1" value="${exp.whisper_workers ?? 4}"/>
+          </div>
+          <div class="field">
+            <label data-tip="转录文本注入重命名提示词时发送 [MM:SS] 时间标记，AI 可结合台词时间轴理解内容">发送时间戳</label>
+            ${_boolDd('whisper-ts-dd', !!exp.whisper_inject_timestamps)}
           </div>
           <div class="field">
             <label data-tip="注入重命名 AI 提示词的最大字符数">提示词截断</label>
             <input type="number" id="whisper-max-chars" min="100" step="100" value="${exp.whisper_max_chars || 800}"/>
           </div>
         </div>
+      </div>
+    </div>`;
+}
+
+function _boolDd(id, on, onText = '开启', offText = '关闭') {
+  return `
+    <div class="dd" id="${id}">
+      <button class="dd-btn" type="button"><span class="dd-label">${on ? onText : offText}</span>${ddArrow()}</button>
+      <div class="dd-panel">
+        <div class="dd-opt${on ? ' active' : ''}" data-value="1">${onText}</div>
+        <div class="dd-opt${on ? '' : ' active'}" data-value="0">${offText}</div>
+      </div>
+    </div>`;
+}
+
+function _optDd(id, values, cur) {
+  return `
+    <div class="dd" id="${id}">
+      <button class="dd-btn" type="button"><span class="dd-label">${esc(String(cur))}</span>${ddArrow()}</button>
+      <div class="dd-panel">
+        ${values.map(v => `<div class="dd-opt${v === cur ? ' active' : ''}" data-value="${v}">${v}</div>`).join('')}
+      </div>
+    </div>`;
+}
+
+function _crDd(cur) {
+  const val = (cur === null || cur === 'none') ? 'none'
+    : (['2', '2.0', '2.4', '3', '3.0'].includes(String(cur)) ? String(cur) : '2.4');
+  const opts = [['2', '2.0（严格）'], ['2.4', '2.4（默认）'], ['3', '3.0（宽松）'], ['none', '不启用']];
+  return `
+    <div class="dd" id="whisper-cr-dd">
+      <button class="dd-btn" type="button"><span class="dd-label">${esc((opts.find(([v]) => v === val) || opts[1])[1])}</span>${ddArrow()}</button>
+      <div class="dd-panel">
+        ${opts.map(([v, t]) => `<div class="dd-opt${v === val ? ' active' : ''}" data-value="${v}">${t}</div>`).join('')}
       </div>
     </div>`;
 }
@@ -762,9 +866,10 @@ function _bindWhisperEvents(wStatus) {
     const el = $(sel);
     if (el) el.addEventListener('input', () => scheduleExperimentalSave());
   });
-  ['#whisper-vad', '#whisper-inject-ts', '#whisper-batch'].forEach(sel => {
+  ['#whisper-vad-dd', '#whisper-ts-dd', '#whisper-batch-dd',
+   '#whisper-beam-dd', '#whisper-cr-dd'].forEach(sel => {
     const el = $(sel);
-    if (el) el.addEventListener('change', () => scheduleExperimentalSave(true));
+    if (el) initDropdown(el, () => scheduleExperimentalSave(true));
   });
 
   const modelDD = $('#whisper-model-dd');
@@ -790,7 +895,7 @@ function _bindWhisperEvents(wStatus) {
 }
 
 async function startWhisperInstall(pypiMirror, modelKey) {
-  await runInstallTask('正在安装 Faster-Whisper…',
+  await runInstallTask(
     () => apiCall('install_whisper', pypiMirror || 'sjtu', modelKey || 'v3-turbo'),
     async () => {
       await apiCall('set_whisper_enabled', true);
@@ -1547,7 +1652,7 @@ async function showLlamaCudaDialog() {
 }
 
 async function startLlamaInstall(cudaVer, proxy) {
-  await runInstallTask('正在安装 llama.cpp (' + cudaVer + ')…',
+  await runInstallTask(
     () => apiCall('install_llama', cudaVer, proxy || ''),
     async r => {
       if (r.manual) toast('（手动模式）: 已创建 llama.cpp 文件夹，请自行将对应的编译版本放入其中', 'ok');
@@ -2484,13 +2589,6 @@ $('#modal-body').addEventListener('scroll', () => {
   $('#modal-body').classList.toggle('scrolled-past-hero', $('#modal-body').scrollTop > 10);
 }, { passive: true });
 
-function _ragVecBadge(st) {
-  if (st.ready) return `<span class="exp-badge ok">${icon('check')} 已安装就绪</span>`;
-  if (st.venv_exists && !st.model_exists) return `<span class="exp-badge warn">${icon('warning')} 依赖已装，模型未下载</span>`;
-  if (st.dir_exists) return `<span class="exp-badge warn">${icon('warning')} 安装不完整</span>`;
-  return '<span class="exp-badge dim">未安装</span>';
-}
-
 function _renderRagVecSection(exp, rvStatus) {
   const enabled = !!state.ragVecEnabled;
   const st = rvStatus || {};
@@ -2527,7 +2625,7 @@ function _renderRagVecSection(exp, rvStatus) {
           <input type="checkbox" id="ragvec-enable-toggle" ${enabled ? 'checked' : ''} ${!st.ready ? 'disabled' : ''}/>
         </label>
         <div class="exp-head-main" data-tip="点击展开 / 收起配置">
-          <div class="exp-title-row"><strong>Sentence-Transformers 向量检索</strong>${_ragVecBadge(st)}</div>
+          <div class="exp-title-row"><strong>Sentence-Transformers 向量检索</strong>${_statusBadge(st)}</div>
           <div class="exp-desc">用语义相似度补充关键词匹配，帮标签检索多找回一些候选；仅在标签检索=「增强」时生效。</div>
         </div>
         <div class="exp-head-actions">
@@ -2610,7 +2708,7 @@ function _bindRagVecEvents(rvStatus) {
 }
 
 async function startRagVecInstall(pytorchVersion, site, modelKey) {
-  await runInstallTask('正在安装标签向量检索…',
+  await runInstallTask(
     () => apiCall('install_rag_vec', pytorchVersion, site, modelKey || ''),
     async () => {
       await apiCall('save_config', { experimental: { rag_vec_enabled: true } });

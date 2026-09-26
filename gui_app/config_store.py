@@ -46,7 +46,7 @@ def _default_config() -> Dict[str, Any]:
         "active_prompt_id": "default",
         "theme": "",
         "nfo_auto_export": False,
-        "disable_animation": False,
+        "animation_enabled": True,
         "experimental": {},
     }
 
@@ -141,6 +141,9 @@ _PIXAI_KEY_MAP = {
     "classify": "pixai_classify",
     "frames": "pixai_frames",
     "threshold": "pixai_threshold",
+    "precision": "pixai_precision",
+    "prompt_scope": "pixai_prompt_scope",
+    "recall_scope": "pixai_recall_scope",
 }
 _WHISPER_KEY_MAP = {
     "enabled": "whisper_enabled",
@@ -151,6 +154,8 @@ _WHISPER_KEY_MAP = {
     "inject_timestamps": "whisper_inject_timestamps",
     "batch": "whisper_batch",
     "workers": "whisper_workers",
+    "beam_size": "whisper_beam_size",
+    "compression_ratio": "whisper_compression_ratio",
 }
 # 反向映射：experimental 段键名 → 模块文件键名（save_config 拆键路由用）
 _PIXAI_KEY_MAP_REV = {v: k for k, v in _PIXAI_KEY_MAP.items()}
@@ -162,14 +167,15 @@ _LLAMA_KEYS = frozenset({"llama_enabled", "llama_integrate"})
 
 def _pixai_defaults() -> Dict[str, Any]:
     """pixai 模块配置默认值（文件缺失/损坏时的兜底）。"""
-    return {"enabled": False, "classify": True, "frames": 15, "threshold": 0.9}
+    return {"enabled": False, "classify": True, "frames": 15, "threshold": 0.66,
+            "precision": "auto", "prompt_scope": "char", "recall_scope": "char"}
 
 
 def _whisper_defaults() -> Dict[str, Any]:
     """whisper 模块配置默认值（文件缺失/损坏时的兜底）。"""
     return {"enabled": False, "model": "v3-turbo", "vad": True, "language": "",
             "max_chars": 800, "inject_timestamps": False, "batch": False,
-            "workers": 4}
+            "workers": 4, "beam_size": 5, "compression_ratio": 2.4}
 
 
 def load_pixai_config() -> Dict[str, Any]:

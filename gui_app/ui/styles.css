@@ -276,14 +276,14 @@
     transition:color .18s}
   .card.selected .dur-badge,.card:hover .dur-badge{color:var(--muted)}
   .card .badges{position:absolute;top:5px;left:5px;display:flex;gap:3px;z-index:1}
-  .tag-badge{padding:1px 5px;border-radius:var(--r-xs);
-    font-size:9px;font-weight:700;line-height:1.6;letter-spacing:.3px;pointer-events:none;
+  .tag-badge{padding:1px 4px;border-radius:var(--r-xs);
+    font-size:8px;font-weight:700;line-height:1.6;letter-spacing:.2px;pointer-events:none;
     backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);
     box-shadow:0 1px 3px rgba(0,0,0,.3);opacity:.85;transition:opacity .18s}
   .card:hover .tag-badge{opacity:1}
   .tag-badge.pixai{background:rgba(168,85,247,.75);color:#fff}
   .tag-badge.whisper{background:rgba(13,148,136,.75);color:#fff}
-  .tag-badge.real{background:rgba(249,115,22,.75);color:#fff}
+  .tag-badge.real{background:rgba(244,63,94,.75);color:#fff}
   .tag-badge.anime{background:rgba(59,130,246,.75);color:#fff}
   .tag-badge.unc{background:rgba(107,114,128,.75);color:#fff}
   .tag-badge.failed{background:rgba(239,68,68,.75);color:#fff}
@@ -961,15 +961,12 @@
     padding-left:7px;color:var(--muted);min-height:23px}
   .exp-master-ic svg{width:28px;height:28px}
   .exp-head-actions{display:flex;align-items:center;gap:8px;flex-shrink:0}
-  .exp-head-actions .ws-btn.fixed-lead{width:84px;justify-content:center}
+  .exp-head-actions .ws-btn{min-width:84px}
+  .exp-head-actions .ws-btn.danger{min-width:0}
   .exp-cfg-panel{margin-top:10px;padding-top:10px;border-top:1px dashed var(--border-strong)}
   .exp-card.is-disabled .exp-cfg-panel{opacity:.5;pointer-events:none}
-  .exp-switch-row{display:flex;flex-wrap:wrap;align-items:center;gap:12px 26px;margin-top:10px}
   .exp-input-row{display:flex;flex-wrap:wrap;gap:12px;margin-top:10px}
   .exp-input-row .field{flex:1 1 140px;min-width:0}
-  .whisper-model-row{display:grid;grid-template-columns:1fr 1fr 1fr;align-items:end;gap:14px 22px;margin-top:10px}
-  .whisper-model-row .field{min-width:0;grid-column:1}
-  .whisper-switches{grid-column:2 / -1;display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px;padding-bottom:7px}
   .whisper-model-dd{width:100%}
   .whisper-model-dd .dd-btn{width:100%;justify-content:space-between;padding:7px 10px;
     border:1px solid var(--border-strong);border-radius:var(--r-md);background:var(--panel);

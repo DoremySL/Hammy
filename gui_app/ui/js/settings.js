@@ -148,10 +148,10 @@ const CFG_FIELDS_PROCESSING = [
     { sec: 'video', key: 'frame_max_side', label: '长边像素', type: 'number', min: 64, help: '抽帧图片长边上限，仅缩小不放大', default: 640 },
   ]},
   { group: '命名与输出', noTitle: true, cols: 4, fields: [
-    { sec: 'naming', key: 'include_date', label: '添加日期前缀', type: 'bool', help: '文件名前添加日期，降低重名几率' },
-    { sec: 'naming', key: 'include_original', label: '添加初始文件名后缀', type: 'bool', help: '文件名末尾追加初始文件名，降低重名几率' },
-    { sec: '__gui', key: 'nfo_auto_export', label: '自动输出 NFO 至目录', type: 'bool', help: '开启后处理时直接写入视频目录；关闭则先存工作区，导出时再复制' },
-    { sec: '__gui', key: 'disable_animation', label: '关闭动画效果', type: 'bool', help: '关闭界面动画与过渡效果' },
+    { sec: 'naming', key: 'include_date', label: '日期前缀', type: 'bool', onText: '添加', offText: '不添加', help: '文件名前添加日期，降低重名几率' },
+    { sec: 'naming', key: 'include_original', label: '初始文件名后缀', type: 'bool', onText: '添加', offText: '不添加', help: '文件名末尾追加初始文件名，降低重名几率' },
+    { sec: '__gui', key: 'nfo_auto_export', label: 'NFO输出', type: 'bool', onText: '自动导出至同目录', offText: '手动导出', help: '自动导出：处理完成即写入视频同目录；手动导出：先存工作区，导出时再复制' },
+    { sec: '__gui', key: 'animation_enabled', label: '动画效果', type: 'bool', default: true, help: '关闭后停用界面动画与过渡效果' },
   ]},
 ];
 
@@ -161,7 +161,7 @@ function collectConfigData() {
     if (el.disabled) return;
     const sec = el.dataset.sec, key = el.dataset.key;
     let v;
-    if (el.classList && el.classList.contains('dd')) v = el.dataset.bool ? Number(el.dataset.value) : el.dataset.value;
+    if (el.classList && el.classList.contains('dd')) v = el.dataset.bool ? el.dataset.value === '1' : el.dataset.value;
     else if (el.type === 'checkbox') v = el.checked;
     else if (el.type === 'number') {
       if (el.value === '') return;
@@ -289,11 +289,16 @@ function renderCfgGroup(g, cfg) {
       if (f.full) field.style.gridColumn = '1 / -1';
       else if (f.span) field.style.gridColumn = `span ${f.span}`;
       if (f.type === 'bool') {
-        const on = (val === undefined || val === null || val === '') ? !!f.default : val;
-        const lbl = f.help ? `<span class="tip-text" data-tip="${esc(f.help)}">${f.label}</span>` : f.label;
-        const align = fields.some(x => x.type !== 'bool') ? `<label style="visibility:hidden" aria-hidden="true">.</label>` : '';
-        field.innerHTML = align +
-          `<label class="switch" style="flex:1"><input type="checkbox" data-sec="${f.sec}" data-key="${f.key}" ${on ? 'checked' : ''}/> ${lbl}</label>`;
+        const on = (val === undefined || val === null || val === '') ? !!f.default : !!val;
+        const onT = f.onText || '开启', offT = f.offText || '关闭';
+        field.innerHTML = `<label ${f.help ? `data-tip="${esc(f.help)}"` : ''}>${f.label}</label>` +
+          `<div class="dd" data-bool="1" data-sec="${f.sec}" data-key="${f.key}" data-value="${on ? '1' : '0'}">` +
+          `<button class="dd-btn" type="button"><span class="dd-label">${on ? onT : offT}</span>${ddArrow()}</button>` +
+          `<div class="dd-panel">` +
+          `<div class="dd-opt${on ? ' active' : ''}" data-value="1">${onT}</div>` +
+          `<div class="dd-opt${on ? '' : ' active'}" data-value="0">${offT}</div></div></div>`;
+        const dd = field.querySelector('.dd');
+        initDropdown(dd, v => { dd.dataset.value = v; scheduleConfigSave(true); });
       } else if (f.type === 'select') {
         const raw = (val === undefined || val === null || val === '') ? f.default : val;
         const cur = (raw === true || raw === '1') ? '1' : (raw === false || raw === '0') ? '0' : String(raw);
@@ -409,7 +414,7 @@ async function _saveConfigNow() {
   try {
     const res = await apiCall('save_config', data);
     if (res && res.ok) {
-      if ('disable_animation' in data) applyDisableAnimation(data.disable_animation === true);
+      if ('animation_enabled' in data) applyDisableAnimation(data.animation_enabled === false);
     } else if (token === _cfgSaveToken) {
       toast('保存失败: ' + ((res && res.error) || ''), 'err');
     }

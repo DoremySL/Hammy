@@ -374,14 +374,15 @@ _REFINE_INSTRUCTION = (
 def _refine_round(client: OpenAIClient, model: str, messages: list,
                   result: AnalyzeResult, config: Config,
                   stop_event: threading.Event, video_path: str,
-                  container_title: str, extra_meta: str,
+                  container_title: str, extra_meta: str, recall_meta: Optional[str],
                   slot_id: Optional[int], tag_recall) -> AnalyzeResult:
     """第二轮：召回候选 → assistant(首轮原文)+user(候选) 追加请求修订，失败沿用首轮。"""
     parts = {
         "plot": result.plot,
         "tags": " ".join([*result.tags, result.title]),
         "filename": " ".join(x for x in (Path(video_path).stem, container_title) if x),
-        "aux": extra_meta,
+        # recall_meta 为 None 时回退提示词 meta（旧调用方兼容），有值则按其独立 scope
+        "aux": extra_meta if recall_meta is None else recall_meta,
     }
     candidates = tag_recall.recall(parts)
     if stop_event.is_set():
@@ -423,6 +424,7 @@ def analyze_frames(
     client: OpenAIClient, model: str, frames: List[Frame], config: Config,
     stop_event: threading.Event, video_path: str, duration: float,
     container_title: str = "", extra_meta: str = "",
+    recall_meta: Optional[str] = None,
     slot_id: Optional[int] = None, priority_section: str = "",
     tag_recall=None,
 ) -> AnalyzeResult:
@@ -465,6 +467,6 @@ def analyze_frames(
 
     if tag_recall is not None and result.title and not stop_event.is_set():
         result = _refine_round(client, model, messages, result, config, stop_event,
-                               video_path, container_title, extra_meta,
+                               video_path, container_title, extra_meta, recall_meta,
                                slot_id, tag_recall)
     return result._replace(retries=attempt)

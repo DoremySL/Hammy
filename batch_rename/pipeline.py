@@ -154,6 +154,7 @@ class AIWorker:
                  on_file_done: Optional[OnFileDone] = None,
                  nfo_namer: Optional[Callable[[str], str]] = None,
                  extra_meta_map: Optional[Dict[str, str]] = None,
+                 recall_meta_map: Optional[Dict[str, str]] = None,
                  slot_id: Optional[int] = None,
                  tag_recall=None):
         self.client = client
@@ -164,8 +165,10 @@ class AIWorker:
         self._on_file_done = on_file_done
         # 可选 NFO 目标命名函数（缓存模式防同 stem 冲突）
         self._nfo_namer = nfo_namer
-        # 每个视频的额外上下文（扩展功能注入，key=视频路径）
+        # 每个视频的额外上下文（扩展功能注入，key=视频路径）；
+        # recall 版仅供标签检索召回查询使用（scope 可与提示词不同）
         self.extra_meta_map = extra_meta_map or {}
+        self.recall_meta_map = recall_meta_map or {}
         self.slot_id = slot_id   # llama 集成时 worker i → slot i，两轮同槽命中缓存
         if tag_recall is not None and getattr(tag_recall, "mode", "") == "full":
             self.priority_section = tag_recall.full_section
@@ -293,6 +296,7 @@ class AIWorker:
                 self.stop_event, vp, info.get("duration", 0.0),
                 container_title=info.get("container_title", ""),
                 extra_meta=self.extra_meta_map.get(vp, ""),
+                recall_meta=self.recall_meta_map.get(vp, ""),
                 slot_id=self.slot_id,
                 priority_section=self.priority_section,
                 tag_recall=self._rag_provider,
@@ -349,6 +353,7 @@ class BatchPipeline:
                  on_file_done: Optional[OnFileDone] = None,
                  nfo_namer: Optional[Callable[[str], str]] = None,
                  extra_meta_map: Optional[Dict[str, str]] = None,
+                 recall_meta_map: Optional[Dict[str, str]] = None,
                  tag_recall=None):
         self.paths = paths
         self.config = config
@@ -358,6 +363,7 @@ class BatchPipeline:
         self.nfo_namer = nfo_namer
         # 每个视频的额外上下文（扩展功能注入，key=视频路径）
         self.extra_meta_map = extra_meta_map or {}
+        self.recall_meta_map = recall_meta_map or {}
         self.tag_recall = tag_recall
         self._rag_mode = tag_recall is not None and getattr(tag_recall, "mode", "") == "rag"
         # 暴露 stats 给外部（GUI 完成后读取真实计数）
@@ -420,6 +426,7 @@ class BatchPipeline:
         workers = [AIWorker(self.client, self.config, stats, task_queue, self.stop_event,
                             on_file_done=self.on_file_done, nfo_namer=self.nfo_namer,
                             extra_meta_map=self.extra_meta_map,
+                            recall_meta_map=self.recall_meta_map,
                             slot_id=slot_ids[i], tag_recall=self.tag_recall)
                    for i in range(self.config.ai_workers)]
         # AI worker 设为 daemon：网络调用失效时可防进程退出挂死

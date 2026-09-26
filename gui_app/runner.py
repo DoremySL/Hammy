@@ -194,12 +194,16 @@ class PipelineRunner:
 
     # ── 扩展功能上下文注入 ──
 
-    def _build_pixai_meta_map(self, paths: List[str], exp_cfg: Dict[str, Any]) -> Dict[str, str]:
+    def _build_pixai_meta_map(self, paths: List[str], exp_cfg: Dict[str, Any],
+                              scope: str = "char") -> Dict[str, str]:
         """构建 pixai 标签上下文映射（video_path → 提示词文本）。
 
+        scope：char=仅角色 / all=角色+IP / off=不注入（非法值按 char）。
         仅当功能开启且标签存在时才注入。exp_cfg 为 experimental 段配置。
         """
-        if not exp_cfg.get("pixai_tagger_enabled", False):
+        if scope not in ("char", "all", "off"):
+            scope = "char"
+        if scope == "off" or not exp_cfg.get("pixai_tagger_enabled", False):
             return {}
         from .workspace_paths import PIXAI_TAGS_FILE
         tags_store = read_json(PIXAI_TAGS_FILE, {})
@@ -213,18 +217,20 @@ class PipelineRunner:
                 continue
             char_tags = entry.get("character_tags", [])
             ip_tags = entry.get("ip_tags", [])
-            if not char_tags and not ip_tags:
-                continue
-            parts = ["【IP辅助参考】",
-                     "以下为自动识别结果，可能存在误判（如相似角色混淆），仅供参考。请结合视频画面自行判断，若与画面明显矛盾则忽略："]
+            rows = []
             if char_tags:
-                chars = ", ".join(f"{t['name']} ({int(t['score']*100)}%)" for t in char_tags)
-                parts.append(f"- 疑似角色: {chars}")
-            if ip_tags:
-                ips = ", ".join(t["name"] for t in ip_tags)
-                parts.append(f"- 疑似IP/作品: {ips}")
-            parts.append("生成 tags 与plot时，上述角色/IP 名称请统一改用常用中文名")
-            result[vp] = "\n".join(parts)
+                rows.append("- 疑似角色: " + ", ".join(t["name"] for t in char_tags))
+            if scope == "all" and ip_tags:
+                rows.append("- 疑似IP/作品: " + ", ".join(t["name"] for t in ip_tags))
+            if not rows:
+                continue
+            result[vp] = "\n".join([
+                "【IP辅助参考】",
+                "以下为自动识别结果，可能存在误判（如相似角色混淆），仅供参考。"
+                "请结合视频画面自行判断，若与画面明显矛盾则忽略：",
+                *rows,
+                "生成 tags 与plot时，上述角色/IP 名称请统一改用常用中文名",
+            ])
         return result
 
     def _build_whisper_meta_map(self, paths: List[str], exp_cfg: Dict[str, Any]) -> Dict[str, str]:
@@ -383,14 +389,19 @@ class PipelineRunner:
                     return
 
                 begin_batch()  # history 变更累积到内存，结束时一次性落盘
-                # 扩展功能上下文（功能开启且数据存在时注入提示词；均关闭时为空 dict）
+                # 扩展功能上下文（功能开启且数据存在时注入提示词；均关闭时为空 dict）；
+                # 提示词与标签检索各自按 scope 构建 pixai 通道
                 exp_cfg = cfg_dict.get("experimental", {})
-                extra_meta_map = self._build_pixai_meta_map(paths, exp_cfg)
+                extra_meta_map = self._build_pixai_meta_map(
+                    paths, exp_cfg, scope=exp_cfg.get("pixai_prompt_scope", "char"))
+                recall_meta_map = self._build_pixai_meta_map(
+                    paths, exp_cfg, scope=exp_cfg.get("pixai_recall_scope", "char"))
                 for vp, txt in self._build_whisper_meta_map(paths, exp_cfg).items():
-                    if vp in extra_meta_map:
-                        extra_meta_map[vp] += "\n\n" + txt
-                    else:
-                        extra_meta_map[vp] = txt
+                    for m in (extra_meta_map, recall_meta_map):
+                        if vp in m:
+                            m[vp] += "\n\n" + txt
+                        else:
+                            m[vp] = txt
                 pt = prompts.load_priority_tags()
                 # 停用组过滤：黑名单命中组的条目不进入检索（"" 为默认分组）
                 pt_disabled = set(pt["disabled_groups"])
@@ -438,6 +449,7 @@ class PipelineRunner:
                     # 避免不同目录下同 stem 视频映射到同一文件互相覆盖
                     nfo_namer=lambda vp: f"{stable_id(vp)}.nfo",
                     extra_meta_map=extra_meta_map,
+                    recall_meta_map=recall_meta_map,
                     tag_recall=tag_recall,
                 )
                 pipeline.run()

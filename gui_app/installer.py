@@ -444,6 +444,29 @@ def _unlink_quiet(path: str) -> None:
         pass
 
 
+# ── 安装进度推送 ──
+
+def _push_install_progress(pct: float) -> None:
+    """推送安装进度百分比到前端进度条；无 GUI 时静默。"""
+    try:
+        from .js_push import js_pusher
+        js_pusher.push("installProgress", round(max(0.0, min(100.0, pct)), 1))
+    except Exception:
+        pass
+
+
+class InstallSteps:
+    """按步骤等分段推送安装进度。"""
+
+    def __init__(self, total: int):
+        self.total = max(1, total)
+
+    def push(self, step: int, frac: float = 0.0) -> None:
+        step = max(1, min(self.total, step))
+        frac = max(0.0, min(1.0, frac))
+        _push_install_progress(((step - 1) + frac) / self.total * 100)
+
+
 # ── UV 管理 ──
 
 def find_uv() -> Optional[str]:
