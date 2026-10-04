@@ -37,10 +37,9 @@ class Config:
     rag_debug_keywords: bool = False
     llama_slots: int = 0
     rag_vec_enabled: bool = False
-    rag_vec_device: str = "auto"      # auto / cuda / cpu
+    rag_vec_device: str = ""          # 嵌入设备（安装时选定并写入：gpu / cpu；空 = 未安装）
     rag_vec_threshold: float = 0.45   # 余弦相似度阈值
     rag_vec_top_n: int = 20           # 向量候选上限
-    rag_vec_model: str = ""           # 模型 repo（空 = 模块默认 Qwen3-Embedding-0.6B）
 
     def validate(self) -> None:
         """钳制所有数值参数到有效范围。"""

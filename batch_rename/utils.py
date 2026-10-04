@@ -57,6 +57,15 @@ def safe_float(v, default=0.0):
         return default
 
 
+# ═══ 格式化 ════════════════════════════════════════════════════
+def fmt_size(num: float) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if abs(num) < 1024.0:
+            return f"{num:.1f}{unit}"
+        num /= 1024.0
+    return f"{num:.1f}TB"
+
+
 # ═══ 文本 / 错误检测 ═══════════════════════════════════════════
 def sep(soft: bool = False) -> str:
     ch = SEP_CHAR_SOFT if soft else SEP_CHAR

@@ -141,7 +141,8 @@ _PIXAI_KEY_MAP = {
     "classify": "pixai_classify",
     "frames": "pixai_frames",
     "threshold": "pixai_threshold",
-    "precision": "pixai_precision",
+    "output_zh": "pixai_output_zh",
+    "input_size": "pixai_input_size",
     "prompt_scope": "pixai_prompt_scope",
     "recall_scope": "pixai_recall_scope",
 }
@@ -168,7 +169,8 @@ _LLAMA_KEYS = frozenset({"llama_enabled", "llama_integrate"})
 def _pixai_defaults() -> Dict[str, Any]:
     """pixai 模块配置默认值（文件缺失/损坏时的兜底）。"""
     return {"enabled": False, "classify": True, "frames": 15, "threshold": 0.66,
-            "precision": "auto", "prompt_scope": "char", "recall_scope": "char"}
+            "output_zh": True, "input_size": 1008,
+            "prompt_scope": "char", "recall_scope": "char"}
 
 
 def _whisper_defaults() -> Dict[str, Any]:
@@ -179,11 +181,12 @@ def _whisper_defaults() -> Dict[str, Any]:
 
 
 def load_pixai_config() -> Dict[str, Any]:
-    """读取 pixai-tagger 模块配置。文件不存在/损坏时返回默认值（enabled=False）。"""
+    """读取 pixai-tagger 模块配置。文件不存在/损坏时返回默认值（enabled=False）。
+    只保留当前 schema 内的键（丢弃旧版本的遗留键，如 precision）。"""
     data = read_json(PIXAI_CONFIG_FILE, {})
     merged = dict(_pixai_defaults())
     if isinstance(data, dict):
-        merged.update(data)
+        merged.update({k: v for k, v in data.items() if k in merged})
     return merged
 
 

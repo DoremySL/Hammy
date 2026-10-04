@@ -10,24 +10,20 @@ from typing import Any, Dict, List, Tuple
 from ..config_store import (load_config, load_llama_config, load_llama_model_configs,
                             load_pixai_config, load_whisper_config,
                             update_llama_config, update_pixai_config, update_whisper_config)
-from ..installer import DEFAULT_PYPI_MIRROR, DEFAULT_PYTORCH_SITE, DEFAULT_PYTORCH_VERSION
+from ..installer import DEFAULT_PYPI_MIRROR, DEFAULT_TRT_SITE
 from ..js_push import js_pusher
 from ..workspace_paths import (LLAMA_CONFIG_FILE, PIXAI_TAGS_FILE,
                                WHISPER_SRT_DIR, WHISPER_TRANSCRIPTS_FILE)
 from ..workspace_store import read_json, update_json, write_json
 from batch_rename.utils import safe_float, safe_int
 
-# 后端互斥：pywebview 每次调用新开线程，前端标志拦不住并发 RPC
-# GPU 密集任务（转录/标签获取/翻译）互斥：同刻只允许一个
+# GPU 密集任务互斥（转录/标签获取/翻译同刻只允许一个）
 _gpu_task_lock = threading.Lock()
-# 安装基础设施互斥：安装/卸载/清缓存同刻只允许一个
-# （卸载与安装并发会互相破坏：装 llama 时删目录、装包时删 UV/缓存）
+# 安装/卸载/清缓存互斥
 _install_lock = threading.Lock()
-# GPU 任务取消事件：开始前 clear，stop_gpu_task 置位；
-# 抽帧/子进程推理/翻译分批在检查点响应（单步完成后才生效）
+# GPU 任务取消事件（开始前 clear，stop_gpu_task 置位）
 _gpu_stop_event = threading.Event()
-# 安装取消事件：开始前 clear，stop_install 置位；
-# 子进程由 run_subprocess_streaming 终止，下载监视线程即时断连，秒级生效
+# 安装取消事件（开始前 clear，stop_install 置位）
 _install_stop_event = threading.Event()
 
 
@@ -56,7 +52,7 @@ def _record_last_model(path: str) -> None:
 class ExperimentalMixin:
     """扩展功能相关 API。"""
 
-    # ── GPU 任务停止（转录 / 标签获取 / 翻译共用） ──
+    # ── GPU 任务停止 ──
 
     def stop_gpu_task(self) -> Dict[str, Any]:
         """停止当前运行中的 GPU 任务（转录/标签获取/翻译）。"""
@@ -75,8 +71,6 @@ class ExperimentalMixin:
         if _install_stop_event.is_set():
             return {"ok": True, "message": "已在停止中"}
         _install_stop_event.set()
-        # 联动模型下载取消：模型管理弹窗的下载监听 downloader 全局取消事件，
-        # 让主界面「停止」按钮对下载任务同样生效；无下载任务时置位无副作用
         try:
             from .. import models_downloader
             models_downloader.set_cancel()
@@ -85,7 +79,7 @@ class ExperimentalMixin:
         _push_log("正在停止安装…")
         return {"ok": True}
 
-    # ── UV 包管理工具（whisper / pixai 共享的安装基础设施） ──
+    # ── UV 包管理工具 ──
 
     def get_uv_status(self) -> Dict[str, Any]:
         """获取 UV 包管理工具状态（是否安装、是否位于 UV-Tool 目录）。"""
@@ -112,7 +106,7 @@ class ExperimentalMixin:
         finally:
             _install_lock.release()
 
-    # ── 扩展功能页聚合状态（单次桥接调用，替代前端 5 个并行 RPC） ──
+    # ── 扩展功能页聚合状态 ──
 
     def get_experimental_status(self) -> Dict[str, Any]:
         """扩展功能页一次拉齐全部状态与配置。"""
@@ -126,61 +120,57 @@ class ExperimentalMixin:
         }
 
     def get_rag_vec_status(self) -> Dict[str, Any]:
-        """向量检索模块安装状态、模型清单与启用状态。"""
-        from ..st_embedding import get_status
+        """向量检索模块安装状态与启用状态。"""
+        from ..ort_embedding import get_status
         exp = self.get_config().get("experimental") or {}
         status = get_status()
         status["enabled"] = bool(exp.get("rag_vec_enabled", False))
-        status["current_model"] = str(exp.get("rag_vec_model", "") or "")
         try:
             threshold = float(exp.get("rag_vec_threshold", 0.45))
             top_n = int(exp.get("rag_vec_top_n", 20))
         except (TypeError, ValueError):
             threshold, top_n = 0.45, 20
         status["cfg"] = {
-            "device": str(exp.get("rag_vec_device", "auto") or "auto"),
+            "device": str(exp.get("rag_vec_device", "") or ""),
             "threshold": threshold,
             "top_n": top_n,
-            "model": str(exp.get("rag_vec_model", "") or ""),
         }
         return status
 
-    def download_rag_vec_model(self, model_key: str = "") -> Dict[str, Any]:
-        """下载未安装的嵌入模型（魔搭，取消时清理未完成文件）。"""
-        from ..st_embedding import _download_model
-        if not model_key:
-            return {"ok": False, "error": "未指定模型"}
-        if not _install_lock.acquire(blocking=False):
-            return {"ok": False, "busy": True, "error": "已有模块正在安装，请等待完成后再试"}
-
-        def _progress(ev: Dict[str, Any]):
-            js_pusher.push("ragvecModelProgress", ev)
-
-        try:
-            result = _download_model(model_key, log_fn=_push_log, progress_cb=_progress)
-        except Exception as e:
-            result = {"ok": False, "error": f"下载过程异常: {e}"}
-        finally:
-            js_pusher.push("ragvecModelDone", result)
-            _install_lock.release()
-        return result
-
     def get_rag_vec_mirrors(self) -> Dict[str, Any]:
-        """向量检索模块安装可选镜像（PyTorch 版本档位 + 下载站点 + GPU 检测）。"""
-        from ..installer import get_mirror_groups
-        return get_mirror_groups(["pytorch", "pypi"])
+        """向量检索安装选项：运行设备（按 GPU 检测推荐）+ PyPI 镜像。"""
+        from ..installer import detect_gpu, get_mirror_groups
+        info = get_mirror_groups(["pypi"])
+        gpu = detect_gpu()
+        info["gpu"] = gpu
+        has_gpu = bool(gpu.get("has_nvidia"))
+        # onnxruntime-gpu 需 CUDA 13 驱动（≥580）
+        rec = "gpu" if has_gpu and gpu.get("recommended") == "cu132" else "cpu"
+        if has_gpu and rec == "cpu":
+            gpu_desc = (f"检测到驱动支持 CUDA {gpu.get('cuda_max') or '?'}，"
+                        "GPU 版需 ≥580：请升级驱动，或选择 CPU 版")
+        elif has_gpu:
+            gpu_desc = "N 卡加速，约 1.27GB"
+        else:
+            gpu_desc = "未检测到 NVIDIA 显卡"
+        info["devices"] = [
+            {"id": "gpu", "name": "GPU（fp32 模型）", "desc": gpu_desc,
+             "recommended": rec == "gpu"},
+            {"id": "cpu", "name": "CPU（int8 模型）",
+             "desc": "约 345MB",
+             "recommended": rec == "cpu"},
+        ]
+        return info
 
-    def install_rag_vec(self, pytorch_version: str = DEFAULT_PYTORCH_VERSION,
-                        site: str = DEFAULT_PYTORCH_SITE,
-                        model: str = "") -> Dict[str, Any]:
-        """安装向量检索依赖（uv + venv + torch + sentence-transformers + 所选模型）。"""
-        from ..st_embedding import install_dependencies
+    def install_rag_vec(self, device: str = "gpu",
+                        site: str = DEFAULT_PYPI_MIRROR) -> Dict[str, Any]:
+        """安装向量检索依赖（uv + venv + onnxruntime + 所选设备的模型文件）。"""
+        from ..ort_embedding import install_dependencies
         if not _install_lock.acquire(blocking=False):
             return {"ok": False, "error": "已有模块正在安装，请等待完成后再试"}
         _install_stop_event.clear()
         try:
-            return install_dependencies(pytorch_version=pytorch_version,
-                                        site=site, model=model,
+            return install_dependencies(device=device, site=site,
                                         log_fn=_push_log,
                                         stop_event=_install_stop_event)
         finally:
@@ -188,8 +178,8 @@ class ExperimentalMixin:
             _install_lock.release()
 
     def remove_rag_vec(self) -> Dict[str, Any]:
-        """删除 st-embedding 模块（venv + 模型 + 索引缓存）。"""
-        from ..st_embedding import remove_st_embedding as _remove
+        """删除 ort-embedding 模块（venv + 模型 + 索引缓存）。"""
+        from ..ort_embedding import remove_ort_embedding as _remove
         if not _install_lock.acquire(blocking=False):
             return {"ok": False, "error": "已有模块正在安装，请等待完成后再卸载"}
         try:
@@ -199,7 +189,7 @@ class ExperimentalMixin:
 
     def stop_rag_vec(self) -> Dict[str, Any]:
         """停止嵌入后台进程，释放显存/内存；下次向量检索自动重启。"""
-        from ..st_embedding import stop_worker, get_status
+        from ..ort_embedding import stop_worker, get_status
         stop_worker()
         return {"ok": True, "message": "已停止嵌入后台进程", "worker_running": get_status().get("worker_running")}
 
@@ -222,20 +212,20 @@ class ExperimentalMixin:
         return {"ok": True, "enabled": enabled}
 
     def get_pixai_mirrors(self) -> Dict[str, Any]:
-        """获取 pixai-tagger 安装可选镜像（PyTorch 版本档位 + 下载站点 + GPU 检测）。"""
+        """获取 pixai-tagger 安装选项（尺寸/站点/GPU 检测）。"""
         from ..pixai_tagger import get_mirrors_info
         return get_mirrors_info()
 
-    def install_pixai_tagger(self, pytorch_version: str = DEFAULT_PYTORCH_VERSION,
-                             site: str = DEFAULT_PYTORCH_SITE) -> Dict[str, Any]:
-        """安装 pixai-tagger 依赖（uv + venv + torch/timm + 两个模型）。"""
+    def install_pixai_tagger(self, input_size: int = 1008,
+                             site: str = DEFAULT_TRT_SITE) -> Dict[str, Any]:
+        """安装 pixai-tagger 依赖（uv + venv + tensorrt + 模型下载 + TRT 引擎构建）。"""
         from ..pixai_tagger import install_dependencies
 
         if not _install_lock.acquire(blocking=False):
             return {"ok": False, "error": "已有模块正在安装，请等待完成后再试"}
         _install_stop_event.clear()
         try:
-            return install_dependencies(pytorch_version=pytorch_version,
+            return install_dependencies(input_size=input_size,
                                         site=site, log_fn=_push_log,
                                         stop_event=_install_stop_event)
         finally:
@@ -253,11 +243,10 @@ class ExperimentalMixin:
             _install_lock.release()
 
     def detect_ip_tags(self, items: List) -> Dict[str, Any]:
-        """对选中视频执行 PixAI 标签获取。
-        items: [[video_id, video_path], ...]，id 为前端视频对象的稳定 ID
-        """
+        """对选中视频执行 PixAI 标签获取（items: [[video_id, video_path], ...]）。"""
         from ..pixai_tagger import (get_status, start_analyze_stream,
-                                    extract_frames_for_tagger,
+                                    extract_frames_for_tagger, ensure_model_files,
+                                    resolve_precision, normalize_size,
                                     ANIME_CLS_THRESHOLD, TAG_THRESHOLD)
         from batch_rename.dependencies import ffmpeg_tools
         from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
@@ -268,10 +257,10 @@ class ExperimentalMixin:
 
         pcfg = load_pixai_config()
         frames_n = max(1, safe_int(pcfg.get("frames"), 15))
-        frame_max_side = max(64, safe_int((load_config().get("video") or {}).get("frame_max_side"), 640))
         threshold = min(1, max(0.1, safe_float(pcfg.get("threshold"), TAG_THRESHOLD)))
         skip_real = bool(pcfg.get("classify", False))
-        precision = str(pcfg.get("precision") or "auto")
+        size = normalize_size(pcfg.get("input_size"))
+        precision = resolve_precision("auto")
 
         if not ffmpeg_tools.ffmpeg:
             try:
@@ -295,38 +284,43 @@ class ExperimentalMixin:
             _push_log(f"正在分析 {total} 个视频的IP信息…")
             t0 = time.time()
 
-            # 让出显存：先停止本地推理服务，任务完成后恢复（两者都占用大量显存）
+            # ONNX 预检：缺失则补下载
+            files_err = ensure_model_files(size, precision,
+                                           log_fn=_push_log, stop_event=_gpu_stop_event)
+            if files_err:
+                return {"ok": False, "results": {}, "ok_count": 0, "total": total,
+                        "real_count": 0, "error": files_err}
+
+            # 让出显存
             from ..llama_cpp import pause_for_task
             pause_for_task(log_fn=_push_log)
 
-            # 第一步（与抽帧并行）：立即启动推理子进程，加载双模型
+            # 启动推理子进程（与抽帧并行）
             stream = start_analyze_stream(
                 total,
                 skip_real=skip_real,
                 anime_threshold=ANIME_CLS_THRESHOLD,
                 tag_threshold=threshold,
                 ip_threshold=threshold,
-                precision=precision,
+                input_size=size,
                 stop_event=_gpu_stop_event,
                 on_log=_push_log,
-                on_video_result=None,  # 结果统一在主循环取（next_result），避免跨线程进度竞争
+                on_video_result=None,
             )
             if stream is None:
                 return self._pixai_engine_unavailable(
-                    vid_list, video_paths, results, frames_n,
-                    frame_max_side, total)
+                    vid_list, video_paths, results, frames_n, total)
 
-            # 第二步（流水线）：抽帧线程池 + 有界背压 + send-ahead 管道
-            # （抽帧为 ffmpeg 等待型 IO，CPU 线程池即可；并发 6 路喂饱管道）
+            # 抽帧流水线（线程池 + 有界背压 + send-ahead）
             frame_workers = min(6, max(1, total))
             max_pending = frame_workers * 4
-            pipe_depth = 2  # 已 send 未收结果的上限（子进程预取队列深度也是 2）
+            pipe_depth = 2  # 已 send 未收结果上限
 
             done = 0
             sent: Dict[int, Tuple[str, str]] = {}
 
             def _record_result(vr: Dict[str, Any]) -> None:
-                """收下一条推理结果：记录 + 日志 + 进度（done 单调递增）。"""
+                """收下一条推理结果。"""
                 nonlocal done
                 done += 1
                 vi = int(vr.get("index", -1))
@@ -340,13 +334,12 @@ class ExperimentalMixin:
                 else:
                     entry = {"character_tags": vr.get("character_tags", []),
                              "ip_tags": vr.get("ip_tags", []), "error": None}
-                    # 预筛模型可用时附带分类信息（供前端 ANIME/REAL/UNC 角标）
+                    # 附带分类信息（前端角标用）
                     if "anime_score" in vr:
                         entry["anime_score"] = vr["anime_score"]
                         entry["is_anime"] = vr.get("is_anime")  # None = 不确定
                     results[vid] = entry
                     if entry.get("is_anime") is False and skip_real:
-                        # 开关开启时非二次元视频确实未做标签获取（子进程直接跳过）
                         _push_log(f"  [{done}/{total}] {name} — 非二次元作品"
                                   f"（{entry['anime_score']:.0%}），跳过标签获取")
                     else:
@@ -356,20 +349,21 @@ class ExperimentalMixin:
                 js_pusher.push("setProgress", done, total)
 
             def _drain_ready() -> None:
-                """机会性排空：收走所有已就绪结果（无就绪时即刻返回，不阻塞抽帧）。"""
+                """机会性排空：收走已就绪结果。"""
                 while True:
                     vr = stream.try_next_result()
                     if vr is None:
-                        return  # 暂无就绪 / 引擎已终止（broken 已置位）
+                        return  # 暂无就绪 / 引擎已终止
                     _record_result(vr)
 
             def _deliver_frame(f, i) -> bool:
-                """处理一个完成的抽帧任务：无帧 → 失败记步；有帧 → send-ahead
-                （送出即返回不等结果）；管道满或引擎终止时返回 False。"""
+                """处理一个完成的抽帧任务：有帧送推理，无帧记失败；停止/管道满/引擎终止返回 False。"""
                 nonlocal done
+                if _gpu_stop_event.is_set():
+                    return False
                 vid, vpath = vid_list[i], video_paths[i]
                 name = Path(vpath).name
-                # 先机会性排空：及时收已完成结果（进度实时 + 为管道腾位）
+                # 先机会性排空
                 _drain_ready()
                 if stream.broken:
                     return False
@@ -384,8 +378,7 @@ class ExperimentalMixin:
                     _push_log(f"  [{done}/{total}] {name} — 抽帧失败", "err")
                     js_pusher.push("setProgress", done, total)
                     return True
-                # 管道满 → 阻塞收取一条腾位（响应顺序 = 请求顺序）；
-                # 停止/超时/引擎退出返回 None，剩余已送视频由 close 收尾补记
+                # 管道满 → 阻塞收取一条腾位
                 while len(sent) >= pipe_depth:
                     vr = stream.next_result()
                     if vr is None:
@@ -399,7 +392,7 @@ class ExperimentalMixin:
                     js_pusher.push("setProgress", done, total)
                     return False
                 sent[i] = (vid, name)
-                del frames  # 已送出：父进程侧帧引用即刻释放（子进程处理完也释放）
+                del frames
                 return True
 
             ex = ThreadPoolExecutor(max_workers=frame_workers,
@@ -410,7 +403,7 @@ class ExperimentalMixin:
                 for i, vpath in enumerate(video_paths):
                     if _gpu_stop_event.is_set():
                         break
-                    # 有界背压：在途达到上限时先处理最快完成的一个（帧即送出/释放）
+                    # 有界背压：先处理最快完成的一个
                     while len(futures) >= max_pending:
                         for f in wait(futures, return_when=FIRST_COMPLETED)[0]:
                             if not _deliver_frame(f, futures.pop(f)):
@@ -420,14 +413,13 @@ class ExperimentalMixin:
                     if not pipeline_ok:
                         break
                     futures[ex.submit(extract_frames_for_tagger, vpath,
-                                      _gpu_stop_event,
-                                      frames_n, frame_max_side)] = i
-                # 排空剩余抽帧任务（流水线中断后不再送推理，在途任务直接丢弃）
+                                      _gpu_stop_event, frames_n)] = i
+                # 排空剩余抽帧任务
                 while futures and pipeline_ok:
                     for f in wait(futures, return_when=FIRST_COMPLETED)[0]:
                         if not _deliver_frame(f, futures.pop(f)):
                             pipeline_ok = False
-                # 收尾排空：已 send 的结果全部收取（引擎中断则剩余由 close 补记）
+                # 收尾排空：收取已 send 的结果
                 while sent and pipeline_ok:
                     vr = stream.next_result()
                     if vr is None:
@@ -437,7 +429,7 @@ class ExperimentalMixin:
             finally:
                 ex.shutdown(wait=False, cancel_futures=True)
 
-            # 收尾：关闭 stdin 触发引擎正常退出；异常时补记未出结果的视频
+            # 收尾：关闭引擎并补记未出结果的视频
             close_result = stream.close()
             stopped = _gpu_stop_event.is_set()
             if stopped:
@@ -450,7 +442,7 @@ class ExperimentalMixin:
                                         "error": err_txt}
                 _push_log(f"  推理中断: {str(err_txt)[:200]}", "err")
 
-            # 保存结果到 pixai/tags.json（取消/失败时已完成的部分同样保留）
+            # 保存结果（取消/失败时保留已完成部分）
             self._save_pixai_tags(results)
 
             ok_count = sum(1 for r in results.values() if not r.get("error"))
@@ -465,15 +457,13 @@ class ExperimentalMixin:
                 return {"ok": False, "results": results, "ok_count": ok_count,
                         "total": total, "real_count": real_count, "error": err_txt}
             _push_log(f"IP分析完成：成功 {ok_count}/{total}"
-                      # 开关开时 REAL 视频未获取标签，汇总其数量；
-                      # 关闭时不单列（前端 toast 已提示非二次元数量）
                       + (f"，已跳过 {real_count} 个非二次元视频"
                          if skip_real and real_count else "")
                       + f"（耗时 {time.time() - t0:.1f}s）")
             return {"ok": True, "results": results, "ok_count": ok_count,
                     "total": total, "real_count": real_count, "error": None}
         except Exception as e:
-            # 异常路径也要收尾：关闭推理子进程（卸载模型/释放显存/删 params 临时文件）
+            # 异常路径收尾：关闭推理子进程
             if "stream" in locals():
                 try:
                     stream.close()
@@ -483,17 +473,15 @@ class ExperimentalMixin:
             return {"ok": False, "results": results, "ok_count": ok_count,
                     "total": total, "real_count": 0, "error": str(e)}
         finally:
-            # 恢复本地推理服务（按原参数重新加载）
+            # 恢复本地推理服务
             from ..llama_cpp import resume_after_task
             resume_after_task(log_fn=_push_log)
             _gpu_task_lock.release()
 
     def _pixai_engine_unavailable(self, vid_list: List, video_paths: List,
                                   results: Dict[str, Any], frames_n: int,
-                                  frame_max_side: int,
                                   total: int) -> Dict[str, Any]:
-        """引擎启动失败降级：仍尝试抽帧——全部抽帧失败时结果仅抽帧失败（ok）；
-        有抽帧成功视频时整体失败（该视频无法分析）。"""
+        """引擎启动失败降级：仍尝试逐个抽帧并记录结果。"""
         from ..pixai_tagger import extract_frames_for_tagger
         _push_log("分析引擎启动失败，正在尝试抽帧…", "err")
         any_frames = False
@@ -503,7 +491,7 @@ class ExperimentalMixin:
             vid, name = vid_list[i], Path(vpath).name
             try:
                 frames = extract_frames_for_tagger(
-                    vpath, _gpu_stop_event, frames_n, frame_max_side)
+                    vpath, _gpu_stop_event, frames_n)
             except Exception:
                 frames = None
             if frames:
@@ -525,11 +513,21 @@ class ExperimentalMixin:
                 "total": total, "real_count": 0, "error": "分析引擎启动失败"}
 
     def get_pixai_tags(self, video_id: str) -> Dict[str, Any]:
-        """获取指定视频的已保存 pixai 标签。"""
+        """获取指定视频的已保存 pixai 标签（附带 zh 中文翻译）。"""
         entry = _load_pixai_tags().get(video_id)
-        if entry:
-            return {"ok": True, **entry}
-        return {"ok": False, "character_tags": [], "ip_tags": []}
+        if not entry:
+            return {"ok": False, "character_tags": [], "ip_tags": []}
+        data = {"ok": True, **entry}
+        if load_pixai_config().get("output_zh", True):
+            from ..pixai_tagger import load_tag_zh
+            zh = load_tag_zh()
+            if zh:
+                for group in ("character_tags", "ip_tags"):
+                    for t in data.get(group) or []:
+                        z = zh.get(str(t.get("name") or ""))
+                        if z:
+                            t["zh"] = z
+        return data
 
     def clear_pixai_tags(self) -> Dict[str, Any]:
         """清除所有已保存的 pixai 标签。"""
@@ -652,9 +650,7 @@ class ExperimentalMixin:
             _install_lock.release()
 
     def detect_speech(self, items: List) -> Dict[str, Any]:
-        """对选中视频执行语音转录（模型只加载一次，逐视频流式回推进度）。
-        items: [[video_id, video_path], ...]，id 为前端视频对象的稳定 ID
-        """
+        """对选中视频执行语音转录（items: [[video_id, video_path], ...]）。"""
         from ..faster_whisper import get_status, run_transcription_batch
 
         status = get_status()
@@ -665,7 +661,7 @@ class ExperimentalMixin:
         use_vad = cfg_exp.get("whisper_vad", True)
         language = cfg_exp.get("whisper_language", "")
         use_batch = cfg_exp.get("whisper_batch", False)
-        # 视频间转录并发（0 = 自动：GPU 4 路 / CPU 串行；显式值由脚本按视频数收敛）
+        # 转录并发（0 = 自动）
         workers = max(0, safe_int(cfg_exp.get("whisper_workers"), 0))
         beam_size = max(1, safe_int(cfg_exp.get("whisper_beam_size"), 5))
         cr_raw = cfg_exp.get("whisper_compression_ratio", 2.4)
@@ -687,14 +683,13 @@ class ExperimentalMixin:
             _push_log(f"正在转录 {total} 个视频的语音…")
             js_pusher.push("setProgress", 0, total)
 
-            # 让出显存：先停止本地推理服务，任务完成后恢复（两者都占用大量显存）
+            # 让出显存
             from ..llama_cpp import pause_for_task
             pause_for_task(log_fn=_push_log)
 
             t0 = time.time()
 
-            # 进度按完成数计（并发下完成顺序不定，用视频序号做前缀会显得乱）；
-            # 回调来自单一读行线程串行触发，计数器无需加锁
+            # 进度按完成数计
             done = 0
 
             def _on_done(idx: int, entry: Dict[str, Any]):
@@ -742,11 +737,11 @@ class ExperimentalMixin:
             if batch_result["ok"]:
                 _push_log(f"  转录完成（{total} 个视频，总耗时 {elapsed:.1f}s）")
 
-            # 保存 SRT 文件 + 轻量索引（取消/失败时已完成的部分同样保留）
+            # 保存 SRT 文件 + 索引
             self._save_whisper_srt(results)
             ok_count = sum(1 for r in results.values() if not r.get("error"))
             if not batch_result["ok"]:
-                # 「已取消」归一为「已停止」，与 IP 分析一致，前端据此展示部分完成
+                # 「已取消」归一为「已停止」
                 err_txt = "已停止" if str(batch_result.get("error") or "") == "已取消" \
                     else batch_result.get("error")
                 return {"ok": False, "results": results, "ok_count": ok_count,
@@ -757,7 +752,7 @@ class ExperimentalMixin:
             return {"ok": False, "results": results, "ok_count": ok_count,
                     "total": total, "error": str(e)}
         finally:
-            # 恢复本地推理服务（按原参数重新加载）
+            # 恢复本地推理服务
             from ..llama_cpp import resume_after_task
             resume_after_task(log_fn=_push_log)
             _gpu_task_lock.release()
@@ -809,9 +804,7 @@ class ExperimentalMixin:
         update_json(WHISPER_TRANSCRIPTS_FILE, _mutate, default_factory=dict)
 
     def export_srt(self, items: List) -> Dict[str, Any]:
-        """导出 SRT 字幕到视频同目录。
-        items: [[video_id, video_path], ...]，id 为原始 stable_id（重命名前）
-        """
+        """导出 SRT 字幕到视频同目录（items: [[video_id, video_path], ...]）。"""
         exported = 0
         errors = []
         for item in items:
@@ -829,9 +822,7 @@ class ExperimentalMixin:
         return {"ok": exported > 0, "exported": exported, "errors": errors}
 
     def export_srt_translated(self, items: List) -> Dict[str, Any]:
-        """导出 SRT 字幕并翻译为中文（.zh.srt）。
-        items: [[video_id, video_path], ...]，id 为原始 stable_id（重命名前）
-        """
+        """导出 SRT 字幕并翻译为中文（.zh.srt，items: [[video_id, video_path], ...]）。"""
         from ..srt_translate import translate_srt_file, TranslationCancelled
 
         if not _gpu_task_lock.acquire(blocking=False):
@@ -845,7 +836,7 @@ class ExperimentalMixin:
             cfg = load_config()
             ai_cfg = cfg.get("ai", {})
 
-            # 本地推理集成：开启后翻译改走本地 llama-server（磁盘配置不变）
+            # 本地推理集成：翻译改走本地 llama-server
             from ..llama_integration import ai_override
             ov = ai_override(cfg)
             if ov:
@@ -975,13 +966,13 @@ class ExperimentalMixin:
         from ..llama_cpp import launch as _launch
 
         params = dict(params or {})
-        # 「显示运行日志」是扩展功能页卡片的偏好，不在启动参数面板里——启动时自动并入
+        # 卡片偏好 show_logs 并入启动参数
         llama_cfg = load_llama_config() or {}
         params.setdefault("show_logs", llama_cfg.get("show_logs", False))
 
         r = _launch(model_path or "", params, log_fn=_push_log)
         if r.get("ok"):
-            # 记录本次成功运行的模型（用 launch 解析后的实际路径，含自动选择的情况）
+            # 记录本次成功运行的模型
             _record_last_model(r.get("model") or model_path or "")
         return r
 
@@ -999,15 +990,13 @@ class ExperimentalMixin:
         from ..llama_cpp import _GLOBAL_ONLY_KEYS
         llama = load_llama_config() or {}
         params = {k: v for k, v in llama.items() if k not in _GLOBAL_ONLY_KEYS}
-        # show_logs 存在全局但属启动参数（与 launch_llama 的 setdefault 语义一致）
         params["show_logs"] = bool(llama.get("show_logs", False))
         mcfg = load_llama_model_configs().get(target, {})
         params.update({k: v for k, v in mcfg.items() if v is not None})
         return params
 
     def auto_run_llama(self) -> Dict[str, Any]:
-        """程序启动时调用：若启用模块且开启 auto_run，且已安装，则自动启动
-        「上次成功运行的模型」（无记录时回退设置页选中的模型）。"""
+        """程序启动时按开关自动启动上次使用的模型。"""
         from ..llama_cpp import launch as _launch, get_status
 
         cfg = load_config().get("experimental", {})
@@ -1036,7 +1025,6 @@ class ExperimentalMixin:
         """「开始处理」前置保障（本地推理集成模式）：服务未运行时自动拉起。"""
         from ..llama_cpp import launch as _launch, get_status
 
-        # 防御性兜底：总开关关闭时禁止自动拉起（与 auto_run_llama 判定一致）
         cfg = load_config().get("experimental", {})
         if not cfg.get("llama_enabled", False):
             return {"ok": False, "error": "llama.cpp 总开关已关闭，无法自动启动服务"}

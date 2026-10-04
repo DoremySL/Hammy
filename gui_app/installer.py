@@ -22,9 +22,9 @@ from batch_rename.subprocess_registry import register_subprocess, unregister_sub
 
 # ── UV 包管理工具路径 ──
 UV_RUNTIME_DIR = APP_ROOT / "UV-Tool"      # UV 二进制 + 包缓存
-UV_CACHE_DIR = UV_RUNTIME_DIR / "cache"    # UV 下载缓存（UV_CACHE_DIR 指向这里）
+UV_CACHE_DIR = UV_RUNTIME_DIR / "cache"    # UV 下载缓存
 
-# ── 通用 PyPI 镜像（timm/Pillow/faster-whisper 等）──
+# ── 通用 PyPI 镜像 ──
 PYPI_MIRRORS = {
     "sjtu": {"name": "上海交通大学", "url": "https://mirror.sjtu.edu.cn/pypi/web/simple"},
     "nju": {"name": "南京大学", "url": "https://mirrors.nju.edu.cn/pypi/web/simple"},
@@ -32,52 +32,31 @@ PYPI_MIRRORS = {
 }
 DEFAULT_PYPI_MIRROR = "sjtu"
 
-# ── PyTorch 版本档位（PixAI / 标签向量检索）──
-# 仅保留 PyTorch 2.14 稳定版的构建；cuda = 依赖的 CUDA 版本（空 = CPU 版）
-PYTORCH_VERSIONS = {
-    "cu132": {"name": "CUDA 13.2", "tag": "cu132", "cuda": "13.2", "desc": "驱动 580 及以上"},
-    "cu126": {"name": "CUDA 12.6", "tag": "cu126", "cuda": "12.6", "desc": "驱动 560 ~ 579"},
-    "cpu": {"name": "CPU", "tag": "cpu", "cuda": "", "desc": "无 N 卡或驱动过旧"},
+# ── GPU 档位表 ──
+_CUDA_TIERS = {
+    "cu132": {"name": "CUDA 13.2", "cuda": "13.2", "desc": "驱动 580 及以上"},
+    "cu126": {"name": "CUDA 12.6", "cuda": "12.6", "desc": "驱动 560 ~ 579"},
 }
-DEFAULT_PYTORCH_VERSION = "cu132"
 
-# ── PyTorch 下载站点（须同时提供 torch 索引与 PyPI 索引）──
-PYTORCH_SITES = {
-    "sjtu": {
-        "name": "上海交通大学", "desc": "国内高速，依赖同源",
-        "torch_base": "https://mirror.sjtu.edu.cn/pytorch-wheels",
-        "pypi": "https://mirror.sjtu.edu.cn/pypi/web/simple",
-    },
-    "nju": {
-        "name": "南京大学", "desc": "交大不通时的备用站点",
-        "torch_base": "https://mirrors.nju.edu.cn/pytorch/whl",
-        "pypi": "https://mirrors.nju.edu.cn/pypi/web/simple",
-    },
-    "official": {
-        "name": "PyTorch 官方", "desc": "download.pytorch.org，国内较慢",
-        "torch_base": "https://download.pytorch.org/whl",
-        "pypi": "https://pypi.org/simple",
-    },
+
+# ── TensorRT 站点（pixai-tagger）──
+TRT_SITES = {
+    "sjtu": {"name": "上海交通大学", "desc": "国内高速（NVIDIA 中国源）",
+             "pypi": PYPI_MIRRORS["sjtu"]["url"], "nvidia": "https://pypi.nvidia.cn"},
+    "nju": {"name": "南京大学", "desc": "交大不通时的备用站点",
+            "pypi": PYPI_MIRRORS["nju"]["url"], "nvidia": "https://pypi.nvidia.cn"},
+    "official": {"name": "NVIDIA 官方", "desc": "pypi.nvidia.com，国内较慢",
+                 "pypi": "https://pypi.org/simple", "nvidia": "https://pypi.nvidia.com"},
 }
-DEFAULT_PYTORCH_SITE = "sjtu"
+DEFAULT_TRT_SITE = "sjtu"
 
 
-def resolve_pytorch(version: str = "", site: str = "") -> Dict[str, Any]:
-    """把（版本档位, 站点）解析为 torch 索引与 PyPI 索引地址；非法值回落到默认。"""
-    ver_key = version if version in PYTORCH_VERSIONS else DEFAULT_PYTORCH_VERSION
-    site_key = site if site in PYTORCH_SITES else DEFAULT_PYTORCH_SITE
-    ver = PYTORCH_VERSIONS[ver_key]
-    st = PYTORCH_SITES[site_key]
-    return {
-        "version": ver_key,
-        "version_name": ver["name"],
-        "site": site_key,
-        "site_name": st["name"],
-        "tag": ver["tag"],
-        "torch_url": f"{st['torch_base'].rstrip('/')}/{ver['tag']}",
-        "pypi_url": st["pypi"],
-        "is_cpu": ver["tag"] == "cpu",
-    }
+def resolve_trt_site(site: str = "") -> Dict[str, Any]:
+    """把站点解析为 PyPI 索引与 NVIDIA 索引地址。"""
+    site_key = site if site in TRT_SITES else DEFAULT_TRT_SITE
+    st = TRT_SITES[site_key]
+    return {"site": site_key, "site_name": st["name"],
+            "pypi_url": st["pypi"], "nvidia_url": st["nvidia"]}
 
 # ── 超时 ──
 UV_TIMEOUT_SEC = 120.0
@@ -92,10 +71,10 @@ RC_CANCEL = -2
 log = make_logger("installer")
 
 
-# ── CUDA 版本挑选（扩展功能安装的统一推荐规则）──
+# ── CUDA 版本挑选 ──
 
 def ver_tuple(v: str) -> Tuple[int, ...]:
-    """把 '12.4' 解析为 (12, 4)，用于精确版本比较（避免 float 误判 12.10→12.1）。"""
+    """把 '12.4' 解析为 (12, 4)。"""
     try:
         return tuple(int(x) for x in str(v).split("."))
     except (ValueError, TypeError):
@@ -103,7 +82,7 @@ def ver_tuple(v: str) -> Tuple[int, ...]:
 
 
 def pick_cuda_version(cuda_max: str, candidates: List[Tuple[str, str]]) -> Optional[str]:
-    """在候选 [(id, 所需 CUDA 版本)]（按所需版本降序）中挑出 <= cuda_max 的最高档；无匹配返回 None。"""
+    """在候选 [(id, CUDA 版本)] 中挑出 <= cuda_max 的最高档。"""
     if not cuda_max:
         return None
     cm = ver_tuple(cuda_max)
@@ -113,9 +92,9 @@ def pick_cuda_version(cuda_max: str, candidates: List[Tuple[str, str]]) -> Optio
     return None
 
 
-# PyTorch 档位候选（按所需 CUDA 版本降序）
-_PYTORCH_CUDA_CANDIDATES: List[Tuple[str, str]] = sorted(
-    ((k, v["cuda"]) for k, v in PYTORCH_VERSIONS.items() if v["cuda"]),
+# GPU 档位候选（按所需 CUDA 版本降序）
+_CUDA_CANDIDATES: List[Tuple[str, str]] = sorted(
+    ((k, v["cuda"]) for k, v in _CUDA_TIERS.items()),
     key=lambda kv: ver_tuple(kv[1]), reverse=True,
 )
 
@@ -123,17 +102,18 @@ _PYTORCH_CUDA_CANDIDATES: List[Tuple[str, str]] = sorted(
 # ── 镜像 / GPU 检测 ──
 
 def detect_gpu() -> Dict[str, Any]:
-    """检测 NVIDIA GPU：型号 / 驱动版本 / 驱动支持的 CUDA 上限 + 推荐档位。"""
+    """检测 NVIDIA GPU：型号 / 驱动版本 / 驱动支持的 CUDA 上限 + 推荐档位 + 显存。"""
     result = {
         "has_nvidia": False,
         "gpu_name": "",
         "driver_version": "",
-        "cuda_max": "",        # 驱动支持的最高 CUDA 版本（如 "13.2"），来自 nvidia-smi 表头
+        "cuda_max": "",        # 驱动支持的最高 CUDA 版本
+        "vram_mb": 0,
         "recommended": "cpu",
     }
     try:
         p = subprocess.Popen(
-            ["nvidia-smi", "--query-gpu=name,driver_version", "--format=csv,noheader"],
+            ["nvidia-smi", "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding="utf-8", errors="replace",
             **SUBPROCESS_KWARGS,
@@ -146,6 +126,10 @@ def detect_gpu() -> Dict[str, Any]:
                 result["has_nvidia"] = True
                 result["gpu_name"] = parts[0]
                 result["driver_version"] = parts[1]
+                if len(parts) >= 3:
+                    m = re.search(r"(\d+)", parts[2])
+                    if m:
+                        result["vram_mb"] = int(m.group(1))
                 result["cuda_max"] = _query_cuda_version()
                 result["recommended"] = _recommend_cuda(result["cuda_max"])
     except Exception:
@@ -153,8 +137,20 @@ def detect_gpu() -> Dict[str, Any]:
     return result
 
 
+_GPU_CACHE: Dict[str, Any] = {"data": None, "t": 0.0}
+
+
+def detect_gpu_cached(ttl: float = 60.0) -> Dict[str, Any]:
+    """带 TTL 缓存的 detect_gpu。"""
+    now = time.time()
+    if _GPU_CACHE["data"] is None or now - _GPU_CACHE["t"] > ttl:
+        _GPU_CACHE["data"] = detect_gpu()
+        _GPU_CACHE["t"] = now
+    return _GPU_CACHE["data"]
+
+
 def _query_cuda_version() -> str:
-    """从 nvidia-smi 表头解析驱动支持的最高 CUDA 版本（如 "12.8"）。失败返回空串。"""
+    """从 nvidia-smi 表头解析驱动支持的最高 CUDA 版本。"""
     try:
         p = subprocess.Popen(
             ["nvidia-smi"],
@@ -180,34 +176,48 @@ def _query_cuda_version() -> str:
 
 
 def _recommend_cuda(cuda_max: str) -> str:
-    """按 cuda_max 推荐 PyTorch 档位；候选都装不了就用 cpu。"""
-    return pick_cuda_version(cuda_max, _PYTORCH_CUDA_CANDIDATES) or "cpu"
+    return pick_cuda_version(cuda_max, _CUDA_CANDIDATES) or "cpu"
+
+
+# ── TensorRT 显卡判定（pixai-tagger）──
+
+# 无 Tensor Core 的消费卡
+_NO_TENSOR_CORE_PAT = re.compile(r"GTX\s*(9\d0|10\d0|16\d0)|MX\s*\d{3}", re.I)
+# 低于 TRT 最低架构（sm_75）的显卡
+_PRE_TURING_PAT = re.compile(r"GTX\s*(9\d0|10\d0)|GT\s*\d{3}|MX\s*\d{3}|Quadro\s+[PKM]\s?\d|NVS\s*\d", re.I)
+
+
+def gpu_has_tensor_core(gpu_name: str) -> bool:
+    """按型号判断是否有 Tensor Core（GTX 16xx / 10xx / MX 系列没有）。"""
+    return not bool(_NO_TENSOR_CORE_PAT.search(gpu_name or ""))
+
+
+def trt_gpu_issue(gpu: Dict[str, Any]) -> Optional[str]:
+    """TensorRT 可用性预检：返回不可用原因，None = 可用。"""
+    if not gpu.get("has_nvidia"):
+        return "未检测到 NVIDIA 显卡。pixai-tagger 使用 TensorRT 推理，需要 GTX 16xx / RTX 20xx 及以上的 NVIDIA GPU"
+    name = gpu.get("gpu_name") or ""
+    if _PRE_TURING_PAT.search(name):
+        return f"显卡（{name}）低于 TensorRT 支持的最低架构（sm_75），需要 GTX 16xx / RTX 20xx 及以上"
+    cuda_max = gpu.get("cuda_max") or ""
+    if cuda_max and ver_tuple(cuda_max) < (13, 0):
+        return f"驱动支持的 CUDA 版本过低（{cuda_max}），TensorRT 需要 CUDA 13 及以上驱动，请先升级显卡驱动"
+    return None
 
 
 def get_mirror_groups(groups: List[str]) -> Dict[str, Any]:
-    """返回指定镜像分组 + GPU 检测（供前端渲染选择弹窗）；groups 如 ["pytorch", "pypi"] 或 ["pypi"]。"""
+    """返回指定镜像分组（供前端渲染选择弹窗）。"""
     result: Dict[str, Any] = {}
     if "pypi" in groups:
         result["pypi"] = [{"id": k, "name": v["name"], "url": v["url"]} for k, v in PYPI_MIRRORS.items()]
         result["default_pypi"] = DEFAULT_PYPI_MIRROR
-    if "pytorch" in groups:
-        result["pytorch_versions"] = [
-            {"id": k, "name": v["name"], "desc": v.get("desc", "")} for k, v in PYTORCH_VERSIONS.items()
-        ]
-        result["default_version"] = DEFAULT_PYTORCH_VERSION
-        result["pytorch_sites"] = [
-            {"id": k, "name": v["name"], "desc": v.get("desc", ""), "url": v["torch_base"]}
-            for k, v in PYTORCH_SITES.items()
-        ]
-        result["default_site"] = DEFAULT_PYTORCH_SITE
-        result["gpu"] = detect_gpu()  # 仅 PyTorch 安装需要 GPU 检测
     return result
 
 
 # ── 子进程工具 ──
 
 def _subprocess_env() -> Dict[str, str]:
-    """返回注入了 UV_CACHE_DIR 的环境变量（让 UV 缓存落到 UV-Tool 目录）。"""
+    """返回注入了 UV_CACHE_DIR 的环境变量。"""
     env = dict(os.environ)
     env["UV_CACHE_DIR"] = str(UV_CACHE_DIR)
     return env
@@ -306,7 +316,6 @@ def run_subprocess_streaming(
         while True:
             if stop_event is not None and stop_event.is_set():
                 _terminate_proc(p, wait_sec=1.0)
-                log("已取消", log_fn)
                 rc = RC_CANCEL
                 break
             if time.time() > deadline:
@@ -424,7 +433,7 @@ def run_venv_script(
                 try:
                     on_line(last_line)
                 except Exception:
-                    pass  # 回调异常不影响子进程收尾
+                    pass
         if rc is None:
             try:
                 p.wait(timeout=10)

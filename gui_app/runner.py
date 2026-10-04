@@ -114,10 +114,9 @@ def build_engine_config(cfg_dict: Dict[str, Any]) -> Config:
     cfg.rag_debug_keywords = bool(ai.get("rag_debug_keywords", cfg.rag_debug_keywords))
     exp = cfg_dict.get("experimental") if isinstance(cfg_dict.get("experimental"), dict) else {}
     cfg.rag_vec_enabled = bool(exp.get("rag_vec_enabled", False))
-    cfg.rag_vec_device = str(exp.get("rag_vec_device", "auto") or "auto")
+    cfg.rag_vec_device = str(exp.get("rag_vec_device", "") or "")
     cfg.rag_vec_threshold = _safe_float(exp, "rag_vec_threshold", cfg.rag_vec_threshold)
     cfg.rag_vec_top_n = _safe_int(exp, "rag_vec_top_n", cfg.rag_vec_top_n)
-    cfg.rag_vec_model = str(exp.get("rag_vec_model", "") or "").strip()
 
     video = _section("video")
     cfg.sampling_points = _safe_int(video, "sampling_points", cfg.sampling_points)
@@ -200,6 +199,7 @@ class PipelineRunner:
 
         scope：char=仅角色 / all=角色+IP / off=不注入（非法值按 char）。
         仅当功能开启且标签存在时才注入。exp_cfg 为 experimental 段配置。
+        输出中文开启时标签以「英文/中文名」注入（提示词与标签检索两通道同格式）。
         """
         if scope not in ("char", "all", "off"):
             scope = "char"
@@ -209,6 +209,20 @@ class PipelineRunner:
         tags_store = read_json(PIXAI_TAGS_FILE, {})
         if not tags_store:
             return {}
+        zh_map = {}
+        if exp_cfg.get("pixai_output_zh", True):
+            from .pixai_tagger import load_tag_zh
+            zh_map = load_tag_zh()
+        # 附带译名时指令指向「英文/中文名」对照；未附带时维持原指令（由模型自译）
+        tail = ("生成 tags 与plot时，上述角色/IP 名称请统一改用「英文/中文名」中的常用中文名"
+                if zh_map else
+                "生成 tags 与plot时，上述角色/IP 名称请统一改用常用中文名")
+
+        def _fmt(t: Dict[str, Any]) -> str:
+            name = str(t.get("name") or "")
+            z = zh_map.get(name)
+            return f"{name} / {z}" if z else name
+
         result: Dict[str, str] = {}
         for vp in paths:
             vid = stable_id(vp)
@@ -219,17 +233,17 @@ class PipelineRunner:
             ip_tags = entry.get("ip_tags", [])
             rows = []
             if char_tags:
-                rows.append("- 疑似角色: " + ", ".join(t["name"] for t in char_tags))
+                rows.append("- 疑似角色: " + ", ".join(_fmt(t) for t in char_tags))
             if scope == "all" and ip_tags:
-                rows.append("- 疑似IP/作品: " + ", ".join(t["name"] for t in ip_tags))
+                rows.append("- 疑似IP/作品: " + ", ".join(_fmt(t) for t in ip_tags))
             if not rows:
                 continue
             result[vp] = "\n".join([
                 "【IP辅助参考】",
-                "以下为自动识别结果，可能存在误判（如相似角色混淆），仅供参考。"
+                "以下为自动识别结果，可能存在误判（如相似角色混淆），仅供参考。",
                 "请结合视频画面自行判断，若与画面明显矛盾则忽略：",
                 *rows,
-                "生成 tags 与plot时，上述角色/IP 名称请统一改用常用中文名",
+                tail,
             ])
         return result
 
@@ -410,14 +424,13 @@ class PipelineRunner:
                 dense = None
                 pt_mode = pt["mode"]
                 if engine_cfg.rag_vec_enabled and pt_mode == "enhanced":
-                    from .st_embedding import StEmbedBackend, get_status as st_status
-                    if st_status().get("ready"):
-                        dense = StEmbedBackend(
+                    from .ort_embedding import OrtEmbedBackend, get_status as ort_status
+                    if ort_status().get("ready"):
+                        dense = OrtEmbedBackend(
                             device=engine_cfg.rag_vec_device,
-                            model_key=engine_cfg.rag_vec_model,
                             log_fn=lambda m: engine_logger.info(f"[RAG] {m}"))
                     else:
-                        engine_logger.info("[RAG] 向量检索已启用但 st-embedding 未就绪，"
+                        engine_logger.info("[RAG] 向量检索已启用但 ort-embedding 未就绪，"
                                            "本次仅词面召回")
                 tag_recall = TagRecall(items=pt_items,
                                        # GUI 三档值 → TagRecall 内部模式（on=全量注入，enhanced=两轮召回）
@@ -429,7 +442,7 @@ class PipelineRunner:
                                        vec_top_n=engine_cfg.rag_vec_top_n)
                 if dense is not None:
                     engine_logger.info(f"[RAG] 正在加载嵌入模型: {dense.model_title}"
-                                       f"（device={dense.device}），首次需导入 torch，CPU 下可能耗时较久…")
+                                       f"（device={dense.device}）…")
                     try:
                         tag_recall.warmup_dense()  # 预构建索引，首个视频不承担耗时
                     except Exception as e:

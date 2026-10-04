@@ -1240,9 +1240,6 @@ def launch(model_path: str, params: Dict[str, Any], log_fn=None) -> Dict[str, An
     threading.Thread(target=_reader_thread,
                      args=(proc, log_fn, show_logs, use_pipe),
                      daemon=True).start()
-    if show_logs:
-        log_fn(f"已启动 llama-server（PID {proc.pid}），监听 http://{merged.get('host')}:{merged.get('port')}")
-        log_fn(f"模型: {mp.name}")
 
     host = merged.get("host", DEFAULTS["host"])
     port = merged.get("port", DEFAULTS["port"])

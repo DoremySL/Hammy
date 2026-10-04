@@ -51,14 +51,12 @@ function _collectExperimentalData() {
   const e = {};
   const put = (k, v) => { if (v !== null && v !== undefined) e[k] = v; };
   put('rag_vec_enabled', chk('#ragvec-enable-toggle'));
-  put('rag_vec_device', ddl('#ragvec-device-dd') || 'auto');
   let rvThr = num('#ragvec-threshold');
   if (rvThr !== null) rvThr = Math.min(0.8, Math.max(0.3, rvThr));
   put('rag_vec_threshold', rvThr);
   let topN = num('#ragvec-topn');
   if (topN !== null) topN = Math.min(100, Math.max(1, topN));
   put('rag_vec_top_n', topN);
-  put('rag_vec_model', ddl('#ragvec-model-dd') || '');
   const clsDd = ddl('#pixai-classify-dd');
   put('pixai_classify', clsDd === null ? null : clsDd === '1');
   let frames = num('#pixai-frames');
@@ -67,7 +65,8 @@ function _collectExperimentalData() {
   let thr = num('#pixai-threshold');
   if (thr !== null) thr = Math.min(1, Math.max(0.1, thr));
   put('pixai_threshold', thr);
-  put('pixai_precision', ddl('#pixai-precision-dd'));
+  const zhDd = ddl('#pixai-output-zh-dd');
+  put('pixai_output_zh', zhDd === null ? null : zhDd === '1');
   put('pixai_prompt_scope', ddl('#pixai-prompt-dd'));
   put('pixai_recall_scope', ddl('#pixai-recall-dd'));
   put('pixai_tagger_enabled', chk('#pixai-enable-toggle'));
@@ -142,7 +141,7 @@ function renderExperimentalPage(cfg, uvStatus, llamaStatus, pStatus, wStatus, rv
   const anyModuleInstalled = [llamaStatus, pStatus, wStatus, rvStatus].some(s => s && s.dir_exists);
   body.innerHTML = `
     <div class="exp-page">
-      ${anyModuleInstalled ? '' : '<div class="exp-intro">安装占用大量硬盘空间，运行时消耗较高的硬件资源，仅推荐显存≥6GB的N卡用户尝试</div>'}
+      ${anyModuleInstalled ? '' : '<div class="exp-intro">安装占用大量硬盘空间，运行时消耗较高的硬件资源，仅推荐显存≥6GB的N卡用户尝试；安装并启用后点击对应卡片展开功能设置</div>'}
       ${_renderLlamaSection(llamaStatus)}
       ${_renderPixaiSection(exp, pStatus)}
       ${_renderWhisperSection(exp, wStatus)}
@@ -158,8 +157,8 @@ function renderExperimentalPage(cfg, uvStatus, llamaStatus, pStatus, wStatus, rv
   _bindRagVecEvents(rvStatus);
 }
 
-function _statusBadge(st) {
-  if (st.ready) return `<span class="exp-badge ok">${icon('check')} 已安装就绪</span>`;
+function _statusBadge(st, suffix) {
+  if (st.ready) return `<span class="exp-badge ok">${icon('check')} 已安装就绪${suffix ? `·${suffix}` : ''}</span>`;
   if (st.dir_exists) return `<span class="exp-badge warn">${icon('warning')} 安装不完整</span>`;
   return '<span class="exp-badge dim">未安装</span>';
 }
@@ -223,8 +222,8 @@ function _bindManageButtons(uvStatus, llamaStatus, pStatus, wStatus, rvStatus) {
 
   const pInstallBtn = $('#btn-pixai-install');
   if (pInstallBtn && !pStatus.ready) pInstallBtn.addEventListener('click', async () => {
-    const sel = await showMirrorSelectDialog({ api: 'get_pixai_mirrors', title: '选择版本与站点 — PixAI Tagger' });
-    if (sel) startPixaiInstall(sel.version || 'cu132', sel.site || 'sjtu');
+    const sel = await showPixaiInstallDialog();
+    if (sel) startPixaiInstall(sel.size || 1008, sel.site || 'sjtu');
   });
 
   const pRemoveBtn = $('#btn-pixai-remove');
@@ -260,16 +259,19 @@ function _bindManageButtons(uvStatus, llamaStatus, pStatus, wStatus, rvStatus) {
 
   const rvInstallBtn = $('#btn-ragvec-install');
   if (rvInstallBtn && rvStatus && !rvStatus.ready) rvInstallBtn.addEventListener('click', async () => {
+    let mirrors;
+    try { mirrors = await apiCall('get_rag_vec_mirrors'); }
+    catch (e) { toast('获取镜像列表失败', 'err'); return; }
     const sel = await showMirrorSelectDialog({
-      api: 'get_rag_vec_mirrors', title: '选择版本、站点与模型 — 标签向量检索',
-      showModelSelect: true, models: (rvStatus && rvStatus.models) || [],
+      payload: mirrors, title: '选择运行设备与镜像站 — 标签向量检索',
+      devices: mirrors.devices || [], bannerSub: '',
     });
-    if (sel) startRagVecInstall(sel.version || 'cu132', sel.site || 'sjtu', sel.model || '');
+    if (sel) startRagVecInstall(sel.device || 'gpu', sel.pypi || 'sjtu');
   });
 
   const rvRemoveBtn = $('#btn-ragvec-remove');
   if (rvRemoveBtn && rvStatus && rvStatus.dir_exists) rvRemoveBtn.addEventListener('click', async () => {
-    if (!await showConfirm('确定删除 st-embedding 吗？\n\n将删除 venv、模型文件与索引缓存。')) return;
+    if (!await showConfirm('确定删除标签向量检索模块吗？\n\n将删除 venv、模型文件与索引缓存。')) return;
     rvRemoveBtn.disabled = true; rvRemoveBtn.textContent = '删除中…';
     const r = await apiCall('remove_rag_vec');
     if (r && r.ok) {
@@ -302,68 +304,47 @@ function _bindManageButtons(uvStatus, llamaStatus, pStatus, wStatus, rvStatus) {
    ════════════════════════════════════════════════════════════ */
 async function showMirrorSelectDialog(opts) {
   let mirrors;
-  try { mirrors = await apiCall(opts.api); }
+  try { mirrors = opts.payload || await apiCall(opts.api); }
   catch (e) { toast('获取镜像列表失败', 'err'); return null; }
 
   const gpu = mirrors.gpu || null;
-  const versions = Array.isArray(mirrors.pytorch_versions) ? mirrors.pytorch_versions : [];
-  const sites = Array.isArray(mirrors.pytorch_sites) ? mirrors.pytorch_sites : [];
-  const hasPytorch = !!(versions.length && sites.length);
   const hasPypi = Array.isArray(mirrors.pypi) && mirrors.pypi.length;
+  const devices = Array.isArray(opts.devices) ? opts.devices : [];
+  const hasDevices = devices.length > 0;
 
   let gpuBanner = '';
-  if (hasPytorch) {
-    gpuBanner = (gpu && gpu.has_nvidia)
-      ? `<div class="mirror-gpu-banner has-gpu">
-          <div><strong>${esc(gpu.gpu_name)}</strong><span class="mirror-gpu-sub">驱动 ${esc(gpu.driver_version)}${gpu.cuda_max ? ` · 支持 CUDA ${esc(gpu.cuda_max)}` : ''} — 已自动推荐 CUDA 版本</span></div>
-        </div>`
-      : `<div class="mirror-gpu-banner">
-          <div><strong>未检测到 NVIDIA 显卡</strong><span class="mirror-gpu-sub">可下载CPU版测试效果，速度较慢请降低采样帧数</span></div>
-        </div>`;
-  } else if (gpu) {
+  if (gpu) {
+    // bannerSub 未传时按 whisper 场景给默认副标题；传空串则只显示驱动信息
+    const defSub = gpu.has_nvidia ? '将安装 CUDA 运行时（~500MB），转录使用 GPU 加速'
+                                  : '将跳过 CUDA 运行时（~500MB），转录使用 CPU 模式';
+    const sub = opts.bannerSub !== undefined ? opts.bannerSub : defSub;
+    const subHtml = sub ? ` — ${esc(sub)}` : '';
     gpuBanner = (gpu.has_nvidia)
       ? `<div class="mirror-gpu-banner has-gpu">
-          <div><strong>${esc(gpu.gpu_name)}</strong><span class="mirror-gpu-sub">将安装 CUDA 运行时（~500MB），转录使用 GPU 加速</span></div>
+          <div><strong>${esc(gpu.gpu_name)}</strong><span class="mirror-gpu-sub">驱动 ${esc(gpu.driver_version)}${gpu.cuda_max ? ` · 支持 CUDA ${esc(gpu.cuda_max)}` : ''}${subHtml}</span></div>
         </div>`
       : `<div class="mirror-gpu-banner">
-          <div><strong>未检测到 NVIDIA 显卡</strong><span class="mirror-gpu-sub">将跳过 CUDA 运行时（~500MB），转录使用 CPU 模式</span></div>
+          <div><strong>未检测到 NVIDIA 显卡</strong><span class="mirror-gpu-sub">${esc(sub)}</span></div>
         </div>`;
   }
 
-  const recommended = (gpu && gpu.recommended) || mirrors.default_version || 'cu132';
-  const defaultSite = mirrors.default_site || 'sjtu';
-
-  const versionSection = hasPytorch ? `
+  const deviceSection = hasDevices ? `
     <div class="mirror-section">
       <div class="mirror-section-head">
-        <strong>PyTorch 版本</strong>
+        <strong>运行设备</strong>
+        <span class="mirror-section-hint">安装时选定，切换需重装</span>
       </div>
-      <div class="mirror-opts">${versions.map(m => {
-        const isRec = m.id === recommended;
+      <div class="mirror-opts">${devices.map(d => {
+        const isRec = !!d.recommended;
         return `<label class="mirror-opt${isRec ? ' recommended selected' : ''}">
-          <input type="radio" name="torch-version" value="${esc(m.id)}" ${isRec ? 'checked' : ''}/>
-          <span class="mirror-opt-name">${esc(m.name)}${isRec ? '<span class="mirror-rec-badge">推荐</span>' : ''}</span>
-          <small class="mirror-opt-url">${esc(m.desc || '')}</small>
+          <input type="radio" name="device" value="${esc(d.id)}" ${isRec ? 'checked' : ''}/>
+          <span class="mirror-opt-name">${esc(d.name)}${isRec ? '<span class="mirror-rec-badge">推荐</span>' : ''}</span>
+          <small class="mirror-opt-url">${esc(d.desc || '')}</small>
         </label>`;
       }).join('')}</div>
     </div>` : '';
 
-  const siteSection = hasPytorch ? `
-    <div class="mirror-section">
-      <div class="mirror-section-head">
-        <strong>下载站点</strong>
-      </div>
-      <div class="mirror-opts">${sites.map(s => {
-        const isDef = s.id === defaultSite;
-        return `<label class="mirror-opt${isDef ? ' recommended selected' : ''}">
-          <input type="radio" name="torch-site" value="${esc(s.id)}" ${isDef ? 'checked' : ''}/>
-          <span class="mirror-opt-name">${esc(s.name)}${isDef ? '<span class="mirror-rec-badge">推荐</span>' : ''}</span>
-          <small class="mirror-opt-url">${esc(s.desc || s.url || '')}</small>
-        </label>`;
-      }).join('')}</div>
-    </div>` : '';
-
-  const pypiSection = (hasPypi && !hasPytorch) ? `
+  const pypiSection = hasPypi ? `
     <div class="mirror-section">
       <div class="mirror-section-head">
         <strong>通用 PyPI 镜像</strong>
@@ -403,8 +384,7 @@ async function showMirrorSelectDialog(opts) {
     <div class="confirm-title">${esc(opts.title || '选择镜像站')}</div>
     <div class="mirror-body">
       ${gpuBanner}
-      ${versionSection}
-      ${siteSection}
+      ${deviceSection}
       ${pypiSection}
       ${modelSection}
     </div>
@@ -430,13 +410,107 @@ async function showMirrorSelectDialog(opts) {
     }
     $('#mirrorCancel').addEventListener('click', () => close(null));
     $('#mirrorOk').addEventListener('click', () => {
-      const version = box.querySelector('input[name="torch-version"]:checked');
-      const site = box.querySelector('input[name="torch-site"]:checked');
+      const device = box.querySelector('input[name="device"]:checked');
       const pypi = box.querySelector('input[name="pypi-mirror"]:checked');
       const model = box.querySelector('input[name="model-select"]:checked');
-      close({ version: version ? version.value : null, site: site ? site.value : null,
+      close({ device: device ? device.value : null,
               pypi: pypi ? pypi.value : 'sjtu',
               model: model ? model.value : null });
+    });
+  });
+}
+
+/* ════════════════════════════════════════════════════════════
+   PixAI 安装弹窗（GPU 必需 + 输入尺寸 + 站点）
+   ════════════════════════════════════════════════════════════ */
+async function showPixaiInstallDialog() {
+  let mirrors;
+  try { mirrors = await apiCall('get_pixai_mirrors'); }
+  catch (e) { toast('获取镜像列表失败', 'err'); return null; }
+
+  const gpu = mirrors.gpu || null;
+  const issue = mirrors.gpu_issue || '';
+  const sizes = Array.isArray(mirrors.sizes) ? mirrors.sizes : [];
+  const sites = Array.isArray(mirrors.sites) ? mirrors.sites : [];
+  const defaultSite = mirrors.default_site || 'sjtu';
+
+  const gpuBanner = issue
+    ? `<div class="mirror-gpu-banner">
+        <div><strong>无法安装：${esc(issue)}</strong><span class="mirror-gpu-sub">TensorRT 推理无 CPU 回退，需要 NVIDIA GPU（GTX 16xx 及以上）且驱动支持 CUDA 13</span></div>
+      </div>`
+    : (gpu && gpu.has_nvidia)
+      ? `<div class="mirror-gpu-banner has-gpu">
+          <div><strong>${esc(gpu.gpu_name)}</strong><span class="mirror-gpu-sub">驱动 ${esc(gpu.driver_version)}${gpu.cuda_max ? ` · 支持 CUDA ${esc(gpu.cuda_max)}` : ''} — 安装时按显卡自动构建对应精度的 TensorRT 引擎（GTX 16xx 等无 Tensor Core 用 FP32）</span></div>
+        </div>`
+      : '';
+
+  const sizeSection = `
+    <div class="mirror-section">
+      <div class="mirror-section-head">
+        <strong>输入尺寸</strong>
+        <span class="mirror-section-hint">安装时下载对应模型并构建引擎，更换需重新安装</span>
+      </div>
+      <div class="mirror-opts">${sizes.map((m, i) => {
+        const isRec = i === 0;
+        return `<label class="mirror-opt${isRec ? ' recommended selected' : ''}">
+          <input type="radio" name="pixai-size" value="${esc(m.id)}" ${isRec ? 'checked' : ''}/>
+          <span class="mirror-opt-name">${esc(m.name)}${isRec ? '<span class="mirror-rec-badge">推荐</span>' : ''}</span>
+          <small class="mirror-opt-url">${esc(m.desc || '')} · ${esc(m.size_label || '')}</small>
+        </label>`;
+      }).join('')}</div>
+    </div>`;
+
+  const siteSection = `
+    <div class="mirror-section">
+      <div class="mirror-section-head">
+        <strong>下载站点</strong>
+      </div>
+      <div class="mirror-opts">${sites.map(s => {
+        const isDef = s.id === defaultSite;
+        return `<label class="mirror-opt${isDef ? ' recommended selected' : ''}">
+          <input type="radio" name="pixai-site" value="${esc(s.id)}" ${isDef ? 'checked' : ''}/>
+          <span class="mirror-opt-name">${esc(s.name)}${isDef ? '<span class="mirror-rec-badge">推荐</span>' : ''}</span>
+          <small class="mirror-opt-url">${esc(s.desc || '')}</small>
+        </label>`;
+      }).join('')}</div>
+    </div>`;
+
+  const bg = $('#confirmBg');
+  const box = bg.querySelector('.confirm-box');
+  const origHtml = box.innerHTML;
+  box.classList.add('mirror-dialog');
+  box.innerHTML = `
+    <div class="confirm-title">选择输入尺寸与站点 — PixAI Tagger</div>
+    <div class="mirror-body">
+      ${gpuBanner}
+      ${sizeSection}
+      ${siteSection}
+    </div>
+    <div class="confirm-foot">
+      <button class="btn" id="mirrorCancel">取消</button>
+      <button class="btn primary" id="mirrorOk" ${issue ? 'disabled' : ''}>开始安装</button>
+    </div>`;
+  bg.classList.add('show');
+
+  box.querySelectorAll('.mirror-opt input').forEach(radio => {
+    radio.addEventListener('change', () => {
+      box.querySelectorAll(`input[name="${radio.name}"]`).forEach(r =>
+        r.closest('.mirror-opt').classList.toggle('selected', r.checked));
+    });
+  });
+
+  return new Promise(resolve => {
+    function close(val) {
+      bg.classList.remove('show');
+      box.classList.remove('mirror-dialog');
+      box.innerHTML = origHtml;
+      resolve(val);
+    }
+    $('#mirrorCancel').addEventListener('click', () => close(null));
+    $('#mirrorOk').addEventListener('click', () => {
+      const size = box.querySelector('input[name="pixai-size"]:checked');
+      const site = box.querySelector('input[name="pixai-site"]:checked');
+      close({ size: size ? Number(size.value) : 1008, site: site ? site.value : 'sjtu' });
     });
   });
 }
@@ -459,7 +533,7 @@ function _renderLlamaSection(llamaStatus) {
         <label class="switch master-switch">
           <input type="checkbox" id="llama-enable-toggle" ${enabled ? 'checked' : ''} ${!llamaStatus.ready ? 'disabled' : ''}/>
         </label>
-        <div class="exp-head-main" data-tip="点击展开 / 收起配置">
+        <div class="exp-head-main">
           <div class="exp-title-row"><strong>llama.cpp 本地推理</strong>${badge}</div>
           <div class="exp-desc">本地运行 OpenAI 兼容推理服务，随主程序退出自动停止。</div>
         </div>
@@ -561,8 +635,9 @@ function _bindLlamaEvents(llamaStatus) {
 function _renderPixaiSection(exp, pStatus) {
   const enabled = !!state.pixaiTaggerEnabled;
   const ready = !!(pStatus && pStatus.ready);
-  const precision = ['auto', 'fp32', 'fp16'].includes(exp.pixai_precision) ? exp.pixai_precision : 'auto';
-  const precisionNames = { auto: '自动', fp32: 'FP32', fp16: 'FP16' };
+  const specBadge = ready && pStatus.input_size
+    ? `${pStatus.input_size}x${pStatus.input_size}·${String(pStatus.precision || '').toUpperCase()}` : '';
+  const zhOn = exp.pixai_output_zh !== false;
   const scopeNames = { char: '仅角色', all: '角色/IP', off: '不使用' };
   const scopeOf = v => scopeNames[v] ? v : 'char';
   const scopeDd = (id, val) => `
@@ -579,8 +654,8 @@ function _renderPixaiSection(exp, pStatus) {
         <label class="switch master-switch">
           <input type="checkbox" id="pixai-enable-toggle" ${enabled ? 'checked' : ''} ${!ready ? 'disabled' : ''}/>
         </label>
-        <div class="exp-head-main" data-tip="点击展开 / 收起配置">
-          <div class="exp-title-row"><strong>PixAI Tagger 标签获取</strong>${_statusBadge(pStatus || {})}</div>
+        <div class="exp-head-main">
+          <div class="exp-title-row"><strong>PixAI Tagger 标签获取</strong>${_statusBadge(pStatus || {}, specBadge)}</div>
           <div class="exp-desc">识别视频角色与作品/IP，辅助 AI 重命名；可预筛跳过非二次元作品。</div>
         </div>
         <div class="exp-head-actions">
@@ -595,23 +670,23 @@ function _renderPixaiSection(exp, pStatus) {
             <input type="number" id="pixai-frames" min="1" value="${exp.pixai_frames || 15}"/>
           </div>
           <div class="field">
-            <label data-tip="角色按出现次数加权、IP 取最高置信度，超过该值才输出（0.1–1）">角色/IP阈值</label>
+            <label data-tip="角色按出现次数加权、IP 取最高置信度，超过该值才输出">角色/IP阈值</label>
             <input type="number" id="pixai-threshold" min="0.1" max="1" step="0.01" value="${exp.pixai_threshold || 0.66}"/>
           </div>
           <div class="field">
-            <label data-tip="CUDA 推理精度：自动 = 每次分析前自测择优；指定 FP32/FP16 则不再自测">推理精度</label>
-            <div class="dd" id="pixai-precision-dd">
-              <button class="dd-btn" type="button"><span class="dd-label">${precisionNames[precision]}</span>${ddArrow()}</button>
+            <label data-tip="显示与注入提示词时使用预先翻译的文本，可能存在错误翻译">显示中文</label>
+            <div class="dd" id="pixai-output-zh-dd">
+              <button class="dd-btn" type="button"><span class="dd-label">${zhOn ? '开启' : '关闭'}</span>${ddArrow()}</button>
               <div class="dd-panel">
-                ${Object.entries(precisionNames).map(([v, t]) =>
-                  `<div class="dd-opt${v === precision ? ' active' : ''}" data-value="${v}">${t}</div>`).join('')}
+                <div class="dd-opt${zhOn ? ' active' : ''}" data-value="1">开启</div>
+                <div class="dd-opt${zhOn ? '' : ' active'}" data-value="0">关闭</div>
               </div>
             </div>
           </div>
         </div>
         <div class="exp-input-row">
           <div class="field">
-            <label data-tip="开启后非二次元作品跳过标签获取（角标 REAL 无 IP）；关闭则全部视频都获取标签">跳过非二次元作品</label>
+            <label data-tip="开启后非二次元作品跳过标签获取（角标 REAL 无 IP）">跳过非二次元作品</label>
             <div class="dd" id="pixai-classify-dd">
               <button class="dd-btn" type="button"><span class="dd-label">${exp.pixai_classify === true ? '开启' : '关闭'}</span>${ddArrow()}</button>
               <div class="dd-panel">
@@ -653,8 +728,8 @@ function _bindPixaiEvents(pStatus) {
   });
   const clsDd = $('#pixai-classify-dd');
   if (clsDd) initDropdown(clsDd, () => scheduleExperimentalSave(true));
-  const precDd = $('#pixai-precision-dd');
-  if (precDd) initDropdown(precDd, () => scheduleExperimentalSave(true));
+  const zhDd = $('#pixai-output-zh-dd');
+  if (zhDd) initDropdown(zhDd, () => scheduleExperimentalSave(true));
   const promptDd = $('#pixai-prompt-dd');
   if (promptDd) initDropdown(promptDd, () => scheduleExperimentalSave(true));
   const recallDd = $('#pixai-recall-dd');
@@ -714,9 +789,9 @@ async function runInstallTask(run, onOk) {
   }
 }
 
-async function startPixaiInstall(pytorchVersion, site) {
+async function startPixaiInstall(size, site) {
   await runInstallTask(
-    () => apiCall('install_pixai_tagger', pytorchVersion, site),
+    () => apiCall('install_pixai_tagger', size, site),
     async () => {
       await apiCall('set_pixai_tagger_enabled', true);
       state.pixaiTaggerEnabled = true;
@@ -760,7 +835,7 @@ function _renderWhisperSection(exp, wStatus) {
         <label class="switch master-switch">
           <input type="checkbox" id="whisper-enable-toggle" ${enabled ? 'checked' : ''} ${!ready ? 'disabled' : ''}/>
         </label>
-        <div class="exp-head-main" data-tip="点击展开 / 收起配置">
+        <div class="exp-head-main">
           <div class="exp-title-row"><strong>Faster-Whisper 语音转录</strong>${_statusBadge(wStatus || {})}</div>
           <div class="exp-desc">转录视频语音为字幕，辅助 AI 重命名，支持导出与翻译。</div>
         </div>
@@ -772,7 +847,7 @@ function _renderWhisperSection(exp, wStatus) {
       <div id="whisper-cfg-panel" class="exp-cfg-panel" style="display:${state.settingsOpen.has('whisper-cfg') ? 'block' : 'none'}">
         <div class="exp-input-row">
           <div class="field">
-            <label data-tip="转录使用的模型；选择后立即保存，点击未下载的模型可直接下载">当前模型</label>
+            <label data-tip="转录使用的模型；点击未下载的模型可直接下载">当前模型</label>
             ${modelSel}
           </div>
           <div class="field">
@@ -2575,7 +2650,6 @@ function _bindLlamaTabEvents(llamaStatus) {
 document.addEventListener('click', (e) => {
   if (e.target.closest('#miniProgBox') && state.hfDownloading) {
     if (state.dlKind === 'whisper') openWhisperModelDialog();
-    else if (state.dlKind === 'ragvec') openRagVecModelDialog();
     else openHfDownloadDialog();
   }
 });
@@ -2594,40 +2668,34 @@ function _renderRagVecSection(exp, rvStatus) {
   const enabled = !!state.ragVecEnabled;
   const st = rvStatus || {};
   const cfg = st.cfg || {};
-  const device = cfg.device || 'auto';
-  const models = st.models || [];
-  const curDef = models.find(m => m.key === cfg.model || m.repo === cfg.model) || models[0] || {};
-  const curTitle = curDef.title || '请选择模型';
-  const modelOpts = models.map(m => {
-    const isInst = !!m.installed;
-    return `<div class="dd-opt${m.key === curDef.key ? ' active' : ''}${isInst ? '' : ' disabled'}" data-value="${esc(m.key)}"${isInst ? '' : ` data-tip="${esc(m.repo)}（未下载，点击打开模型下载）"`}>${esc(m.title)}${isInst ? '' : '（未下载）'}</div>`;
-  }).join('');
-  const deviceNames = { auto: '自动', cuda: 'CUDA (GPU)', cpu: 'CPU' };
-  const torchBuild = st.torch_build || '';
-  const cudaOk = torchBuild.startsWith('cu');
-  const deviceOpts = [['auto', '自动'], ['cuda', 'CUDA (GPU)'], ['cpu', 'CPU']]
-    .map(([v, t]) => {
-      const dis = v === 'cuda' && !cudaOk;
-      const tip = dis ? ` data-tip="${torchBuild === 'cpu'
-        ? '当前安装的是 CPU 版 torch，CUDA 不可用；如需 GPU 请卸载后重装依赖并选择 CUDA 镜像'
-        : '未检测到 torch；安装依赖时选择 CUDA 镜像后可用'}"` : '';
-      return `<div class="dd-opt${v === device ? ' active' : ''}${dis ? ' disabled' : ''}" data-value="${v}"${tip}>${t}${dis ? '（不可用）' : ''}</div>`;
-    }).join('');
-  const deviceNote = device === 'cuda' && !cudaOk
-    ? '当前为 CPU 版 torch，CUDA 不可用：运行时会自动回退 CPU；如需 GPU 请卸载后重装依赖并选择 CUDA 镜像。'
-    : '设备切换无需重装；标签库很大时建议用 GPU 构建索引。';
+  const variant = st.variant || '';
+  const flavor = st.ort_flavor || '';
+  const variantNames = { gpu: 'GPU · fp32', cpu: 'CPU · int8' };
+  let deviceNote;
+  if (!st.venv_exists) {
+    deviceNote = '模型 EmbeddingGemma-300m（ONNX）：点击「安装」选择运行设备（GPU / CPU），依赖与对应模型文件一并装好。';
+  } else if (!variant) {
+    deviceNote = '模型文件缺失：重新运行「安装」即可补齐（已装的依赖与 venv 会复用）。';
+  } else if (flavor && flavor !== variant) {
+    deviceNote = `模型变体（${variantNames[variant] || variant}）与已装的 onnxruntime 包（${flavor === 'gpu' ? 'GPU' : 'CPU'} 版）不一致：运行时会自动用另一变体兜底，建议卸载后重装依赖。`;
+  } else {
+    deviceNote = '';  // 正常状态不占面板：设备已展示在卡片徽标上
+  }
   const stopBtn = st.dir_exists
-    ? `<button class="ws-btn" id="btn-ragvec-stop" ${st.worker_running ? '' : 'disabled'} data-tip="${st.worker_running ? '停止嵌入后台进程，释放显存/内存；下次向量检索自动重启' : '后台未在运行'}">释放资源</button>`
+    ? `<button class="ws-btn" id="btn-ragvec-stop" ${st.worker_running ? 'data-tip="停止嵌入后台进程，释放显存/内存；下次向量检索自动重启"' : 'disabled'}>释放资源</button>`
     : '';
+  const deviceBadge = st.ready
+    ? `<span class="exp-badge ok">${icon('check')} 运行设备：${variantNames[variant] || variant}</span>`
+    : _statusBadge(st);
   return `
     <div class="exp-card ${!enabled ? 'is-disabled' : ''}">
       <div class="exp-card-head">
         <label class="switch master-switch">
           <input type="checkbox" id="ragvec-enable-toggle" ${enabled ? 'checked' : ''} ${!st.ready ? 'disabled' : ''}/>
         </label>
-        <div class="exp-head-main" data-tip="点击展开 / 收起配置">
-          <div class="exp-title-row"><strong>Sentence-Transformers 向量检索</strong>${_statusBadge(st)}</div>
-          <div class="exp-desc">用语义相似度补充关键词匹配，帮标签检索多找回一些候选；仅在标签检索=「增强」时生效。</div>
+        <div class="exp-head-main">
+          <div class="exp-title-row"><strong>标签向量检索</strong>${deviceBadge}</div>
+          <div class="exp-desc">EmbeddingGemma-300m 语义召回，补充关键词匹配；仅在标签检索=「增强」时生效。</div>
         </div>
         <div class="exp-head-actions">
           ${stopBtn}
@@ -2637,14 +2705,7 @@ function _renderRagVecSection(exp, rvStatus) {
       <div id="ragvec-cfg-panel" class="exp-cfg-panel" style="display:${state.settingsOpen.has('ragvec-cfg') ? 'block' : 'none'}">
         <div class="exp-input-row">
           <div class="field">
-            <label data-tip="嵌入模型运行设备：自动 = 有 N 卡用 CUDA，否则 CPU；选择后立即保存">运行设备</label>
-            <div class="dd" id="ragvec-device-dd">
-              <button class="dd-btn" type="button"><span class="dd-label">${deviceNames[device] || '自动'}</span>${ddArrow()}</button>
-              <div class="dd-panel">${deviceOpts}</div>
-            </div>
-          </div>
-          <div class="field">
-            <label data-tip="向量相似度阈值：越高候选越严格，越低找回越多（0.30–0.80）">相似度阈值</label>
+            <label data-tip="向量候选的相似度下限：低于该值不采纳">相似度阈值</label>
             <input type="number" id="ragvec-threshold" min="0.3" max="0.8" step="0.01" value="${cfg.threshold != null ? cfg.threshold : 0.45}"/>
           </div>
           <div class="field">
@@ -2652,16 +2713,7 @@ function _renderRagVecSection(exp, rvStatus) {
             <input type="number" id="ragvec-topn" min="1" max="100" value="${cfg.top_n != null ? cfg.top_n : 20}"/>
           </div>
         </div>
-        <div class="exp-input-row">
-          <div class="field" style="flex:1">
-            <label data-tip="嵌入模型；点击未安装的模型可直接下载">嵌入模型</label>
-            <div class="dd ragvec-model-dd" id="ragvec-model-dd">
-              <button class="dd-btn" type="button"><span class="dd-label">${curTitle}</span>${ddArrow()}</button>
-              <div class="dd-panel">${modelOpts}</div>
-            </div>
-          </div>
-        </div>
-        <div class="exp-desc">${esc(deviceNote)}</div>
+        ${deviceNote ? `<div class="exp-desc">${esc(deviceNote)}</div>` : ''}
       </div>
     </div>`;
 }
@@ -2682,17 +2734,6 @@ function _bindRagVecEvents(rvStatus) {
     const el = $(sel);
     if (el) el.addEventListener('input', () => scheduleExperimentalSave());
   });
-  const dd = $('#ragvec-device-dd');
-  if (dd) initDropdown(dd, () => scheduleExperimentalSave(true));
-  const modelDD = $('#ragvec-model-dd');
-  if (modelDD) initDropdown(modelDD, () => scheduleExperimentalSave(true));
-  if (modelDD) modelDD.querySelectorAll('.dd-opt.disabled').forEach(opt => {
-    opt.addEventListener('click', (e) => {
-      e.stopPropagation();
-      modelDD.classList.remove('open');
-      openRagVecModelDialog();
-    });
-  });
 
   const stopBtn = $('#btn-ragvec-stop');
   if (stopBtn) stopBtn.addEventListener('click', async () => {
@@ -2708,30 +2749,12 @@ function _bindRagVecEvents(rvStatus) {
   });
 }
 
-async function startRagVecInstall(pytorchVersion, site, modelKey) {
+async function startRagVecInstall(device, site) {
   await runInstallTask(
-    () => apiCall('install_rag_vec', pytorchVersion, site, modelKey || ''),
+    () => apiCall('install_rag_vec', device || 'gpu', site || 'sjtu'),
     async () => {
       await apiCall('save_config', { experimental: { rag_vec_enabled: true } });
       state.ragVecEnabled = true;
       toast('标签向量检索安装完成，已自动启用', 'ok');
     });
 }
-
-const _rvMgr = makeModelManager({
-  title: '嵌入模型管理', dlKind: 'ragvec', dialogCls: 'wm-dialog',
-  statusApi: 'get_rag_vec_status', downloadApi: 'download_rag_vec_model',
-});
-_rvMgr.dlApi = _makeModelDownloader({
-  kind: 'ragvec', dialogCls: 'wm-dialog',
-  progressKey: '__onRagVecModelProgress', doneKey: '__onRagVecModelDone',
-  cancelledMsg: () => '未完成的文件已清理，再次下载将从零开始。',
-  successMsg: r => `<div class="ok">已下载 ${r.downloaded} 个文件到模型目录</div>
-      <div class="hf-files-hint" style="margin-top:4px">关闭弹窗后，在卡片「嵌入模型」下拉中选择该模型即可切换。</div>`,
-  afterDone: () => _rvMgr.refresh(),
-  onClose: () => {
-    _rvMgr.data = null;
-    if ($('#modal').classList.contains('show')) renderSettings();
-  },
-});
-const openRagVecModelDialog = _rvMgr.open;

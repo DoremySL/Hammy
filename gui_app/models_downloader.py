@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from batch_rename.utils import fmt_size
 from .installer import start_cancel_watcher
 
 # ── 全局配置 ──
@@ -83,15 +84,6 @@ def set_cancel() -> None:
 
 
 # ============================== 工具函数 ==============================
-def _human_size(num: float) -> str:
-    """字节数 -> 人类可读 (B/KB/MB/GB)。"""
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if abs(num) < 1024.0:
-            return f"{num:.1f} {unit}"
-        num /= 1024.0
-    return f"{num:.1f} PB"
-
-
 def split_repo_id(repo_id: str) -> Tuple[str, str]:
     """仓库 ID -> (author, repo_name)。"""
     if "/" in repo_id:
@@ -384,7 +376,7 @@ def _download_once(url: str, dest_path: str, filename: str,
     except urllib.error.HTTPError as e:
         if e.code == 416:  # Range 超出：本地已 >= 服务器大小
             if not expected_size or resumed == expected_size:
-                log_fn(f"  已是完整文件，跳过: {filename}（{_human_size(resumed)}）")
+                log_fn(f"  已是完整文件，跳过: {filename}（{fmt_size(resumed)}）")
                 return
             _delete_quiet(dest_path)
             raise HttpError(f"本地文件大小异常: {filename}")
@@ -401,7 +393,7 @@ def _download_once(url: str, dest_path: str, filename: str,
         if not total:
             total = expected_size  # 响应头缺失时用文件树大小兜底
         log_fn(f"  {'继续' if mode == 'ab' else '开始'}下载: {filename}"
-               f"（共 {_human_size(total) if total else '?'}）")
+               f"（共 {fmt_size(total) if total else '?'}）")
         downloaded = resumed
         last_pct = -1.0
         last_report = 0
@@ -439,7 +431,7 @@ def _download_once(url: str, dest_path: str, filename: str,
         raise HttpError(f"校验失败: {filename}（本地 {final}，预期 {expect}）")
     if progress_cb:
         progress_cb({"type": "file_done", "file": filename, "size": final})
-    log_fn(f"  下载完成: {filename}（{_human_size(final)}）")
+    log_fn(f"  下载完成: {filename}（{fmt_size(final)}）")
 
 
 def _download_file(url: str, dest_path: str, filename: str, log_fn: Callable[[str], None],
@@ -453,7 +445,7 @@ def _download_file(url: str, dest_path: str, filename: str, log_fn: Callable[[st
         raise DownloadCancelled()
     exist_size = os.path.getsize(dest_path) if os.path.exists(dest_path) else 0
     if expected_size and exist_size == expected_size:
-        log_fn(f"  已是完整文件，跳过: {filename}（{_human_size(exist_size)}）")
+        log_fn(f"  已是完整文件，跳过: {filename}（{fmt_size(exist_size)}）")
         if progress_cb:
             progress_cb({"type": "file_skip", "file": filename, "size": exist_size})
         return
@@ -560,7 +552,7 @@ def _download_file_chunked(url: str, dest_path: str, filename: str,
 
     ranges = _make_chunk_ranges(expected_size)
     part_paths = [f"{dest_path}.part{i}" for (_s, _e, i) in ranges]
-    log_fn(f"  分片下载: {filename}（{_human_size(expected_size)}，"
+    log_fn(f"  分片下载: {filename}（{fmt_size(expected_size)}，"
            f"{len(ranges)} 段/{CHUNK_WORKERS} 连接）")
 
     def worker(start: int, end: int, idx: int) -> None:
@@ -684,7 +676,7 @@ def _download_file_chunked(url: str, dest_path: str, filename: str,
                                 f"（本地 {os.path.getsize(dest_path)}，预期 {expected_size}）")
             if progress_cb:
                 progress_cb({"type": "file_done", "file": filename, "size": expected_size})
-            log_fn(f"  分片下载完成: {filename}（{_human_size(expected_size)}）")
+            log_fn(f"  分片下载完成: {filename}（{fmt_size(expected_size)}）")
             return
         except (ChunkedFallback, DownloadCancelled):
             _delete_parts(part_paths)
@@ -730,7 +722,7 @@ def _disk_error(dest_dir: str, need: int) -> Optional[str]:
     except OSError:
         return None
     if free and free < need * 1.05:
-        return f"磁盘空间不足：约需 {_human_size(need)}，剩余 {_human_size(free)}"
+        return f"磁盘空间不足：约需 {fmt_size(need)}，剩余 {fmt_size(free)}"
     return None
 
 
@@ -769,7 +761,6 @@ def _download_entries(entries: List[Dict[str, Any]], cleanup_dir: str,
             _on_cancel()
             break
         url, dest, display, exp = ent["url"], ent["dest"], ent["display"], ent["size"]
-        log_fn(f"  [{idx}/{count}] {display}")
 
         def file_cb(ev: Dict[str, Any], idx: int = idx, display: str = display) -> None:
             if progress_cb:

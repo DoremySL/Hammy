@@ -67,11 +67,12 @@ async function showPendingDetail(v) {
 
   let html = '';
   if (showPixai) {
-    const charTags = (pixai.character_tags || []).map(t =>
-      `<button class="chip" data-web-tag="${esc(t.name)}">${esc(t.name)} <small>${t.score != null ? (t.score * 100).toFixed(0) : '—'}%</small></button>`).join('')
+    // 输出中文开启时后端附带 zh 字段：显示「英文 / 中文名」；点击搜索仍用英文 name
+    const tagChip = t =>
+      `<button class="chip" data-web-tag="${esc(t.name)}">${esc(t.zh ? `${t.name} / ${t.zh}` : t.name)} <small>${t.score != null ? (t.score * 100).toFixed(0) : '—'}%</small></button>`;
+    const charTags = (pixai.character_tags || []).map(tagChip).join('')
       || '<span class="filemeta">未识别到角色</span>';
-    const ipTags = (pixai.ip_tags || []).map(t =>
-      `<button class="chip" data-web-tag="${esc(t.name)}">${esc(t.name)} <small>${t.score != null ? (t.score * 100).toFixed(0) : '—'}%</small></button>`).join('')
+    const ipTags = (pixai.ip_tags || []).map(tagChip).join('')
       || '<span class="filemeta">未识别到IP</span>';
     html += `
     <div class="row">

@@ -8,6 +8,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from batch_rename.utils import fmt_size
 from .env import APP_ROOT, PYTHON_EXE, make_logger
 from .installer import (
     PYPI_MIRRORS, DEFAULT_PYPI_MIRROR, UV_TIMEOUT_SEC,
@@ -23,11 +24,9 @@ from .installer import (
 # ── 路径常量 ──
 WHISPER_DIR = APP_ROOT / "faster-whisper"
 VENV_DIR = WHISPER_DIR / "venv"
-# hf 下载根目录，布局 models/<author>/<repo>/（与 llama 模型下载组织一致）
-MODEL_DIR = WHISPER_DIR / "models"
+MODEL_DIR = WHISPER_DIR / "models"  # 模型下载根目录（hf 布局）
 
-# ── 内置模型元数据（全部 CTranslate2 格式，faster-whisper 直接加载目录）──
-# key 为模型唯一标识，持久化到 whisper/config.json 的 "model" 键
+# ── 内置模型元数据（CTranslate2 格式）──
 WHISPER_MODELS = {
     "v3-turbo": {
         "title": "v3-turbo",
@@ -52,23 +51,13 @@ WHISPER_MODELS = {
     },
 }
 DEFAULT_MODEL = "v3-turbo"
-# 仅支持日语、转录时强制语言的模型
-JA_ONLY_MODELS = frozenset({"ja-1.5B"})
+JA_ONLY_MODELS = frozenset({"ja-1.5B"})  # 仅支持日语的模型
 
 _INSTALL_TIMEOUT_SEC = 600.0
-_TRANSCRIBE_TIMEOUT_PER_VIDEO_SEC = 600.0  # 单视频上限，按数量线性放大
+_TRANSCRIBE_TIMEOUT_PER_VIDEO_SEC = 600.0  # 单视频转录超时
 
 
 _log = make_logger("faster_whisper")
-
-
-def _fmt_size(num: float) -> str:
-    """字节数 -> 人类可读（B/KB/MB/GB）。"""
-    for unit in ("B", "KB", "MB", "GB"):
-        if abs(num) < 1024.0:
-            return f"{num:.1f}{unit}"
-        num /= 1024.0
-    return f"{num:.1f}TB"
 
 
 def _model_subdir(model_key: str) -> Optional[Path]:
@@ -81,13 +70,13 @@ def _model_subdir(model_key: str) -> Optional[Path]:
 
 
 def is_model_installed(model_key: str) -> bool:
-    """模型完整性检测：目录存在且含 model.bin（CTranslate2 模型文件）。"""
+    """模型完整性检测：目录存在且含 model.bin。"""
     sub = _model_subdir(model_key)
     return bool(sub and sub.is_dir() and (sub / "model.bin").is_file())
 
 
 def get_current_model() -> str:
-    """当前使用模型 key（配置持久化；异常值/缺失回退默认）。"""
+    """当前使用模型 key（异常回退默认）。"""
     try:
         from .config_store import load_whisper_config
         key = load_whisper_config().get("model") or DEFAULT_MODEL
@@ -113,7 +102,7 @@ def get_status() -> Dict[str, Any]:
         "model_exists": installed.get(current, False),
         "ready": venv_ok and installed.get(current, False),
         "dir_path": str(WHISPER_DIR),
-        # 模型元数据（前端安装弹窗 / 面板下拉 / 管理弹窗共用）
+        # 模型元数据（前端共用）
         "models": [{**meta, "key": key} for key, meta in WHISPER_MODELS.items()],
         "installed": installed,
         "current_model": current,
@@ -136,8 +125,6 @@ def _download_model(model_key: str,
     log_fn = log_fn or (lambda s: None)
     cancel = cancel_event or models_downloader.get_cancel_event()
     try:
-        # 全仓库文件列表：CTranslate2 格式需要 model.bin / config.json /
-        # vocabulary / tokenizer 等全部文件，缺一不可加载
         files = models_downloader.api_list_files("hf", meta["repo"], cancel_event=cancel)
         names = [f["path"] for f in files
                  if f.get("type") != "directory" and f.get("path")]
@@ -151,7 +138,6 @@ def _download_model(model_key: str,
             cleanup_on_cancel=cleanup_on_cancel,
         )
     except models_downloader.DownloadCancelled:
-        # 文件列表拉取阶段取消（下载阶段的取消由 download_files 内部处理）
         return {"ok": False, "cancelled": True, "error": "已取消"}
     except Exception as e:
         return {"ok": False, "error": f"下载模型失败: {e}"}
@@ -170,7 +156,6 @@ def install_dependencies(pypi_mirror: str = DEFAULT_PYPI_MIRROR,
     steps = InstallSteps(4)
 
     def _cancelled() -> Optional[Dict[str, Any]]:
-        """用户取消：返回取消结果；未取消返回 None。"""
         if stop_event is not None and stop_event.is_set():
             _log("安装已取消", log_fn)
             return {"ok": False, "cancelled": True, "error": "安装已取消"}
@@ -185,7 +170,6 @@ def install_dependencies(pypi_mirror: str = DEFAULT_PYPI_MIRROR,
         return r
     if not uv:
         return {"ok": False, "error": "UV 安装失败"}
-    _log(f"UV 就绪: {uv}", log_fn)
 
     # ── 步骤 2 ──
     steps.push(2)
@@ -217,8 +201,6 @@ def install_dependencies(pypi_mirror: str = DEFAULT_PYPI_MIRROR,
         return r
     if rc != 0:
         return {"ok": False, "error": f"安装 faster-whisper 失败: {out[-500:]}"}
-    # ctranslate2 需要额外 CUDA 运行时（自带 cuDNN 但不含 cuBLAS）；
-    # 无 NVIDIA GPU 的机器跳过（~500MB），转录脚本自动走 CPU (int8) 模式
     if detect_gpu().get("has_nvidia"):
         _log("→ nvidia-cublas/cufft/curand（CUDA 运行时）…", log_fn)
         rc, out = _run_subprocess_streaming(
@@ -234,12 +216,9 @@ def install_dependencies(pypi_mirror: str = DEFAULT_PYPI_MIRROR,
             return {"ok": False, "error": f"安装 CUDA 运行时失败: {out[-500:]}"}
     else:
         _log("→ 未检测到 NVIDIA GPU，跳过 CUDA 运行时（转录将使用 CPU 模式）", log_fn)
-    _log("依赖安装完成", log_fn)
 
-    # ── 步骤 4：从 hf-mirror 下载所选模型（复用 models_downloader）──
+    # ── 步骤 4：下载模型 ──
     _log(f"━━ 步骤 4/4：下载模型（{WHISPER_MODELS[model_key]['title']}，hf-mirror）━━", log_fn)
-    # 安装时把块级进度折算成日志（每 5% 一行）：1.6GB+ 的 model.bin 下载期间
-    # 日志面板不能全程静默，否则用户误以为卡住
     last_pct10 = {"v": -1}
 
     def _install_progress(ev: Dict[str, Any]):
@@ -248,7 +227,7 @@ def install_dependencies(pypi_mirror: str = DEFAULT_PYPI_MIRROR,
             if pct10 > last_pct10["v"]:
                 last_pct10["v"] = pct10
                 _log(f"  {Path(ev['file']).name} {int(ev['pct'] * 100)}%"
-                     f"（{_fmt_size(ev['done'])}/{_fmt_size(ev['total'])}）", log_fn)
+                     f"（{fmt_size(ev['done'])}/{fmt_size(ev['total'])}）", log_fn)
             steps.push(4, ((ev.get("idx", 1) - 1) + ev["pct"]) / max(1, ev.get("count", 1)))
         elif ev.get("type") in ("file_done", "file_skip"):
             steps.push(4, ev.get("idx", 0) / max(1, ev.get("count", 1)))
@@ -260,13 +239,9 @@ def install_dependencies(pypi_mirror: str = DEFAULT_PYPI_MIRROR,
     if r:
         return r
     if dl.get("cancelled"):
-        _log("模型下载已取消，未完成的文件已清理", log_fn)
         return {"ok": False, "cancelled": True, "error": "模型下载已取消"}
     if not dl.get("ok"):
         return {"ok": False, "error": f"模型下载失败: {dl.get('error') or '未知错误'}"}
-    _log("模型下载完成", log_fn)
-    # 安装时选定的模型设为当前模型：配置默认值是 v3-turbo，若用户选了其他模型
-    # 而不同步，ready 判定会指向未下载的 v3-turbo，界面误报「找不到模型」
     try:
         from .config_store import update_whisper_config
         update_whisper_config(lambda c: c.update(model=model_key) or c)
@@ -285,7 +260,7 @@ def remove_faster_whisper() -> Dict[str, Any]:
             shutil.rmtree(WHISPER_DIR)
         except Exception as e:
             return {"ok": False, "error": f"删除失败: {e}"}
-    # 模块配置/开关/转录结果一并删除（可插拔：删除模块后不留任何模块痕迹）
+    # 模块配置/开关/转录结果一并删除
     try:
         from .workspace_paths import WHISPER_CONFIG_FILE
         shutil.rmtree(WHISPER_CONFIG_FILE.parent, ignore_errors=True)
@@ -303,15 +278,9 @@ def run_transcription_batch(video_paths: List[str],
                             on_video_done: Optional[Callable[[int, Dict[str, Any]], None]] = None,
                             on_log: Optional[Callable[[str], None]] = None,
                             stop_event=None) -> Dict[str, Any]:
-    """对多个视频一次性转录（模型只加载一次，NDJSON 流式输出每个结果）。
-        Args:
-        workers: 视频间并发数（0=自动：GPU 4 路 / CPU 串行），同一模型实例
-        多线程并发解码，结果按 idx 索引不依赖完成顺序
-        beam_size: 束搜索宽度；compression_ratio: 复读判定阈值（None=不启用）
-        on_video_done: 回调 (idx, result_dict)，每完成一个视频触发
-        on_log: 子进程阶段日志回调（加载模型 / 开始转录等）
-        Returns:
-        {"ok": bool, "per_video": [{"ok", "srt", "language", "duration", "error"}], "error": str|None}
+    """对多个视频一次性转录（workers=0 自动并发）。
+
+    Returns: {"ok": bool, "per_video": [...], "error": str|None}
     """
     status = get_status()
     if not status["ready"]:
@@ -322,7 +291,7 @@ def run_transcription_batch(video_paths: List[str],
     if not model_dir or not model_dir.is_dir():
         return {"ok": False, "per_video": [],
                 "error": f"当前模型（{WHISPER_MODELS[current]['title']}）未下载，请先在扩展功能页下载"}
-    # ja-1.5B 仅支持日语：强制 language=ja，忽略面板语言设置，避免识别错乱
+    # ja-1.5B 仅支持日语，强制 language=ja
     if current in JA_ONLY_MODELS:
         language = "ja"
 
@@ -383,9 +352,7 @@ def run_transcription_batch(video_paths: List[str],
     return {"ok": False, "per_video": [], "error": "转录无输出"}
 
 
-# ── 转录脚本（在 venv python 中执行，支持多视频批量）──
-# 进度信息经 stdout 的 {"log": ...} JSON 行回传（stderr 仅用于异常诊断），
-# 每完成一个视频输出一行 {"idx": i, ...}，最后输出 {"done": true, ...} 汇总。
+# ── 转录脚本（venv 中执行）──
 _TRANSCRIBE_SCRIPT = r"""
 import sys, json, os
 from pathlib import Path
@@ -407,7 +374,7 @@ site_packages = params.get('venv_site_packages', '')
 def plog(msg):
     print(json.dumps({'log': msg}, ensure_ascii=False), flush=True)
 
-# Windows: ctranslate2 需要 nvidia DLL 在 PATH 中（os.add_dll_directory 无效）
+# ctranslate2 需要 nvidia DLL 在 PATH 中
 if site_packages:
     for sub in ['cublas', 'cufft', 'curand', 'cuda_nvrtc', 'nvjitlink']:
         dll_dir = os.path.join(site_packages, 'nvidia', sub, 'bin')
@@ -420,12 +387,7 @@ try:
 except ImportError:
     BatchedInferencePipeline = None
 
-# 日志极简：不推加载/开始/完成类日志，逐视频结果经 {"idx": i, ...} 行回传，
-# 由父进程按完成数统一打日志 + 推进度条；仅保留降级/异常类提示。
-
-# 显式探测 NVIDIA GPU：device='auto' + int8_float16 在无 GPU 机器上会因
-# 计算类型不兼容而抛错（错误信息不固定，关键词匹配不可靠），
-# 这里直接按探测结果选择设备与计算类型，任何 CUDA 失败都兜底 CPU。
+# 显式探测 NVIDIA GPU，CUDA 失败兜底 CPU
 try:
     import ctranslate2
     gpu_count = ctranslate2.get_cuda_device_count()
@@ -459,7 +421,7 @@ vad_params = dict(
 ) if use_vad else None
 
 def transcribe_one(i, vp):
-    # 转录单个视频并即时输出 {"idx": i, ...} 行（线程安全，供主进程流式解析）
+    # 转录单个视频，输出 {"idx": i, ...} 行
     try:
         if use_batch:
             segments, info = model.transcribe(

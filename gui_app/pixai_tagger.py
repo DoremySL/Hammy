@@ -17,11 +17,12 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from batch_rename.subprocess_registry import register_subprocess, unregister_subprocess
 from batch_rename.env import SUBPROCESS_KWARGS
 from batch_rename.config import Config
+from batch_rename.utils import fmt_size, safe_int
 from batch_rename.video import probe_and_extract_keyframes
 from .env import APP_ROOT, PYTHON_EXE, make_logger
 from . import installer
 from .installer import (
-    resolve_pytorch, DEFAULT_PYTORCH_VERSION, DEFAULT_PYTORCH_SITE,
+    DEFAULT_TRT_SITE,
     ensure_uv as _ensure_uv,
     run_subprocess_streaming as _run_subprocess_streaming,
     run_venv_script as _run_venv_script,
@@ -34,114 +35,195 @@ from .installer import (
 # ── 路径常量 ──
 PIXAI_TAGGER_DIR = APP_ROOT / "pixai-tagger"
 VENV_DIR = PIXAI_TAGGER_DIR / "venv"
-# 模型根目录，hf 布局 models/<author>/<repo>/（经 models_downloader 从魔搭下载）
-MODEL_DIR = PIXAI_TAGGER_DIR / "models"
+MODEL_DIR = PIXAI_TAGGER_DIR / "models"  # 模型根目录（hf 布局）
 
-MAIN_REPO = "pixai-labs/pixai-tagger-v1.0"
+# tagger：ONNX 导出仓库，TRT 引擎现场构建
+MAIN_REPO = "DoremySL/pixai-tagger-v1.0-onnx-1008-672"
 CLS_REPO = "deepghs/anime_real_cls"  # 二次元/真实二分类预筛模型
 
 TAG_THRESHOLD = 0.66
-# 角色得分 = 最高置信度 + (初筛出现次数-1)*CHAR_FREQ_WEIGHT，初筛阈值 = TAG_THRESHOLD*0.3
-CHAR_FREQ_WEIGHT = 0.1
-# 预筛三分层（按帧 anime 分数中位数）：≥高阈值二次元、≤低阈值真实、中间不确定照常打标
-ANIME_CLS_THRESHOLD = 0.72
-REAL_CLS_THRESHOLD = 0.50
+CHAR_FREQ_WEIGHT = 0.1  # 角色得分频次权重
+EXCLUDED_IP_TAGS = frozenset({"original", "real_life"})  # 恒排除的非作品标签
+ANIME_CLS_THRESHOLD = 0.72  # 预筛二次元阈值（按帧分数中位数）
+REAL_CLS_THRESHOLD = 0.50  # 预筛真实阈值
 
-# v1.0 模型仓库文件（transformers 布局，trust_remote_code 加载仓库内模型代码）
-_MODEL_FILES = ("model.safetensors", "config.json",
-                "preprocessor_config.json", "tagger_pipeline.py")
-_CLS_CKPT_FILE = "model.ckpt"
-_CLS_MODEL_SUBDIR = "mobilenetv3_v1.4_dist"  # 模型子目录名（轻量版，约 32MB）
+# 支持的模型输入尺寸
+SUPPORTED_SIZES = (1008, 672)
+DEFAULT_INPUT_SIZE = 1008
 
-# 子进程超时（推理含双模型加载，按视频数量线性放大）
-_INSTALL_TIMEOUT_SEC = 900.0    # torch 体积大，安装可能很慢
-_INFERENCE_BASE_SEC = 240.0     # 推理基础超时（双模型加载 + 少量帧）
-_INFERENCE_PER_VIDEO_SEC = 120.0  # 每增加一个视频放宽的余量（1008px 推理，CPU 尤其重）
+# 仓库文件名规则：tagger_<size>_<fp16|fp32>.onnx
+_ENGINE_META_FILE = "engine_meta.json"  # 引擎指纹文件
+_CLS_MODEL_SUBDIR = "mobilenetv3_v1.4_dist"
+_CLS_ONNX_FILE = "model.onnx"      # 预筛模型，索引 0 = anime
+_CLS_ENGINE_NAME = "cls_384.trt"   # cls 引擎文件名
+TAG_ZH_FILE = "tag_zh.json"  # 标签中文翻译表
+
+# 子进程超时
+_INSTALL_TIMEOUT_SEC = 2400.0
+_BUILD_TIMEOUT_SEC = 1200.0
+_INFERENCE_BASE_SEC = 240.0
+_INFERENCE_PER_VIDEO_SEC = 120.0
 
 
 _log = make_logger("pixai_tagger")
 
 
-def _fmt_size(num: float) -> str:
-    """字节数 -> 人类可读（B/KB/MB/GB）。"""
-    for unit in ("B", "KB", "MB", "GB"):
-        if abs(num) < 1024.0:
-            return f"{num:.1f}{unit}"
-        num /= 1024.0
-    return f"{num:.1f}TB"
+def normalize_size(value: Any) -> int:
+    size = safe_int(value, DEFAULT_INPUT_SIZE)
+    return size if size in SUPPORTED_SIZES else DEFAULT_INPUT_SIZE
+
+
+def _engine_workspace_gb(vram_mb: int) -> int:
+    return 2 if 0 < vram_mb <= 6 * 1024 else 4
 
 
 def get_mirrors_info() -> Dict[str, Any]:
-    """返回可选镜像站列表 + GPU 检测结果（供前端渲染选择弹窗）。"""
-    return installer.get_mirror_groups(["pytorch", "pypi"])
+    """返回 pixai 安装弹窗数据（尺寸/站点/GPU 检测）。"""
+    gpu = installer.detect_gpu()
+    return {
+        "sizes": [
+            {"id": 1008, "name": "1008 × 1008（精准）", "desc": "原生分辨率，角色/IP 识别最优", "size_label": "约 1 GB"},
+            {"id": 672, "name": "672 × 672（快速）", "desc": "约 2.3 倍速，身份类标签略有损失", "size_label": "约 1 GB"},
+        ],
+        "sites": [{"id": k, "name": v["name"], "desc": v["desc"]}
+                  for k, v in installer.TRT_SITES.items()],
+        "default_site": installer.DEFAULT_TRT_SITE,
+        "gpu": gpu,
+        "gpu_issue": installer.trt_gpu_issue(gpu),
+        "pypi": [{"id": k, "name": v["name"], "url": v["url"]} for k, v in installer.PYPI_MIRRORS.items()],
+        "default_pypi": installer.DEFAULT_PYPI_MIRROR,
+    }
 
 
-def _main_model_dir() -> Optional[Path]:
-    """主模型目录（models/<author>/<repo>/，缺任一模型文件视为未安装）。"""
+def tagger_model_files(size: int, precision: str) -> Tuple[str, ...]:
+    """tagger 仓库文件清单。"""
+    files = ["config.json", f"tagger_{int(size)}_{precision}.onnx"]
+    if precision == "fp32":
+        files.append(f"tagger_{int(size)}_{precision}.onnx.data")
+    return tuple(files)
+
+
+def _model_dir(size: int, precision: str) -> Optional[Path]:
     d = MODEL_DIR / MAIN_REPO
-    return d if all((d / f).is_file() for f in _MODEL_FILES) else None
+    return d if all((d / f).is_file() for f in tagger_model_files(size, precision)) else None
 
 
-def _find_cls_model_path() -> Optional[Path]:
-    """anime_real_cls 预筛模型检查点路径。"""
-    p = MODEL_DIR / CLS_REPO / _CLS_MODEL_SUBDIR / _CLS_CKPT_FILE
+def _cls_model_dir() -> Optional[Path]:
+    p = MODEL_DIR / CLS_REPO / _CLS_MODEL_SUBDIR / _CLS_ONNX_FILE
     return p if p.is_file() else None
 
 
+def _tagger_engine_path(model_dir: Path, size: int, precision: str) -> Path:
+    return model_dir / f"tagger_{int(size)}_{precision}.trt"
+
+
+def resolve_precision(setting: str = "auto", gpu: Optional[Dict[str, Any]] = None) -> str:
+    """把精度设置解析为实际引擎精度（无 Tensor Core 的卡用 fp32）。"""
+    setting = (setting or "auto").lower()
+    if setting in ("fp16", "fp32"):
+        return setting
+    if gpu is None:
+        gpu = installer.detect_gpu_cached()
+    if installer.gpu_has_tensor_core(gpu.get("gpu_name") or ""):
+        return "fp16"
+    return "fp32"
+
+
+def _configured_size_precision() -> Tuple[int, str]:
+    """从 pixai 配置读取（输入尺寸, 实际引擎精度）。"""
+    from .config_store import load_pixai_config
+    return (normalize_size(load_pixai_config().get("input_size")),
+            resolve_precision("auto"))
+
+
 def cls_model_available() -> bool:
-    """二次元预筛模型是否可用。"""
-    return _find_cls_model_path() is not None
+    return _cls_model_dir() is not None
+
+
+_zh_cache: Dict[str, Any] = {}
+
+
+def load_tag_zh() -> Dict[str, str]:
+    """标签中文翻译表（danbooru 标签 → 中文名）。"""
+    path = MODEL_DIR / MAIN_REPO / TAG_ZH_FILE
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        _zh_cache.clear()
+        return {}
+    if _zh_cache.get("mtime") != mtime:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            m = data.get("map") if isinstance(data, dict) else None
+            zh = {str(k): str(v) for k, v in m.items() if v} if isinstance(m, dict) else {}
+        except Exception:
+            zh = {}
+        _zh_cache.clear()
+        _zh_cache["mtime"] = mtime
+        _zh_cache["map"] = zh
+    return _zh_cache["map"]
 
 
 def get_status() -> Dict[str, Any]:
     """获取 pixai-tagger 安装状态。"""
     venv_python = venv_python_path(VENV_DIR)
-    model_ready = _main_model_dir() is not None
+    size, precision = _configured_size_precision()
+    model_dir = _model_dir(size, precision)
+    engine_ok = model_dir is not None and _tagger_engine_path(model_dir, size, precision).is_file()
     return {
         "dir_exists": PIXAI_TAGGER_DIR.is_dir(),
         "venv_exists": VENV_DIR.is_dir() and venv_python.exists(),
-        "model_exists": model_ready,
+        "model_exists": model_dir is not None,
         "cls_model_exists": cls_model_available(),
-        "ready": VENV_DIR.is_dir() and venv_python.exists() and model_ready,
+        "engine_exists": engine_ok,
+        "input_size": size,
+        "precision": precision,
+        "ready": VENV_DIR.is_dir() and venv_python.exists() and model_dir is not None,
         "dir_path": str(PIXAI_TAGGER_DIR),
     }
 
 
 def install_dependencies(
-    pytorch_version: str = DEFAULT_PYTORCH_VERSION,
-    site: str = DEFAULT_PYTORCH_SITE,
+    input_size: int = DEFAULT_INPUT_SIZE,
+    site: str = DEFAULT_TRT_SITE,
     log_fn: Optional[Callable[[str], None]] = None,
     stop_event: Optional[threading.Event] = None,
 ) -> Dict[str, Any]:
-    """安装全部依赖（uv + venv + torch/timm + 两个模型 + 精度自测），返回 {"ok", "error"}。"""
-    plan = resolve_pytorch(pytorch_version, site)
-    torch_url = plan["torch_url"]
-    pypi_url = plan["pypi_url"]
-    steps = InstallSteps(7)
+    """安装全部依赖（uv + venv + tensorrt + 模型下载 + TRT 引擎构建），返回 {"ok", "error"}。"""
+    plan = installer.resolve_trt_site(site)
+    size = normalize_size(input_size)
+    steps = InstallSteps(6)
 
     PIXAI_TAGGER_DIR.mkdir(parents=True, exist_ok=True)
 
     def _cancelled() -> Optional[Dict[str, Any]]:
-        """用户取消：返回取消结果；未取消返回 None。"""
         if stop_event is not None and stop_event.is_set():
             _log("安装已取消", log_fn)
             return {"ok": False, "cancelled": True, "error": "安装已取消"}
         return None
 
-    # ── 步骤 1 ──
+    # ── 步骤 1：显卡预检 ──
     steps.push(1)
-    _log("━━ 步骤 1/7：检测 UV ━━", log_fn)
-    uv = _ensure_uv(pypi_url, log_fn, stop_event)
+    _log("━━ 步骤 1/6：检测显卡与驱动 ━━", log_fn)
+    gpu = installer.detect_gpu()
+    issue = installer.trt_gpu_issue(gpu)
+    if issue:
+        return {"ok": False, "error": issue}
+    precision = resolve_precision("auto", gpu)
+    workspace_gb = _engine_workspace_gb(gpu.get("vram_mb") or 0)
+    _log(f"GPU: {gpu.get('gpu_name')}（驱动 {gpu.get('driver_version')}）"
+         f" → 引擎精度 {precision.upper()}"
+         + ("（无 Tensor Core，FP32 引擎更快）" if precision == "fp32" else ""), log_fn)
+
+    # ── 步骤 2 ──
+    steps.push(2)
+    _log("━━ 步骤 2/6：创建虚拟环境 ━━", log_fn)
+    uv = _ensure_uv(plan["pypi_url"], log_fn, stop_event)
     r = _cancelled()
     if r:
         return r
     if not uv:
         return {"ok": False, "error": "UV 安装失败"}
-    _log(f"UV 就绪: {uv}", log_fn)
-
-    # ── 步骤 2 ──
-    steps.push(2)
-    _log("━━ 步骤 2/7：创建虚拟环境 ━━", log_fn)
     if not VENV_DIR.is_dir():
         rc, out = _run_subprocess_streaming(
             [uv, "venv", str(VENV_DIR), "--python", PYTHON_EXE],
@@ -156,58 +238,33 @@ def install_dependencies(
     venv_py = str(venv_python_path(VENV_DIR))
 
     # ── 步骤 3 ──
-    is_cpu = plan["is_cpu"]
     steps.push(3)
-    _log(f"━━ 步骤 3/7：安装 torch（{plan['version_name']} · {plan['site_name']}）━━", log_fn)
+    _log(f"━━ 步骤 3/6：安装推理依赖（{plan['site_name']}）━━", log_fn)
     rc, out = _run_subprocess_streaming(
         [uv, "pip", "install", "--python", venv_py,
-         "torch", "--index-url", torch_url],
+         "numpy", "pillow", "cuda-bindings",
+         "nvidia-cuda-runtime", "nvidia-cuda-nvrtc",
+         "--index-url", plan["pypi_url"]],
         _INSTALL_TIMEOUT_SEC, log_fn, stop_event,
     )
     r = _cancelled()
     if r:
         return r
     if rc != 0:
-        return {"ok": False, "error": f"安装 torch 失败: {out[-500:]}"}
-
-    # ── 步骤 4 ──
-    steps.push(4)
-    _log("━━ 步骤 4/7：安装 torchvision + timm/transformers/Pillow/requests ━━", log_fn)
-    if is_cpu:
-        rc, out = _run_subprocess_streaming(
-            [uv, "pip", "install", "--python", venv_py,
-             "torchvision", "--index-url", torch_url],
-            _INSTALL_TIMEOUT_SEC, log_fn, stop_event,
-        )
-    else:
-        # CUDA 版 torchvision 必须单独 force-reinstall，否则装到 CPU 版报 nms 错误
-        _log("→ torchvision (force-reinstall, CUDA 版)…", log_fn)
-        rc, out = _run_subprocess_streaming(
-            [uv, "pip", "install", "--python", venv_py,
-             "torchvision", "--force-reinstall", "--no-deps", "--upgrade",
-             "--index-url", torch_url],
-            _INSTALL_TIMEOUT_SEC, log_fn, stop_event,
-        )
-    r = _cancelled()
-    if r:
-        return r
-    if rc != 0:
-        return {"ok": False, "error": f"安装 torchvision 失败: {out[-500:]}"}
-    _log("→ timm, transformers, Pillow, requests…", log_fn)
+        return {"ok": False, "error": f"安装推理依赖失败: {out[-500:]}"}
+    _log("→ tensorrt（NVIDIA 索引 + PyPI 主索引，约 2GB）…", log_fn)
     rc, out = _run_subprocess_streaming(
         [uv, "pip", "install", "--python", venv_py,
-         "timm", "transformers", "Pillow", "requests",
-         "--index-url", pypi_url],
+         "tensorrt>=11,<12", "--extra-index-url", plan["nvidia_url"]],
         _INSTALL_TIMEOUT_SEC, log_fn, stop_event,
     )
     r = _cancelled()
     if r:
         return r
     if rc != 0:
-        return {"ok": False, "error": f"安装依赖失败: {out[-500:]}"}
-    _log("全部依赖安装完成", log_fn)
+        return {"ok": False, "error": f"安装 tensorrt 失败: {out[-500:]}"}
 
-    # ── 步骤 5 + 6：主模型与预筛模型（魔搭源，经 models_downloader 引擎） ──
+    # ── 步骤 4 + 5：模型下载 ──
     from . import models_downloader
     if not models_downloader.begin_download():
         return {"ok": False, "busy": True, "error": "已有下载任务进行中，请稍后再试"}
@@ -222,91 +279,122 @@ def install_dependencies(
                 pct5 = int(ev["pct"] * 100 // 5)
                 if pct5 > last_pct["v"]:
                     last_pct["v"] = pct5
-                    _log(f"  {Path(ev['file']).name} {int(ev['pct'] * 100)}%"
-                         f"（{_fmt_size(ev['done'])}/{_fmt_size(ev['total'])}）", log_fn)
-                steps.push(5, ((ev.get("idx", 1) - 1) + ev["pct"]) / max(1, ev.get("count", 1)))
+                _log(f"  {Path(ev['file']).name} {int(ev['pct'] * 100)}%"
+                     f"（{fmt_size(ev['done'])}/{fmt_size(ev['total'])}）", log_fn)
+                steps.push(4, ((ev.get("idx", 1) - 1) + ev["pct"]) / max(1, ev.get("count", 1)))
             elif ev.get("type") in ("file_done", "file_skip"):
-                steps.push(5, ev.get("idx", 0) / max(1, ev.get("count", 1)))
+                steps.push(4, ev.get("idx", 0) / max(1, ev.get("count", 1)))
 
         def _cls_progress(ev: Dict[str, Any]):
             if ev.get("type") == "progress" and ev.get("pct") is not None:
-                steps.push(6, ev["pct"])
+                steps.push(5, ev["pct"])
             elif ev.get("type") in ("file_done", "file_skip"):
-                steps.push(6, 1.0)
+                steps.push(5, 1.0)
 
-        steps.push(5)
-        _log("━━ 步骤 5/7：从魔搭下载 PixAI Tagger v1.0 模型 ━━", log_fn)
+        steps.push(4)
+        _log(f"━━ 步骤 4/6：从魔搭下载 PixAI Tagger ONNX 模型（{size}px · {precision.upper()}）━━", log_fn)
         dl = models_downloader.download_files(
-            "ms", MAIN_REPO, list(_MODEL_FILES),
+            "ms", MAIN_REPO, [*tagger_model_files(size, precision), TAG_ZH_FILE],
             str(MODEL_DIR), log_fn=_dl_log, progress_cb=_model_progress,
             cancel_event=stop_event, cleanup_on_cancel=True)
         if dl.get("cancelled"):
-            _log("模型下载已取消，未完成的文件已清理", log_fn)
             return {"ok": False, "cancelled": True, "error": "模型下载已取消"}
         if not dl.get("ok"):
-            err = dl.get("error")
-            if not err and dl.get("failed"):
-                err = str(dl["failed"][0].get("error", ""))[:200]
-            return {"ok": False, "error": f"模型下载失败: {err or '未知错误'}"}
-        _log("PixAI Tagger 模型下载完成", log_fn)
+            core_failed = [f for f in dl.get("failed") or [] if f.get("file") != TAG_ZH_FILE]
+            if dl.get("error") or core_failed:
+                err = dl.get("error") or str(core_failed[0].get("error", ""))[:200]
+                return {"ok": False, "error": f"模型下载失败: {err}"}
+            _log("标签翻译表下载失败（不影响标签获取，中文显示将回退英文）", log_fn)
 
-        steps.push(6)
-        _log("━━ 步骤 6/7：下载预筛模型（anime_real_cls，约 32MB）━━", log_fn)
+        steps.push(5)
+        _log("━━ 步骤 5/6：下载二次元预筛模型（anime_real_cls，约 17MB）━━", log_fn)
         cls_dl = models_downloader.download_files(
-            "ms", CLS_REPO, [f"{_CLS_MODEL_SUBDIR}/{_CLS_CKPT_FILE}"],
+            "ms", CLS_REPO, [f"{_CLS_MODEL_SUBDIR}/{_CLS_ONNX_FILE}"],
             str(MODEL_DIR), log_fn=_dl_log, progress_cb=_cls_progress,
             cancel_event=stop_event, cleanup_on_cancel=True)
         if cls_dl.get("cancelled"):
-            # 取消只影响预筛模型目录，不动已装好的主模型
-            _log("安装已取消（预筛模型未完成）", log_fn)
             return {"ok": False, "cancelled": True, "error": "安装已取消"}
         if not cls_dl.get("ok"):
-            # 预筛模型下载失败不阻断安装，只是标签获取时无法跳过非二次元视频
-            _log("预筛模型下载失败（不影响标签获取主功能）", log_fn)
-        else:
-            _log("二次元预筛模型下载完成", log_fn)
+            err = cls_dl.get("error") or str((cls_dl.get("failed") or [{}])[0].get("error", ""))[:200]
+            return {"ok": False, "error": f"预筛模型下载失败: {err}"}
     finally:
         models_downloader.end_download()
 
-    # ── 步骤 7：推理精度自测 ──
-    steps.push(7)
-    _log("━━ 步骤 7/7：推理精度自测 ━━", log_fn)
-    if not is_cpu:
-        # 让出显存：本地推理服务运行中时先停止，测试后恢复
-        from .llama_cpp import pause_for_task, resume_after_task
-        pause_for_task(log_fn=log_fn)
-    try:
-        prec = run_precision_test(log_fn=log_fn, stop_event=stop_event)
-    finally:
-        if not is_cpu:
-            resume_after_task(log_fn=log_fn)
+    # ── 步骤 6：构建 TRT 引擎 ──
+    steps.push(6)
+    _log("━━ 步骤 6/6：构建 TensorRT 引擎（约 1-3 分钟）━━", log_fn)
+    err = _build_engines(size, precision, gpu_name=gpu.get("gpu_name") or "",
+                         workspace_gb=workspace_gb, log_fn=log_fn, stop_event=stop_event)
     if stop_event is not None and stop_event.is_set():
         return {"ok": False, "cancelled": True, "error": "安装已取消"}
-    if prec:
-        _log(f"精度自测完成：{prec['precision'].upper()}"
-             f"（{prec['gpu'] or 'CPU'}），已设为当前精度选择", log_fn)
-    else:
-        _log("精度自测未完成（不影响使用，精度选择保持「自动」）", log_fn)
+    if err:
+        return {"ok": False, "error": err}
 
+    from .config_store import update_pixai_config
+    update_pixai_config(lambda c: c.update(input_size=int(size)) or c)
     _log("━━ 全部完成 ━━", log_fn)
     return {"ok": True, "error": None}
 
 
-# ── 推理精度自测 ──
-
-_PRECISION_TEST_TIMEOUT_SEC = 300.0
-
-
-def run_precision_test(
-    log_fn: Optional[Callable[[str], None]] = None,
-    stop_event: Optional[threading.Event] = None,
-) -> Optional[Dict[str, Any]]:
-    """venv 内实测 tagger fp32/fp16 前向耗时择优，结果写入配置的精度选择并返回。"""
-    py = venv_python_path(VENV_DIR)
-    model_dir = _main_model_dir()
-    if not (py.is_file() and model_dir):
+def ensure_model_files(size: int, precision: str,
+                       log_fn: Optional[Callable[[str], None]] = None,
+                       stop_event: Optional[threading.Event] = None) -> Optional[str]:
+    """分析前预检：缺失的模型/翻译表从魔搭补下载，返回错误信息或 None。"""
+    from . import models_downloader
+    main_dir = MODEL_DIR / MAIN_REPO
+    missing_tagger = [f for f in tagger_model_files(size, precision)
+                      if not (main_dir / f).is_file()]
+    missing_zh = [] if (main_dir / TAG_ZH_FILE).is_file() else [TAG_ZH_FILE]
+    missing_cls = [] if _cls_model_dir() is not None else [f"{_CLS_MODEL_SUBDIR}/{_CLS_ONNX_FILE}"]
+    if not missing_tagger and not missing_zh and not missing_cls:
         return None
-    result: Dict[str, Any] = {}
+    if not models_downloader.begin_download():
+        return "已有下载任务进行中，请稍后再试"
+    try:
+        if missing_tagger or missing_zh:
+            _log(f"补充下载模型文件: {', '.join([*missing_tagger, *missing_zh])}", log_fn)
+            dl = models_downloader.download_files(
+                "ms", MAIN_REPO, [*missing_tagger, *missing_zh], str(MODEL_DIR),
+                log_fn=lambda m: _log(m, log_fn), cancel_event=stop_event,
+                cleanup_on_cancel=True)
+            if dl.get("cancelled"):
+                return "模型下载已取消"
+            core_failed = [f for f in dl.get("failed") or [] if f.get("file") != TAG_ZH_FILE]
+            if not dl.get("ok") and (dl.get("error") or (core_failed and missing_tagger)):
+                err = dl.get("error") or str((core_failed or [{}])[0].get("error", ""))[:200]
+                return f"模型文件补下载失败: {err or '未知错误'}"
+            if not missing_tagger and not core_failed and not missing_cls:
+                return None  # 只补了翻译表
+        if missing_cls:
+            _log("补充下载预筛模型…", log_fn)
+            dl = models_downloader.download_files(
+                "ms", CLS_REPO, missing_cls, str(MODEL_DIR),
+                log_fn=lambda m: _log(m, log_fn), cancel_event=stop_event,
+                cleanup_on_cancel=True)
+            if dl.get("cancelled"):
+                return "模型下载已取消"
+            if not dl.get("ok"):
+                err = dl.get("error") or str((dl.get("failed") or [{}])[0].get("error", ""))[:200]
+                return f"预筛模型补下载失败: {err or '未知错误'}"
+    finally:
+        models_downloader.end_download()
+    return None
+
+
+def _build_engines(size: int, precision: str, *, gpu_name: str = "",
+                   workspace_gb: int = 4,
+                   log_fn: Optional[Callable[[str], None]] = None,
+                   stop_event: Optional[threading.Event] = None) -> Optional[str]:
+    """在 venv 内现场构建 tagger（+cls）TRT 引擎并写指纹文件。"""
+    model_dir = MODEL_DIR / MAIN_REPO
+    jobs = [{"onnx": str(model_dir / f"tagger_{size}_{precision}.onnx"),
+             "out": str(_tagger_engine_path(model_dir, size, precision)),
+             "workspace_gb": workspace_gb}]
+    cls_onnx = _cls_model_dir()
+    with_cls = cls_onnx is not None
+    if with_cls:
+        jobs.append({"onnx": str(cls_onnx), "out": str(model_dir / _CLS_ENGINE_NAME),
+                     "workspace_gb": 1})
 
     def _on_line(line: str):
         line = line.strip()
@@ -316,87 +404,137 @@ def run_precision_test(
             obj = json.loads(line)
         except json.JSONDecodeError:
             return
-        if isinstance(obj.get("precision_result"), dict):
-            result.update(obj["precision_result"])
-        elif obj.get("log"):
+        if isinstance(obj, dict) and obj.get("log"):
             _log(str(obj["log"]), log_fn)
 
-    rc, _last, _err = _run_venv_script(
-        VENV_DIR, _PRECISION_TEST_SCRIPT, {"model_dir": str(model_dir)},
-        timeout=_PRECISION_TEST_TIMEOUT_SEC, stop_event=stop_event,
-        on_line=_on_line,
-    )
+    from .llama_cpp import pause_for_task, resume_after_task
+    pause_for_task(log_fn=log_fn)  # 让出显存
+    try:
+        rc, _last, err_tail = _run_venv_script(
+            VENV_DIR, _TRT_BUILD_SCRIPT,
+            {"jobs": jobs, "gpu_name": gpu_name, "size": int(size),
+             "precision": precision, "with_cls": with_cls,
+             "meta_file": str(model_dir / _ENGINE_META_FILE)},
+            timeout=_BUILD_TIMEOUT_SEC, stop_event=stop_event, on_line=_on_line)
+    finally:
+        resume_after_task(log_fn=log_fn)
     if stop_event is not None and stop_event.is_set():
-        return None
-    if rc != 0 or result.get("precision") not in ("fp16", "fp32"):
-        return None
-    prec = result["precision"]
-    from .config_store import update_pixai_config
-    update_pixai_config(lambda c: c.update(precision=prec) or c)
-    return {"precision": prec, "gpu": str(result.get("gpu") or "")}
+        return "安装已取消"
+    if rc != 0:
+        return f"引擎构建失败: {(err_tail or '子进程异常退出')[-300:]}"
+    if not _tagger_engine_path(model_dir, size, precision).is_file():
+        return "引擎构建失败: 引擎文件未生成"
+    return None
 
 
-_PRECISION_TEST_SCRIPT = r"""
-import sys, json, os, time
-os.environ['HF_HUB_OFFLINE'] = '1'
-os.environ['TRANSFORMERS_OFFLINE'] = '1'
-import torch
-from PIL import Image
-from transformers import pipeline
+# ── venv 内联脚本公共段：日志 + TRT 引擎构建 ──
+
+_TRT_CORE = r'''
+import gc, glob, json, os, shutil, sys, tempfile, time
+from pathlib import Path
+
+def _add_nvidia_dll_dirs():
+    """把 pip 安装的 nvidia-* wheel 的 DLL 目录加入搜索路径。"""
+    for base in {p for p in sys.path if p and Path(p).name.lower() == 'site-packages'}:
+        for d in glob.glob(str(Path(base) / 'nvidia' / '*' / 'bin')):
+            try:
+                os.add_dll_directory(d)
+            except (OSError, AttributeError):
+                pass
+            os.environ['PATH'] = d + os.pathsep + os.environ.get('PATH', '')
+
+_add_nvidia_dll_dirs()
 
 def plog(msg):
-    print(json.dumps({'log': msg}, ensure_ascii=False), flush=True)
+    print(json.dumps({'log': str(msg)}, ensure_ascii=False), flush=True)
 
+def _stage_ascii(onnx_path):
+    """把 ONNX 与外部权重拷到 ASCII 临时目录。"""
+    for stale in Path(tempfile.gettempdir()).glob('trt_stage_*'):
+        shutil.rmtree(stale, ignore_errors=True)
+    tmpdir = Path(tempfile.mkdtemp(prefix='trt_stage_'))
+    if not str(tmpdir).isascii():
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        raise RuntimeError('系统 TEMP 目录不是 ASCII 路径，无法构建引擎')
+    for side in onnx_path.parent.glob(onnx_path.name + '*'):
+        shutil.copy2(side, tmpdir / side.name)
+    return tmpdir / onnx_path.name, tmpdir
+
+def trt_build(onnx_path, engine_path, workspace_gb=4):
+    """从 ONNX 构建本机 TRT 引擎（动态维度钉在 1）。"""
+    import tensorrt as trt
+    onnx_path, engine_path = Path(onnx_path), Path(engine_path)
+    logger = trt.Logger(trt.Logger.WARNING)
+    builder = trt.Builder(logger)
+    network = builder.create_network(0)
+    parser = trt.OnnxParser(network, logger)
+    data_file = Path(str(onnx_path) + '.data')
+    tmpdir, src = None, onnx_path
+    try:
+        if data_file.exists():
+            if not str(onnx_path).isascii():
+                src, tmpdir = _stage_ascii(onnx_path)
+            ok = parser.parse_from_file(str(src))
+        else:
+            ok = parser.parse(onnx_path.read_bytes())
+        if not ok:
+            errs = '; '.join(str(parser.get_error(i)) for i in range(parser.num_errors))
+            raise RuntimeError(f'ONNX 解析失败: {errs[:300]}')
+        config = builder.create_builder_config()
+        config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, int(workspace_gb) << 30)
+        profile = None
+        for i in range(network.num_inputs):
+            name = network.get_input(i).name
+            shape = [int(d) for d in network.get_input(i).shape]
+            if any(d < 0 for d in shape):
+                fixed = tuple(1 if d < 0 else d for d in shape)
+                if profile is None:
+                    profile = builder.create_optimization_profile()
+                profile.set_shape(name, fixed, fixed, fixed)
+        if profile is not None:
+            config.add_optimization_profile(profile)
+        t0 = time.perf_counter()
+        ser = builder.build_serialized_network(network, config)
+        if ser is None:
+            raise RuntimeError('引擎构建失败')
+        engine_path.write_bytes(ser)
+        plog(f'{engine_path.name} 构建完成（{time.perf_counter() - t0:.0f}s，'
+             f'{engine_path.stat().st_size / 2 ** 20:.0f} MB）')
+    finally:
+        del network, parser, builder  # 先释放对象再删临时目录（Windows 文件锁）
+        gc.collect()
+        if tmpdir is not None:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+'''
+
+_TRT_BUILD_SCRIPT = _TRT_CORE + r'''
 with open(sys.argv[1], 'r', encoding='utf-8') as f:
     params = json.load(f)
-model_dir = params['model_dir']
-
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-gpu = ''
-if device == 'cuda':
-    try:
-        gpu = torch.cuda.get_device_name(0)
-    except Exception:
-        pass
-
-def emit(prec):
-    print(json.dumps({'precision_result': {'precision': prec, 'gpu': gpu}},
-                     ensure_ascii=False), flush=True)
-
-if device != 'cuda':
-    emit('fp32')  # CPU 固定 fp32
-    sys.exit(0)
 
 try:
-    tagger = pipeline(model=model_dir, image_processor=model_dir,
-                      trust_remote_code=True, device=device)
-    img = Image.new('RGB', (384, 216))
-
-    def _time_tag(iters=2):
-        with torch.inference_mode():
-            tagger(img)
-            torch.cuda.synchronize()
-            t0 = time.perf_counter()
-            for _ in range(iters):
-                tagger(img)
-            torch.cuda.synchronize()
-        return (time.perf_counter() - t0) / iters
-
-    with torch.inference_mode():
-        tagger(img)
-    t_fp32 = _time_tag()
-    tagger.model.half()
-    t_fp16 = _time_tag()
-    use_fp16 = t_fp16 < t_fp32
-    if not use_fp16:
-        tagger.model.float()
-    plog(f'精度自测: fp32 {t_fp32*1000:.0f}ms/次, fp16 {t_fp16*1000:.0f}ms/次'
-         f' → 使用 {"fp16" if use_fp16 else "fp32"}')
-    emit('fp16' if use_fp16 else 'fp32')
+    import tensorrt as trt
+    _gpu_name = params.get('gpu_name') or ''  # 指纹 GPU 名与分析脚本同源（CUDA 设备 0）
+    try:
+        from cuda.bindings import runtime as _cudart
+        _e, _p = _cudart.cudaGetDeviceProperties(0)
+        if _e == 0 and _p is not None:
+            _gpu_name = _p.name.decode(errors='replace').strip()
+    except Exception:
+        pass
+    for job in params['jobs']:
+        trt_build(job['onnx'], job['out'], job.get('workspace_gb', 4))
+    meta = {
+        'gpu_name': _gpu_name,
+        'trt_version': trt.__version__,
+        'tagger': {'size': params.get('size'), 'precision': params.get('precision')},
+        'cls': bool(params.get('with_cls')),
+    }
+    Path(params['meta_file']).write_text(
+        json.dumps(meta, ensure_ascii=False, indent=1), encoding='utf-8')
 except Exception as e:
-    plog(f'精度自测失败: {e}')
+    print(json.dumps({'error': str(e)}, ensure_ascii=False), flush=True)
     sys.exit(1)
-"""
+'''
 
 
 def remove_pixai_tagger() -> Dict[str, Any]:
@@ -407,7 +545,7 @@ def remove_pixai_tagger() -> Dict[str, Any]:
             shutil.rmtree(PIXAI_TAGGER_DIR)
         except Exception as e:
             return {"ok": False, "error": f"删除失败: {e}"}
-    # 模块配置/开关/标签结果一并删除（可插拔：删除模块后不留任何模块痕迹）
+    # 模块配置/开关/标签结果一并删除
     try:
         from .workspace_paths import PIXAI_CONFIG_FILE
         shutil.rmtree(PIXAI_CONFIG_FILE.parent, ignore_errors=True)
@@ -417,23 +555,21 @@ def remove_pixai_tagger() -> Dict[str, Any]:
             "message": "已删除 pixai-tagger 文件夹" if existed else "目录不存在，无需删除"}
 
 
-# ── 抽帧与推理（标签获取 / 二次元预筛） ──
+# ── 抽帧与推理 ──
 
 _NO_STOP = threading.Event()
 
 
 def extract_frames_for_tagger(video_path: str,
                               stop_event: Optional[threading.Event] = None,
-                              frame_count: int = 15,
-                              frame_max_side: int = 640) -> List[str]:
-    """复用主流程抽帧（点位 × 每点 1 帧），返回 JPEG base64 帧列表（驻留内存）。
-    v1.0 模型内部等比缩放+填充至 1008×1008，无需短边压缩与裁剪。"""
+                              frame_count: int = 15) -> List[str]:
+    """复用主流程抽帧，返回 JPEG base64 帧列表。"""
     if stop_event is None:
         stop_event = _NO_STOP
     if stop_event.is_set():
         return []
     cfg = Config(sampling_points=max(1, frame_count), frames_per_point=1,
-                 frame_max_side=max(64, frame_max_side))
+                 frame_max_side=1008)
     cfg.validate()
     _, frames = probe_and_extract_keyframes(video_path, cfg, stop_event)
     return [f.b64 for f in frames]
@@ -447,18 +583,43 @@ def apply_char_tag_rules(char_stats: Dict[str, Tuple[int, float]],
                          char_threshold: float = TAG_THRESHOLD,
                          freq_weight: float = CHAR_FREQ_WEIGHT,
                          ) -> Dict[str, float]:
-    """角色标签规则（规格说明，分析子进程脚本内为同逻辑实现）。
-
-    char_stats: tag → (初筛内出现次数, 最高置信度)，初筛阈值 = char_threshold*0.3
-    （由 pipeline 抽取时生效）。得分 = 最高置信度 + (次数-1)*freq_weight，
-    得分 > char_threshold 的全部保留，否则返回空。返回 tag → 最高置信度（即显示分数）。"""
+    """角色标签输出规则（分析子进程脚本内同逻辑实现）。"""
     return {t: mx for t, (cnt, mx) in char_stats.items()
             if mx + (cnt - 1) * freq_weight > char_threshold}
 
 
+def apply_ip_tag_rules(ip_stats: Dict[str, Tuple[int, float]],
+                       excluded: "frozenset[str]" = EXCLUDED_IP_TAGS,
+                       ) -> Dict[str, float]:
+    """IP 标签输出规则（分析子进程脚本内同逻辑实现）。"""
+    cand = {t: s for t, s in ip_stats.items() if t not in excluded}
+    if not cand:
+        return {}
+    top = max(mx for _, mx in cand.values())
+    best = {t: s for t, s in cand.items() if s[1] == top}
+    if len(best) > 1:
+        top_cnt = max(cnt for cnt, _ in best.values())
+        best = {t: s for t, s in best.items() if s[0] == top_cnt}
+    return {t: mx for t, (cnt, mx) in best.items()}
+
+
+def apply_tag_output_rules(char_stats: Dict[str, Tuple[int, float]],
+                           ip_stats: Dict[str, Tuple[int, float]],
+                           char_threshold: float = TAG_THRESHOLD,
+                           freq_weight: float = CHAR_FREQ_WEIGHT,
+                           excluded: "frozenset[str]" = EXCLUDED_IP_TAGS,
+                           ) -> Tuple[Dict[str, float], Dict[str, float]]:
+    """完整输出规则：角色过滤 + IP 规则 + 角色兜底（分析子进程脚本内同逻辑实现）。"""
+    char_scores = apply_char_tag_rules(char_stats, char_threshold, freq_weight)
+    ip_scores = apply_ip_tag_rules(ip_stats, excluded)
+    if ip_scores and not char_scores and char_stats:
+        best = min(char_stats.items(), key=lambda kv: (-kv[1][1], kv[0]))
+        char_scores = {best[0]: best[1][1]}
+    return char_scores, ip_scores
+
+
 class AnalyzeStream:
-    """交互式分析子进程：启动即加载双模型（与抽帧并行），stdin 逐视频送入、
-    stdout 流式回传 {"video_result": {...}}（单子进程串行，响应顺序 = 请求顺序）。"""
+    """交互式分析子进程：stdin 逐视频送入，stdout 流式回传 {"video_result": {...}}。"""
 
     def __init__(self, params: Dict[str, Any], video_count: int,
                  stop_event=None,
@@ -468,7 +629,7 @@ class AnalyzeStream:
         self.on_log = on_log
         self.on_video_result = on_video_result
         self.per_video: List[Dict[str, Any]] = []
-        self.broken = False  # 子进程异常/停止/超时后置位，调用方应停止发送
+        self.broken = False  # 子进程异常/停止/超时后置位
         self._deadline = time.time() + _inference_timeout(video_count)
         self._result_q: "queue.Queue[Optional[Dict[str, Any]]]" = queue.Queue()
         self._err_tail: "deque[str]" = deque(maxlen=200)
@@ -519,7 +680,7 @@ class AnalyzeStream:
                             try:
                                 self.on_log(str(obj["log"]))
                             except Exception:
-                                pass  # 回调异常不影响子进程收尾
+                                pass
                     elif "video_result" in obj and isinstance(obj["video_result"], dict):
                         vr = obj["video_result"]
                         self.per_video.append(vr)
@@ -549,7 +710,7 @@ class AnalyzeStream:
         self._err_thread.start()
 
     def send(self, item: Dict[str, Any]) -> bool:
-        """发送一个视频请求（帧 base64，一行 JSON）。子进程已退出时返回 False。"""
+        """发送一个视频请求，子进程已退出时返回 False。"""
         if self.broken or self.p.poll() is not None:
             return False
         try:
@@ -562,10 +723,7 @@ class AnalyzeStream:
             return False
 
     def next_result(self) -> Optional[Dict[str, Any]]:
-        """阻塞等待下一个 video_result（响应顺序 = 请求顺序）。
-
-        停止/超时/子进程提前退出时返回 None 并置位 broken（close 负责 kill 收尾）。
-        """
+        """阻塞等待下一个 video_result，停止/超时/子进程退出时返回 None。"""
         while True:
             if self.stop_event is not None and self.stop_event.is_set():
                 self.broken = True
@@ -578,7 +736,6 @@ class AnalyzeStream:
             try:
                 vr = self._result_q.get(timeout=0.25)
             except queue.Empty:
-                # 队列空才检查子进程是否已退出，避免丢弃已入队结果
                 if self.p.poll() is not None:
                     self.broken = True
                     return None
@@ -589,9 +746,7 @@ class AnalyzeStream:
             return vr
 
     def try_next_result(self) -> Optional[Dict[str, Any]]:
-        """非阻塞版 next_result：无就绪结果时返回 None 且不置位 broken
-        （供 send-ahead 管道机会性排空）；仅在引擎终止（EOF/提前退出）
-        时置位 broken——超时/停止仍由阻塞版 next_result / close 判定。"""
+        """非阻塞版 next_result：无就绪结果时返回 None（不置位 broken）。"""
         if self.broken:
             return None
         try:
@@ -604,9 +759,9 @@ class AnalyzeStream:
         return vr
 
     def close(self) -> Dict[str, Any]:
-        """关闭 stdin（EOF 触发子进程处理完已发送请求后退出）并回收。
-            Returns:
-            {"ok": bool, "per_video": [...], "error": str|None}
+        """关闭子进程并回收。
+
+        Returns: {"ok": bool, "per_video": [...], "error": str|None}
         """
         stopped = self.stop_event is not None and self.stop_event.is_set()
         if stopped:
@@ -615,7 +770,6 @@ class AnalyzeStream:
             except Exception:
                 pass
         elif not self.broken:
-            # 正常收尾：EOF → 子进程读完 stdin 缓冲的请求后退出
             try:
                 if self.p.stdin is not None:
                     self.p.stdin.close()
@@ -666,68 +820,72 @@ def start_analyze_stream(
     tag_threshold: float = TAG_THRESHOLD,
     ip_threshold: float = TAG_THRESHOLD,
     char_freq_weight: float = CHAR_FREQ_WEIGHT,
-    precision: str = "auto",
+    input_size: int = DEFAULT_INPUT_SIZE,
     stop_event=None,
     on_log: Optional[Callable[[str], None]] = None,
     on_video_result: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Optional[AnalyzeStream]:
-    """启动交互式分析子进程（点击后立即加载双模型，与抽帧并行）。"""
+    """启动交互式分析子进程。"""
     status = get_status()
     if not status["ready"]:
         return None
-    snap_dir = _main_model_dir()
-    if not snap_dir:
+    size = normalize_size(input_size)
+    prec = resolve_precision("auto")
+    model_dir = _model_dir(size, prec)
+    if not model_dir:
         return None
-    cls_path = _find_cls_model_path()
-    if not cls_path:
-        # 预筛模型缺失（安装第 6 步失败被容忍）：脚本内降级为不预筛直接标签获取
-        cls_path = ""
+    gpu = installer.detect_gpu_cached()
+    workspace_gb = _engine_workspace_gb(gpu.get("vram_mb") or 0)
+    cls_onnx = _cls_model_dir()
     params = {
-        "model_dir": str(snap_dir),
-        "cls_model_path": str(cls_path),
+        "model_dir": str(model_dir),
+        "cls_model_path": str(cls_onnx) if cls_onnx else "",
+        "cls_engine": _CLS_ENGINE_NAME,
+        "meta_file": str(model_dir / _ENGINE_META_FILE),
+        "size": size,
+        "precision": prec,
+        "workspace_gb": workspace_gb,
         "skip_real": skip_real,
         "anime_threshold": anime_threshold,
         "real_threshold": real_threshold,
         "tag_threshold": tag_threshold,
         "ip_threshold": ip_threshold,
         "char_freq_weight": char_freq_weight,
-        "precision": precision if precision in ("auto", "fp32", "fp16") else "auto",
     }
     try:
         return AnalyzeStream(params, video_count,
                              stop_event=stop_event, on_log=on_log,
                              on_video_result=on_video_result)
     except Exception:
-        return None  # 启动失败：调用方按「分析引擎启动失败」整体上报
+        return None
 
 
-# ── 分析脚本（venv 中执行）：双模型各加载一次，逐视频流式回传 {"video_result": {...}}；失败输出 {"error": ...} 非零退出 ──
-_ANALYZE_SCRIPT = r"""
-import sys, json, os, io, base64, queue, time
-from pathlib import Path
-
-# 强制离线模式，禁止任何网络请求
-os.environ['HF_HUB_OFFLINE'] = '1'
-os.environ['TRANSFORMERS_OFFLINE'] = '1'
-
-import torch
-import torchvision.transforms as transforms
+# ── 分析脚本（venv 中执行）──
+_ANALYZE_SCRIPT = _TRT_CORE + r"""
+import base64, io, queue, threading
+import numpy as np
 from PIL import Image, ImageStat
-import timm
-from transformers import pipeline
-
-def plog(msg):
-    print(json.dumps({'log': msg}, ensure_ascii=False), flush=True)
+import tensorrt as trt
+from cuda.bindings import runtime as cudart
 
 def report(video_result):
     print(json.dumps({'video_result': video_result}, ensure_ascii=False), flush=True)
 
-params_file = sys.argv[1]
-with open(params_file, 'r', encoding='utf-8') as f:
+def _fatal(msg):
+    print(json.dumps({'error': str(msg)}, ensure_ascii=False), flush=True)
+    sys.exit(1)
+
+def _cerr(res):
+    '''取 cuda-python 返回的错误码。'''
+    return res[0] if isinstance(res, tuple) else res
+
+with open(sys.argv[1], 'r', encoding='utf-8') as f:
     params = json.load(f)
 
 model_dir = Path(params['model_dir'])
-cls_model_path = params.get('cls_model_path') or ''
+cls_onnx = params.get('cls_model_path') or ''
+cls_engine_path = model_dir / (params.get('cls_engine') or 'cls_384.trt')
+meta_file = Path(params.get('meta_file') or (model_dir / 'engine_meta.json'))
 skip_real = bool(params.get('skip_real', False))
 cls_threshold = float(params.get('anime_threshold', 0.72))
 real_threshold = float(params.get('real_threshold', 0.50))
@@ -735,63 +893,143 @@ char_threshold = float(params.get('tag_threshold', 0.9))
 char_freq_w = float(params.get('char_freq_weight', 0.1))
 char_prefilter = char_threshold * 0.3
 ip_threshold = float(params.get('ip_threshold', 0.9))
-precision = str(params.get('precision') or 'auto').lower()
-if precision not in ('auto', 'fp32', 'fp16'):
-    precision = 'auto'
+size = int(params.get('size') or 1008)
+precision = str(params.get('precision') or 'fp16')
+workspace_gb = float(params.get('workspace_gb') or 4)
 
-for fname in ('model.safetensors', 'config.json', 'preprocessor_config.json', 'tagger_pipeline.py'):
-    if not (model_dir / fname).is_file():
-        print(json.dumps({'error': f'模型文件缺失: {model_dir / fname}'}))
-        sys.exit(1)
+# ── 标签表与类别切分 ──
+try:
+    cfg = json.loads((model_dir / 'config.json').read_text(encoding='utf-8'))
+    TAGS, SPLIT = cfg['tags'], cfg['tags_split']
+except Exception as e:
+    _fatal(f'标签表读取失败: {e}')
+_seg_off, _off = {}, 0
+for _cat, _cnt in SPLIT:
+    _seg_off[_cat] = (_off, int(_cnt))
+    _off += int(_cnt)
+if 'character' not in _seg_off or 'copyright' not in _seg_off:
+    _fatal('config.json 缺少 character/copyright 类别切分')
 
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
+# ── CUDA 初始化 ──
+try:
+    _cerr(cudart.cudaFree(0))  # 初始化上下文
+    _err, _props = cudart.cudaGetDeviceProperties(0)
+    if _err != 0 or _props is None:
+        raise RuntimeError(f'cudaGetDeviceProperties 错误 {_err}')
+    GPU_NAME = _props.name.decode(errors='replace').strip()
+except Exception as e:
+    _fatal(f'未检测到可用的 NVIDIA GPU: {e}')
 
-# ── 预筛模型（缺失时降级为不预筛直接标签获取）──
-has_cls = bool(cls_model_path) and Path(cls_model_path).exists()
-cls_model = None
-if has_cls:
-    cls_model = timm.create_model('mobilenetv3_large_100', pretrained=False, num_classes=2)
-    # ckpt 为 Lightning 格式且含 numpy 标量（可信来源），weights_only=False
-    ckpt = torch.load(str(cls_model_path), map_location=device, weights_only=False)
-    state_dict = ckpt.get('state_dict', ckpt) if isinstance(ckpt, dict) else ckpt
-    filtered = {}
-    for k, v in state_dict.items():
-        if 'total_ops' in k or 'total_params' in k or not isinstance(v, torch.Tensor):
-            continue
-        for prefix in ('model.', 'backbone.', 'module.'):
-            if k.startswith(prefix):
-                k = k[len(prefix):]
-        filtered[k] = v
-    cls_model.load_state_dict(filtered, strict=False)
-    cls_model.to(device)
-    cls_model.eval()
-else:
-    plog('未找到预筛模型，跳过预筛直接标签获取')
+tagger_engine = model_dir / f'tagger_{size}_{precision}.trt'
 
-# ── 标签获取模型：trust_remote_code 加载仓库内模型代码；输入 1008×1008
-# 由 RescalePadProcessor 内部等比缩放+填充，无需预压缩/裁剪 ──
-tagger = pipeline(model=str(model_dir), image_processor=str(model_dir),
-                  trust_remote_code=True, device=device)
-# 角色按初筛阈值（char_threshold*0.3）抽取以便跨帧计数，IP 按达标阈值抽取；
-# 阈值规则在跨帧合并后收口
-_TAG_THRESHOLD = {'character': char_prefilter, 'copyright': ip_threshold}
+def _engine_meta_fresh():
+    '''引擎指纹是否匹配当前 GPU/TRT 版本/尺寸/精度。'''
+    try:
+        meta = json.loads(meta_file.read_text(encoding='utf-8'))
+    except Exception:
+        return False
+    tag = meta.get('tagger') or {}
+    return (str(meta.get('gpu_name') or '').strip().lower() == GPU_NAME.lower()
+            and str(meta.get('trt_version') or '') == trt.__version__
+            and tag.get('size') == size and tag.get('precision') == precision
+            and tagger_engine.is_file())
 
-cls_transform = transforms.Compose([
-    transforms.Resize((384, 384)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
-])
+def _write_engine_meta():
+    meta = {'gpu_name': GPU_NAME, 'trt_version': trt.__version__,
+            'tagger': {'size': size, 'precision': precision},
+            'cls': cls_engine_path.is_file()}
+    meta_file.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding='utf-8')
 
-# ── 坏帧过滤：过暗帧与纯色帧会让预筛打分不可信 ──
-_DARK_BRIGHTNESS = 15.0  # 亮度低于此值的帧视为坏帧
+if not _engine_meta_fresh():
+    onnx_file = model_dir / f'tagger_{size}_{precision}.onnx'
+    if not onnx_file.is_file():
+        _fatal(f'缺少 {onnx_file.name}，请重新安装 pixai-tagger')
+    plog('TRT 引擎缺失或与当前 GPU/TRT 版本不符，正在构建（约 1-3 分钟）…')
+    try:
+        trt_build(onnx_file, tagger_engine, workspace_gb)
+        _write_engine_meta()
+    except Exception as e:
+        _fatal(f'引擎构建失败: {e}')
+
+class TrtRunner:
+    '''单引擎封装：设备缓冲 + 异步前向。'''
+
+    def __init__(self, engine_path):
+        engine = trt.Runtime(trt.Logger(trt.Logger.WARNING)).deserialize_cuda_engine(
+            Path(engine_path).read_bytes())
+        if engine is None:
+            raise RuntimeError(f'引擎反序列化失败: {Path(engine_path).name}')
+        self.ctx = engine.create_execution_context()
+        self.in_name = self.out_name = None
+        for i in range(engine.num_io_tensors):
+            name = engine.get_tensor_name(i)
+            mode = engine.get_tensor_mode(name)
+            if mode == trt.TensorIOMode.INPUT and self.in_name is None:
+                self.in_name = name
+            elif mode == trt.TensorIOMode.OUTPUT and self.out_name is None:
+                self.out_name = name
+        if not self.in_name or not self.out_name:
+            raise RuntimeError(f'引擎 IO 不完整: {Path(engine_path).name}')
+        in_shape = tuple(int(d) for d in self.ctx.get_tensor_shape(self.in_name))
+        out_shape = tuple(int(d) for d in self.ctx.get_tensor_shape(self.out_name))
+        self.in_dtype = trt.nptype(engine.get_tensor_dtype(self.in_name))
+        out_dtype = trt.nptype(engine.get_tensor_dtype(self.out_name))
+        self._in_bytes = int(np.prod(in_shape)) * np.dtype(self.in_dtype).itemsize
+        self._out_bytes = int(np.prod(out_shape)) * np.dtype(out_dtype).itemsize
+        self.host_out = np.empty(out_shape, dtype=out_dtype)
+        _err, self.d_in = cudart.cudaMalloc(self._in_bytes)
+        _err2, self.d_out = cudart.cudaMalloc(self._out_bytes)
+        if _err != 0 or _err2 != 0:
+            raise RuntimeError('显存分配失败')
+        self.ctx.set_tensor_address(self.in_name, self.d_in)
+        self.ctx.set_tensor_address(self.out_name, self.d_out)
+        _err3, self.stream = cudart.cudaStreamCreate()
+        if _err3 != 0:
+            raise RuntimeError('CUDA 流创建失败')
+
+    def run(self, host_in):
+        x = np.ascontiguousarray(host_in, dtype=self.in_dtype)
+        if x.nbytes != self._in_bytes:
+            raise RuntimeError(f'输入字节数不符: {x.nbytes} != {self._in_bytes}')
+        if _cerr(cudart.cudaMemcpyAsync(self.d_in, x.ctypes.data, self._in_bytes,
+                                        cudart.cudaMemcpyKind.cudaMemcpyHostToDevice,
+                                        self.stream)) != 0:
+            raise RuntimeError('主机→显存拷贝失败')
+        if not self.ctx.execute_async_v3(self.stream):
+            raise RuntimeError('推理执行失败')
+        if _cerr(cudart.cudaMemcpyAsync(self.host_out.ctypes.data, self.d_out, self._out_bytes,
+                                        cudart.cudaMemcpyKind.cudaMemcpyDeviceToHost,
+                                        self.stream)) != 0:
+            raise RuntimeError('显存→主机拷贝失败')
+        if _cerr(cudart.cudaStreamSynchronize(self.stream)) != 0:
+            raise RuntimeError('CUDA 流同步失败')
+        return self.host_out
+
+try:
+    tagger_runner = TrtRunner(tagger_engine)
+except Exception as e:
+    _fatal(f'tagger 引擎加载失败: {e}')
+
+cls_runner = None
+if cls_onnx:
+    try:
+        if not cls_engine_path.is_file():
+            trt_build(cls_onnx, cls_engine_path, 1)
+            _write_engine_meta()
+        cls_runner = TrtRunner(cls_engine_path)
+    except Exception as e:
+        plog(f'预筛模型不可用，跳过预筛直接标签获取: {e}')
+        cls_runner = None
+
+# ── 坏帧过滤 ──
+_DARK_BRIGHTNESS = 15.0  # 亮度低于此值视为坏帧
 
 def _mean_brightness(image):
-    '''粗略亮度（0-255）：缩到 64px 灰度取均值，成本极低。'''
+    '''粗略亮度（0-255）。'''
     return ImageStat.Stat(image.convert('L').resize((64, 64))).mean[0]
 
 def _is_flat_frame(image):
-    '''纯色/低信息量帧：方差<8（纯色/虚焦）或 方差<60 且饱和度<0.05（灰阶转场）。
-    正常画面帧方差通常远大于此，误伤风险极低。'''
+    '''纯色/低信息量帧判定。'''
     g = image.convert('L').resize((64, 64))
     stddev = ImageStat.Stat(g).stddev[0]
     if stddev >= 60:
@@ -802,60 +1040,33 @@ def _is_flat_frame(image):
     r, gr, b = ImageStat.Stat(rgb).mean
     return (max(r, gr, b) - min(r, gr, b)) / 255.0 < 0.05
 
-# ── 精度决策：手动指定直接生效；自动 = 每次启动实测择优 ──
-use_fp16 = False
-need_test = False
-if precision == 'fp16':
-    use_fp16 = device == 'cuda'
-    plog('推理精度: fp16（手动指定）' if use_fp16 else '推理精度: fp32（CPU 不适用 fp16）')
-elif precision == 'fp32':
-    plog('推理精度: fp32（手动指定）')
-elif device == 'cuda':
-    need_test = True
+def tag_preprocess(img, size, dtype):
+    '''等比缩放 + 居中黑边填充到 size×size，归一化 [-1,1]。'''
+    w, h = img.size
+    if (h, w) != (size, size):
+        r = min(size / h, size / w)
+        img = img.resize((max(1, int(w * r)), max(1, int(h * r))), Image.Resampling.BILINEAR)
+        canvas = Image.new('RGB', (size, size), (0, 0, 0))
+        canvas.paste(img, ((size - img.width) // 2, (size - img.height) // 2))
+        img = canvas
+    a = np.asarray(img, dtype=np.float32) / 255.0
+    a = (a - 0.5) / 0.5
+    return np.ascontiguousarray(np.transpose(a, (2, 0, 1))[None].astype(dtype))
 
-# ── warmup 预热 ──
+def cls_preprocess(img):
+    '''Resize 384×384 + 归一化 [-1,1] + CHW。'''
+    im = img.resize((384, 384), Image.BILINEAR)
+    a = np.asarray(im, dtype=np.float32) / 255.0
+    a = (a - 0.5) / 0.5
+    return np.ascontiguousarray(np.transpose(a, (2, 0, 1))[None])
+
+# ── warmup ──
 try:
-    _dummy = torch.zeros(1, 3, 384, 384).to(device)
-    with torch.inference_mode():
-        if cls_model is not None:
-            cls_model(_dummy)
-    _dummy_img = Image.new('RGB', (384, 216))
-    with torch.inference_mode():
-        tagger(_dummy_img)
-    if need_test:
-        def _time_tag(iters=2):
-            with torch.inference_mode():
-                tagger(_dummy_img)
-                torch.cuda.synchronize()
-                t0 = time.perf_counter()
-                for _ in range(iters):
-                    tagger(_dummy_img)
-                torch.cuda.synchronize()
-            return (time.perf_counter() - t0) / iters
-        t_fp32 = _time_tag()
-        tagger.model.half()
-        t_fp16 = _time_tag()
-        use_fp16 = t_fp16 < t_fp32
-        if not use_fp16:
-            tagger.model.float()
-        plog(f'精度自测: fp32 {t_fp32*1000:.0f}ms/次, fp16 {t_fp16*1000:.0f}ms/次'
-             f' → 使用 {"fp16" if use_fp16 else "fp32"}')
-    del _dummy_img
-    try:
-        torch.cuda.empty_cache()
-    except Exception:
-        pass
-except Exception as _e:
-    plog(f'warmup 失败（忽略）: {_e}')
-    use_fp16 = False
-if use_fp16:
-    if cls_model is not None:
-        cls_model.half()
-    tagger.model.half()
-else:
-    if cls_model is not None:
-        cls_model.float()
-    tagger.model.float()
+    if cls_runner is not None:
+        cls_runner.run(cls_preprocess(Image.new('RGB', (384, 384))))
+    tagger_runner.run(tag_preprocess(Image.new('RGB', (384, 216)), size, tagger_runner.in_dtype))
+except Exception as e:
+    plog(f'warmup 失败（忽略）: {e}')
 
 def pil_to_rgb(image):
     if image.mode in ('RGBA', 'P'):
@@ -867,7 +1078,7 @@ def pil_to_rgb(image):
     return image.convert('RGB')
 
 def decode_frames(b64_list):
-    '''base64 → PIL Image；坏帧返回 None 占位（该视频最终报「帧解码失败」）。'''
+    '''base64 → PIL Image，失败返回 None。'''
     frames = []
     for b64 in b64_list:
         try:
@@ -876,47 +1087,62 @@ def decode_frames(b64_list):
             frames.append(None)
     return frames
 
-def _run_cls_frames(tensors):
-    '''预筛：全部帧一次 batch 前向，返回逐帧 anime 分数（预处理已在预取线程完成）。'''
-    batch = torch.stack(tensors)
-    if use_fp16:
-        batch = batch.half()
-    if device == 'cuda':
-        batch = batch.pin_memory().to(device, non_blocking=True)
-    else:
-        batch = batch.to(device)
-    with torch.inference_mode():
-        probs = torch.softmax(cls_model(batch), dim=1)
-    return [float(p[0]) for p in probs]  # 索引 0 = anime
+def _run_cls_frames(images):
+    '''预筛：逐帧前向，返回 anime 分数。'''
+    scores = []
+    for im in images:
+        logits = cls_runner.run(cls_preprocess(im))[0]
+        e = np.exp(logits - logits.max())
+        scores.append(float((e / e.sum())[0]))
+    return scores
 
 def _apply_char_rules(char_stats):
-    '''角色规则（与父进程 apply_char_tag_rules 同逻辑）：得分 = 最高置信度 +
-    (初筛出现次数-1)*char_freq_w，总分 >char_threshold 全保留，否则为空。'''
+    '''角色规则（与父进程 apply_char_tag_rules 同逻辑）。'''
     return {t: mx for t, (cnt, mx) in char_stats.items()
             if mx + (cnt - 1) * char_freq_w > char_threshold}
 
+_EXCLUDED_IP = frozenset(('original', 'real_life'))
+
+def _apply_ip_rules(ip_stats):
+    '''IP 规则（与父进程 apply_ip_tag_rules 同逻辑）。'''
+    cand = {t: s for t, s in ip_stats.items() if t not in _EXCLUDED_IP}
+    if not cand:
+        return {}
+    top = max(mx for _, mx in cand.values())
+    best = {t: s for t, s in cand.items() if s[1] == top}
+    if len(best) > 1:
+        top_cnt = max(cnt for cnt, _ in best.values())
+        best = {t: s for t, s in best.items() if s[0] == top_cnt}
+    return {t: mx for t, (cnt, mx) in best.items()}
+
+def _char_fallback(char_scores, ip_scores, char_stats):
+    '''角色兜底（与父进程 apply_tag_output_rules 同逻辑）。'''
+    if ip_scores and not char_scores and char_stats:
+        best = min(char_stats.items(), key=lambda kv: (-kv[1][1], kv[0]))
+        return {best[0]: best[1][1]}
+    return char_scores
+
 def _run_tag_frames(imgs):
-    '''标签获取：全部帧一次 pipeline 调用（内部逐帧等比缩放+填充+B=1 前向），
-    character 跨帧统计 (出现次数, 最高置信度)、copyright 跨帧 max 合并。
-    pipeline 返回形态：列表输入为 list（每项 {"results": {...}}），单图为 dict。'''
-    out = tagger(imgs, threshold=_TAG_THRESHOLD)
-    items = out if isinstance(out, list) else [out]
-    char_stats, ip_m = {}, {}
-    for it in items:
-        r = it.get('results') if isinstance(it, dict) else None
-        if not isinstance(r, dict):
-            continue
-        for t, p in (r.get('character') or {}).items():
+    '''标签获取：逐帧前向，character/IP 跨帧统计。'''
+    char_stats, ip_stats = {}, {}
+    c_off, c_cnt = _seg_off['character']
+    p_off, p_cnt = _seg_off['copyright']
+    for im in imgs:
+        logits = tagger_runner.run(tag_preprocess(im, size, tagger_runner.in_dtype))[0]
+        probs = 1.0 / (1.0 + np.exp(-logits.astype(np.float32)))
+        seg = probs[c_off:c_off + c_cnt]
+        for j in np.nonzero(seg > char_prefilter)[0]:
+            t, p = TAGS[c_off + int(j)], float(seg[j])
             cnt, mx = char_stats.get(t, (0, 0.0))
             char_stats[t] = (cnt + 1, p if p > mx else mx)
-        for t, p in (r.get('copyright') or {}).items():
-            if t not in ip_m or p > ip_m[t]:
-                ip_m[t] = p
-    return char_stats, ip_m
+        seg = probs[p_off:p_off + p_cnt]
+        for j in np.nonzero(seg > ip_threshold)[0]:
+            t, p = TAGS[p_off + int(j)], float(seg[j])
+            cnt, mx = ip_stats.get(t, (0, 0.0))
+            ip_stats[t] = (cnt + 1, p if p > mx else mx)
+    return char_stats, ip_stats
 
-# ── 预取线程：stdin → 解码/坏帧过滤/预筛 transform 入有界队列，主线程只做推理；
-# 父进程逐行发送 {"index","name","frames"}，stdin EOF 即正常结束 ──
-import threading
+# ── 预取线程：stdin → 解码/坏帧过滤入有界队列 ──
 _prefetch_q = queue.Queue(maxsize=2)
 
 def _prefetch_reader():
@@ -940,53 +1166,43 @@ def _prefetch_reader():
         try:
             imgs = [f for f in decode_frames(b64s) if f is not None]
         finally:
-            del b64s  # 无论成败先释放 base64
+            del b64s
         if not imgs:
             _prefetch_q.put({'report': {'index': vi, 'name': name, 'error': '帧解码失败'}})
             continue
-        # 坏帧过滤：剔除过暗帧与纯色帧；剩余不足 2 帧时回退全量（极端暗视频仍有帧可用）
+        # 坏帧过滤：保留不足 2 帧时回退全量
         bright = [im for im in imgs if _mean_brightness(im) >= _DARK_BRIGHTNESS
                   and not _is_flat_frame(im)]
         if len(bright) >= 2:
             imgs = bright
-        try:
-            cls_t = ([cls_transform(im) for im in imgs]
-                     if cls_model is not None else [])
-        except Exception as e:
-            _prefetch_q.put({'report': {'index': vi, 'name': name,
-                                        'error': f'帧预处理异常: {e}'}})
-            continue
-        _prefetch_q.put({'vi': vi, 'name': name,
-                         'cls_t': cls_t, 'imgs': imgs})
-    _prefetch_q.put(None)  # stdin EOF → 正常结束
+        _prefetch_q.put({'vi': vi, 'name': name, 'imgs': imgs})
+    _prefetch_q.put(None)  # stdin EOF
 
 threading.Thread(target=_prefetch_reader, name='prefetch', daemon=True).start()
 
 while True:
     item = _prefetch_q.get()
     if item is None:
-        break  # stdin EOF：已预取的视频均已处理完
+        break  # stdin EOF
     if 'report' in item:
         report(item['report'])
         continue
     vi, name = item['vi'], item['name']
-    cls_t, imgs = item['cls_t'], item['imgs']
+    imgs = item['imgs']
 
     is_anime = None  # None = 不确定
     anime_score = 0.0
     cls_ok = False
-    if cls_model is not None:
+    if cls_runner is not None:
         try:
-            scores = _run_cls_frames(cls_t)
+            scores = _run_cls_frames(imgs)
         except Exception as e:
             plog(f'预筛推理异常 {name}: {e}（继续标签获取，不标记分类）')
             scores = []
-        finally:
-            del cls_t  # 预筛完成即释放该套 tensor
         if scores:
             sorted_scores = sorted(scores)
             n = len(sorted_scores)
-            med = (sorted_scores[n // 2] + sorted_scores[(n - 1) // 2]) / 2  # 中位数
+            med = (sorted_scores[n // 2] + sorted_scores[(n - 1) // 2]) / 2
             if med >= cls_threshold:
                 is_anime = True
                 verdict = '二次元'
@@ -997,7 +1213,8 @@ while True:
                 verdict = '不确定'
             cls_ok = True
             anime_score = round(med, 4)
-            plog(f'预筛 {name}: 中位数={anime_score} → {verdict}')
+            if is_anime is not True:
+                plog(f'预筛 {name}: 中位数={anime_score} → {verdict}')
 
     if skip_real and cls_ok and is_anime is False:
         report({'index': vi, 'name': name, 'anime_score': anime_score,
@@ -1005,22 +1222,25 @@ while True:
         del imgs
         continue
 
-    # ── 标签获取（character 计数+最高分统计、copyright max 合并，规则收口）──
+    # ── 标签获取 ──
     try:
-        char_stats, ip_merged = _run_tag_frames(imgs)
+        char_stats, ip_stats = _run_tag_frames(imgs)
     except Exception as e:
         report({'index': vi, 'name': name, 'error': f'标签获取异常: {e}'})
         del imgs
         continue
-    del imgs  # 处理完成即释放该视频 PIL 帧
+    del imgs
     char_scores = _apply_char_rules(char_stats)
+    ip_scores = _apply_ip_rules(ip_stats)
+    char_scores = _char_fallback(char_scores, ip_scores, char_stats)
     result = {
         'index': vi, 'name': name,
         'character_tags': [{'name': k, 'score': round(v, 4)}
                            for k, v in sorted(char_scores.items(), key=lambda x: -x[1])],
-        'ip_tags': [{'name': ip, 'score': round(s, 4)} for ip, s in sorted(ip_merged.items())],
+        'ip_tags': [{'name': ip, 'score': round(s, 4)}
+                    for ip, s in sorted(ip_scores.items(), key=lambda x: (-x[1], x[0]))],
     }
-    # 预筛成功时才附带分类信息（供前端 ANIME/REAL/UNC 角标）
+    # 附带分类信息（前端角标用）
     if cls_ok:
         result['anime_score'] = anime_score
         result['is_anime'] = is_anime
