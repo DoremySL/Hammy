@@ -99,7 +99,7 @@ class PipelineStats:
                 if failures >= threshold:
                     stop_event.set()
                     self.frame_tripped = True
-                    tripped_msg = f"最近 {window:.0f} 秒内抽帧失败 {failures} 次（{scenario}）！已停止处理。"
+                    tripped_msg = f"最近 {window:.0f} 秒内抽帧失败 {failures} 次（{scenario}）！已停止自动重命名。"
             else:
                 self._ai_success_streak = 0
                 if self.ai_tripped:
@@ -113,7 +113,7 @@ class PipelineStats:
                 if failures >= threshold:
                     stop_event.set()
                     self.ai_tripped = True
-                    tripped_msg = f"最近 {window:.0f} 秒内 AI 任务失败 {failures} 次（{scenario}）！已停止处理。"
+                    tripped_msg = f"最近 {window:.0f} 秒内 AI 任务失败 {failures} 次（{scenario}）！已停止自动重命名。"
         # 日志在锁外输出
         if tripped_msg:
             logger.critical(tripped_msg)

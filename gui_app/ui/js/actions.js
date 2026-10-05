@@ -11,7 +11,7 @@ async function startProcessing(paths, label) {
   $('#log').innerHTML = '';
   $('#prog-bar').style.width = '0%';
   $('#prog-bar').className = 'active';
-  $('#prog-num').textContent = '处理中…';
+  $('#prog-num').textContent = '命名中…';
   gotoLog();
   updateMiniProg();
   updateStartBtn();
@@ -107,7 +107,7 @@ $('#btn-start').addEventListener('click', async () => {
   }
   if (state.processing || !state.pending.length || !state.aiConnected) return;
   const paths = state.pending.map(v => v.path);
-  await startProcessing(paths, '开始处理…');
+  await startProcessing(paths, '开始自动重命名…');
 });
 
 async function processSelected() {
@@ -116,13 +116,13 @@ async function processSelected() {
   const pendingSel = [...state.selected]
     .map(id => findVideoById(id))
     .filter(v => v && v.status === 'pending');
-  if (!pendingSel.length) { toast('未选中待处理视频', 'err'); return; }
+  if (!pendingSel.length) { toast('未选中待重命名视频', 'err'); return; }
   if (state.llamaIntegration && !state.aiConnected) {
     const ok = await ensureLlamaReady();
     if (!ok) return;
   }
   const paths = pendingSel.map(v => v.path);
-  await startProcessing(paths, `开始处理 ${pendingSel.length} 个视频…`);
+  await startProcessing(paths, `开始自动重命名 ${pendingSel.length} 个视频…`);
 }
 
 async function moveOut() {
@@ -182,7 +182,7 @@ async function generatePosters(ids) {
   toast(`已生成 ${r.ok_count} 个${r.failed_count ? '，失败 ' + r.failed_count + ' 个' : ''}`, r.failed_count ? 'err' : 'ok', true);
 }
 async function restoreVideo(vid) {
-  if (!await showConfirm('确定还原该视频的初始文件名吗？\n\n还原后：\n• 视频会恢复为初始文件名\n• 视频目录里已导出的 NFO 会被删除\n• 已处理记录会被清除', { okText: '还原' })) return;
+  if (!await showConfirm('确定还原该视频的初始文件名吗？\n\n还原后：\n• 视频会恢复为初始文件名\n• 视频目录里已导出的 NFO 会被删除\n• 重命名记录会被清除', { okText: '还原' })) return;
   toastBusy('正在还原该视频…');
   const r = await callApi('restore', vid);
   if (!r) return;
@@ -196,7 +196,7 @@ async function restoreVideo(vid) {
 }
 async function restoreBatch(vids) {
   if (!vids.length) return;
-  if (!await showConfirm(`确定批量还原 ${vids.length} 个视频的初始文件名吗？\n\n还原后：\n• 视频会恢复为初始文件名\n• 已导出的 NFO 会被删除\n• 已处理记录会被清除`, { okText: '还原' })) return;
+  if (!await showConfirm(`确定批量还原 ${vids.length} 个视频的初始文件名吗？\n\n还原后：\n• 视频会恢复为初始文件名\n• 已导出的 NFO 会被删除\n• 重命名记录会被清除`, { okText: '还原' })) return;
   toastBusy(`正在还原 ${vids.length} 个…`);
   const r = await callApi('restore_batch', vids);
   if (!r) return;
@@ -265,7 +265,7 @@ async function detectIpTags(ids) {
   const videos = ids.map(id => findVideoById(id)).filter(v => v && v.status === 'pending');
   if (!videos.length) { toast('未选中待处理视频', 'err'); return; }
   const items = videos.map(v => [v.id, v.path]);
-  const r = await withGpuBusy(`正在分析 ${videos.length} 个视频的IP信息…`, () => callApi('detect_ip_tags', items));
+  const r = await withGpuBusy('正在分析', () => callApi('detect_ip_tags', items));
   if (!r) { $('#prog-bar').className = ''; $('#prog-num').textContent = ''; return; }
   if (r.results) {
     for (const [vid, d] of Object.entries(r.results)) {
@@ -288,7 +288,7 @@ async function detectIpTags(ids) {
     const realN = r.real_count || 0;
     $('#prog-bar').style.width = '100%';
     $('#prog-bar').className = 'done';
-    $('#prog-num').textContent = stopped ? `已停止：完成 ${okN}/${r.total}` : `分析完成：成功 ${okN}/${r.total}`;
+    $('#prog-num').textContent = stopped ? '已停止' : '分析完成';
     let msg = stopped ? `IP分析已停止: 成功 ${okN}/${r.total}` : `IP分析完成: 成功 ${okN}/${r.total}`;
     if (realN > 0) msg += `（其中 ${realN} 个非二次元作品）`;
     toast(msg, okN > 0 ? 'ok' : 'err', true);
@@ -308,7 +308,7 @@ async function detectSpeech(ids) {
   const videos = ids.map(id => findVideoById(id)).filter(v => v && v.path);
   if (!videos.length) { toast('未选中有效视频', 'err'); return; }
   const items = videos.map(v => [v.id, v.path]);
-  const r = await withGpuBusy(`正在转录 ${videos.length} 个视频…`, () => callApi('detect_speech', items));
+  const r = await withGpuBusy('正在转录', () => callApi('detect_speech', items));
   if (!r) { $('#prog-bar').className = ''; $('#prog-num').textContent = ''; return; }
   if (r.results) {
     for (const [vid, d] of Object.entries(r.results)) {
@@ -320,7 +320,7 @@ async function detectSpeech(ids) {
     const okN = r.ok_count || 0;
     $('#prog-bar').style.width = '100%';
     $('#prog-bar').className = 'done';
-    $('#prog-num').textContent = stopped ? `已停止：完成 ${okN}/${r.total}` : `转录完成：成功 ${okN}/${r.total}`;
+    $('#prog-num').textContent = stopped ? '已停止' : '转录完成';
     toast(`语音转录${stopped ? '已停止' : '完成'}: 成功 ${okN}/${r.total}`, okN > 0 ? 'ok' : 'err', true);
     refreshGridData();
   } else {
@@ -368,12 +368,12 @@ async function exportSrtTranslated(ids) {
   }
   if (state.gpuBusy) { toast('GPU 正忙，请等待当前操作完成', 'err'); return; }
   const items = videos.map(v => [v.id, v.path]);
-  const r = await withGpuBusy(`正在翻译 ${items.length} 个字幕…`, () => callApi('export_srt_translated', items));
+  const r = await withGpuBusy('正在翻译', () => callApi('export_srt_translated', items));
   if (r && (r.ok || r.cancelled)) {
     const done = r.exported || 0;
     $('#prog-bar').style.width = '100%';
     $('#prog-bar').className = 'done';
-    $('#prog-num').textContent = r.cancelled ? `已停止：完成 ${done}/${items.length}` : `翻译完成：${done}/${items.length}`;
+    $('#prog-num').textContent = r.cancelled ? '已停止' : '翻译完成';
     toast(r.cancelled ? `翻译已停止: 成功 ${done}/${items.length}` : `翻译完成: 成功 ${done}/${items.length}`, done > 0 ? 'ok' : 'err');
   } else {
     $('#prog-bar').className = '';
@@ -409,7 +409,7 @@ function showContextMenu(e, v) {
   if (pendingIds.length) {
     const noProcess = !(state.llamaIntegration || state.aiConnected) || state.processing
       || state.gpuBusy || state.installing || state.llamaPendingLaunch;
-    gTop.push({ label: `处理选中视频（${pendingIds.length} 个）`, fn: () => processSelected(), disabled: noProcess });
+    gTop.push({ label: `自动重命名（${pendingIds.length} 个）`, fn: () => processSelected(), disabled: noProcess });
   }
   if (!state.processing && !state.gpuBusy) {
     gTop.push({ label: `手动重命名（${selIds.length} 个）`, fn: () => openRenameDialog() });

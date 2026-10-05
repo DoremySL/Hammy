@@ -106,6 +106,11 @@ class ExperimentalMixin:
         finally:
             _install_lock.release()
 
+    def _auto_clean_uv_cache(self) -> None:
+        """安装成功后自动清空 UV 包缓存（与清理按钮同一逻辑，保留 UV 本体）。"""
+        from ..installer import clean_uv_cache
+        clean_uv_cache(log_fn=_push_log)
+
     # ── 扩展功能页聚合状态 ──
 
     def get_experimental_status(self) -> Dict[str, Any]:
@@ -170,9 +175,12 @@ class ExperimentalMixin:
             return {"ok": False, "error": "已有模块正在安装，请等待完成后再试"}
         _install_stop_event.clear()
         try:
-            return install_dependencies(device=device, site=site,
-                                        log_fn=_push_log,
-                                        stop_event=_install_stop_event)
+            r = install_dependencies(device=device, site=site,
+                                     log_fn=_push_log,
+                                     stop_event=_install_stop_event)
+            if r.get("ok"):
+                self._auto_clean_uv_cache()
+            return r
         finally:
             _install_stop_event.clear()
             _install_lock.release()
@@ -225,9 +233,12 @@ class ExperimentalMixin:
             return {"ok": False, "error": "已有模块正在安装，请等待完成后再试"}
         _install_stop_event.clear()
         try:
-            return install_dependencies(input_size=input_size,
-                                        site=site, log_fn=_push_log,
-                                        stop_event=_install_stop_event)
+            r = install_dependencies(input_size=input_size,
+                                     site=site, log_fn=_push_log,
+                                     stop_event=_install_stop_event)
+            if r.get("ok"):
+                self._auto_clean_uv_cache()
+            return r
         finally:
             _install_stop_event.clear()
             _install_lock.release()
@@ -610,9 +621,12 @@ class ExperimentalMixin:
             return {"ok": False, "error": "已有模块正在安装，请等待完成后再试"}
         _install_stop_event.clear()
         try:
-            return install_dependencies(pypi_mirror=pypi_mirror, model=model,
-                                        log_fn=_push_log,
-                                        stop_event=_install_stop_event)
+            r = install_dependencies(pypi_mirror=pypi_mirror, model=model,
+                                     log_fn=_push_log,
+                                     stop_event=_install_stop_event)
+            if r.get("ok"):
+                self._auto_clean_uv_cache()
+            return r
         finally:
             _install_stop_event.clear()
             _install_lock.release()
@@ -1022,7 +1036,7 @@ class ExperimentalMixin:
         return r
 
     def ensure_llama_running(self) -> Dict[str, Any]:
-        """「开始处理」前置保障（本地推理集成模式）：服务未运行时自动拉起。"""
+        """「开始自动重命名」前置保障（本地推理集成模式）：服务未运行时自动拉起。"""
         from ..llama_cpp import launch as _launch, get_status
 
         cfg = load_config().get("experimental", {})
@@ -1038,7 +1052,7 @@ class ExperimentalMixin:
             return {"ok": False, "error": "llama.cpp 未安装，请先在扩展功能页安装"}
 
         target = self._llama_autostart_target()
-        _push_log("本地推理服务未运行，「开始处理」触发自动启动…")
+        _push_log("本地推理服务未运行，「开始自动重命名」触发自动启动…")
         r = _launch(target, self._llama_autostart_params(target), log_fn=_push_log)
         if r.get("ok"):
             _push_log("本地推理服务已自动启动。")
@@ -1055,15 +1069,13 @@ class ExperimentalMixin:
     def open_llama_webui(self) -> Dict[str, Any]:
         """用默认浏览器打开 llama-server 自带 webui 聊天界面（需服务运行中）。"""
         import webbrowser
-        from ..llama_cpp import get_status
+        from ..llama_cpp import get_status, _local_host
 
         st = get_status()
         if not st.get("running"):
             return {"ok": False, "error": "本地推理服务未运行，请先启动服务"}
         llama_cfg = load_llama_config() or {}
-        host = llama_cfg.get("host") or "127.0.0.1"
-        if host in ("0.0.0.0", "::", ""):
-            host = "127.0.0.1"  # 监听所有网卡时，浏览器同样走本机回环
+        host = _local_host(llama_cfg.get("host") or "127.0.0.1")
         port = st.get("port") or llama_cfg.get("port") or 8080
         url = f"http://{host}:{port}/"
         try:

@@ -82,8 +82,8 @@ def get_mirrors_info() -> Dict[str, Any]:
     gpu = installer.detect_gpu()
     return {
         "sizes": [
-            {"id": 1008, "name": "1008 × 1008（精准）", "desc": "原生分辨率，角色/IP 识别最优", "size_label": "约 1 GB"},
-            {"id": 672, "name": "672 × 672（快速）", "desc": "约 2.3 倍速，身份类标签略有损失", "size_label": "约 1 GB"},
+            {"id": 1008, "name": "1008 × 1008（精准）", "desc": "原生分辨率", "size_label": "约 1 GB"},
+            {"id": 672, "name": "672 × 672（快速）", "desc": "约 2 倍速，精度略有损失", "size_label": "约 1 GB"},
         ],
         "sites": [{"id": k, "name": v["name"], "desc": v["desc"]}
                   for k, v in installer.TRT_SITES.items()],

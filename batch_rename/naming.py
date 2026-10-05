@@ -322,9 +322,9 @@ def match_subtitle_files(video_paths: List[str], sub_paths: List[str]):
 def build_new_stem(vp: str, info: Dict[str, Any], title: str, config: "Config") -> str:
     """根据配置构建新文件名 stem（不含扩展名）。"""
     parts = []
-    if config.include_date:
+    if config.naming_mode in ("date", "both"):
         parts.append(extract_date_str(vp, info.get("creation_time", "")))
     parts.append(sanitize_filename(title, _MAX_STEM_PART_CHARS))
-    if config.include_original:
+    if config.naming_mode in ("original", "both"):
         parts.append(sanitize_filename(Path(vp).stem, _MAX_STEM_PART_CHARS))
     return "_".join(parts)

@@ -388,7 +388,7 @@ class BatchPipeline:
         """发现视频，返回 PipelineStats；无可处理视频时返回 None。"""
         videos = VideoCollector.collect(self.paths)
         if not videos:
-            logger.info(f"\n{SEP_INDENT}未找到可处理的视频文件")
+            logger.info(f"\n{SEP_INDENT}未找到待重命名的视频文件")
             return None
 
         n = len(videos)
@@ -402,7 +402,7 @@ class BatchPipeline:
         per_failure = _max_ai_seconds_per_video(self.config)
         stats.ai_window_sec = max(float(_CIRCUIT_WINDOW_SEC), cycles_needed * per_failure)
 
-        logger.info(f"{SEP_INDENT}正在处理：{n}个视频")
+        logger.info(f"{SEP_INDENT}正在自动重命名：{n}个视频")
         logger.info(f"{SEP_INDENT}正在提取关键帧发送AI分析，请耐心等待\n")
 
         self._videos = videos

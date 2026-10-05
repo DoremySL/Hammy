@@ -158,7 +158,7 @@ function renderExperimentalPage(cfg, uvStatus, llamaStatus, pStatus, wStatus, rv
 }
 
 function _statusBadge(st, suffix) {
-  if (st.ready) return `<span class="exp-badge ok">${icon('check')} 已安装就绪${suffix ? `·${suffix}` : ''}</span>`;
+  if (st.ready) return `<span class="exp-badge ok">${icon('check')} ${suffix || '已安装就绪'}</span>`;
   if (st.dir_exists) return `<span class="exp-badge warn">${icon('warning')} 安装不完整</span>`;
   return '<span class="exp-badge dim">未安装</span>';
 }
@@ -240,7 +240,7 @@ function _bindManageButtons(uvStatus, llamaStatus, pStatus, wStatus, rvStatus) {
   const wInstallBtn = $('#btn-whisper-install');
   if (wInstallBtn && !wStatus.ready) wInstallBtn.addEventListener('click', async () => {
     const sel = await showMirrorSelectDialog({
-      api: 'get_whisper_mirrors', title: '选择镜像站与模型 — Faster-Whisper',
+      api: 'get_whisper_mirrors',
       showModelSelect: true, models: (wStatus && wStatus.models) || [],
     });
     if (sel) startWhisperInstall(sel.pypi || 'sjtu', sel.model || 'v3-turbo');
@@ -263,7 +263,7 @@ function _bindManageButtons(uvStatus, llamaStatus, pStatus, wStatus, rvStatus) {
     try { mirrors = await apiCall('get_rag_vec_mirrors'); }
     catch (e) { toast('获取镜像列表失败', 'err'); return; }
     const sel = await showMirrorSelectDialog({
-      payload: mirrors, title: '选择运行设备与镜像站 — 标签向量检索',
+      payload: mirrors,
       devices: mirrors.devices || [], bannerSub: '',
     });
     if (sel) startRagVecInstall(sel.device || 'gpu', sel.pypi || 'sjtu');
@@ -302,120 +302,118 @@ function _bindManageButtons(uvStatus, llamaStatus, pStatus, wStatus, rvStatus) {
 /* ════════════════════════════════════════════════════════════
    镜像选择弹窗
    ════════════════════════════════════════════════════════════ */
+function gpuBannerHtml(gpu, okSub = '', noGpuSub = '') {
+  const okHtml = okSub ? ` — ${esc(okSub)}` : '';
+  return (gpu && gpu.has_nvidia)
+    ? `<div class="mirror-gpu-banner has-gpu">
+        <div><strong>${esc(gpu.gpu_name)}</strong><span class="mirror-gpu-sub">驱动 ${esc(gpu.driver_version)}${gpu.cuda_max ? ` · 支持 CUDA ${esc(gpu.cuda_max)}` : ''}${okHtml}</span></div>
+      </div>`
+    : `<div class="mirror-gpu-banner">
+        <div><strong>未检测到 NVIDIA 显卡</strong><span class="mirror-gpu-sub">${esc(noGpuSub)}</span></div>
+      </div>`;
+}
+
+function mirrorSection({ title, hint = '', name, items, badge = '推荐' }) {
+  const opts = items.map(it => {
+    const rec = !!it.recommended;
+    const checked = it.checked === undefined ? rec : !!it.checked;
+    return `<label class="mirror-opt${rec ? ' recommended' : ''}${checked ? ' selected' : ''}">
+      <input type="radio" name="${esc(name)}" value="${esc(it.value)}" ${checked ? 'checked' : ''}/>
+      <span class="mirror-opt-name">${esc(it.name)}${rec ? `<span class="mirror-rec-badge">${esc(it.badge || badge)}</span>` : ''}</span>
+      <small class="mirror-opt-url">${esc(it.desc || '')}</small>
+    </label>`;
+  }).join('');
+  return `
+    <div class="mirror-section">
+      <div class="mirror-section-head">
+        <strong>${esc(title)}</strong>
+        ${hint ? `<span class="mirror-section-hint">${esc(hint)}</span>` : ''}
+      </div>
+      <div class="mirror-opts">${opts}</div>
+    </div>`;
+}
+
+function openMirrorDialog(html) {
+  const bg = $('#confirmBg');
+  const box = bg.querySelector('.confirm-box');
+  const origHtml = box.innerHTML;
+  box.classList.add('mirror-dialog');
+  box.innerHTML = html;
+  bg.classList.add('show');
+  return {
+    box,
+    close() {
+      bg.classList.remove('show');
+      box.classList.remove('mirror-dialog');
+      box.innerHTML = origHtml;
+    },
+  };
+}
+
+function bindMirrorRadios(scope, onChange) {
+  scope.querySelectorAll('.mirror-opt input[type="radio"]').forEach(radio => {
+    radio.addEventListener('change', () => {
+      scope.querySelectorAll(`input[name="${radio.name}"]`).forEach(r =>
+        r.closest('.mirror-opt').classList.toggle('selected', r.checked));
+      if (onChange) onChange(radio);
+    });
+  });
+}
+
 async function showMirrorSelectDialog(opts) {
   let mirrors;
   try { mirrors = opts.payload || await apiCall(opts.api); }
   catch (e) { toast('获取镜像列表失败', 'err'); return null; }
 
   const gpu = mirrors.gpu || null;
-  const hasPypi = Array.isArray(mirrors.pypi) && mirrors.pypi.length;
   const devices = Array.isArray(opts.devices) ? opts.devices : [];
-  const hasDevices = devices.length > 0;
 
   let gpuBanner = '';
   if (gpu) {
     // bannerSub 未传时按 whisper 场景给默认副标题；传空串则只显示驱动信息
-    const defSub = gpu.has_nvidia ? '将安装 CUDA 运行时（~500MB），转录使用 GPU 加速'
-                                  : '将跳过 CUDA 运行时（~500MB），转录使用 CPU 模式';
-    const sub = opts.bannerSub !== undefined ? opts.bannerSub : defSub;
-    const subHtml = sub ? ` — ${esc(sub)}` : '';
-    gpuBanner = (gpu.has_nvidia)
-      ? `<div class="mirror-gpu-banner has-gpu">
-          <div><strong>${esc(gpu.gpu_name)}</strong><span class="mirror-gpu-sub">驱动 ${esc(gpu.driver_version)}${gpu.cuda_max ? ` · 支持 CUDA ${esc(gpu.cuda_max)}` : ''}${subHtml}</span></div>
-        </div>`
-      : `<div class="mirror-gpu-banner">
-          <div><strong>未检测到 NVIDIA 显卡</strong><span class="mirror-gpu-sub">${esc(sub)}</span></div>
-        </div>`;
+    const sub = opts.bannerSub !== undefined ? opts.bannerSub
+      : (gpu.has_nvidia ? '转录使用 GPU 加速' : '转录使用 CPU 模式');
+    gpuBanner = gpuBannerHtml(gpu, sub, sub);
   }
 
-  const deviceSection = hasDevices ? `
-    <div class="mirror-section">
-      <div class="mirror-section-head">
-        <strong>运行设备</strong>
-        <span class="mirror-section-hint">安装时选定，切换需重装</span>
-      </div>
-      <div class="mirror-opts">${devices.map(d => {
-        const isRec = !!d.recommended;
-        return `<label class="mirror-opt${isRec ? ' recommended selected' : ''}">
-          <input type="radio" name="device" value="${esc(d.id)}" ${isRec ? 'checked' : ''}/>
-          <span class="mirror-opt-name">${esc(d.name)}${isRec ? '<span class="mirror-rec-badge">推荐</span>' : ''}</span>
-          <small class="mirror-opt-url">${esc(d.desc || '')}</small>
-        </label>`;
-      }).join('')}</div>
-    </div>` : '';
+  const sections = [];
+  if (devices.length) {
+    sections.push(mirrorSection({
+      title: '运行设备', hint: '安装时选定，切换需重装', name: 'device',
+      items: devices.map(d => ({ value: d.id, name: d.name, desc: d.desc || '', recommended: !!d.recommended })),
+    }));
+  }
+  if (Array.isArray(mirrors.pypi) && mirrors.pypi.length) {
+    sections.push(mirrorSection({
+      title: '通用 PyPI 镜像', hint: '常规依赖包索引', name: 'pypi-mirror', badge: '默认',
+      items: mirrors.pypi.map(m => ({ value: m.id, name: m.name, desc: m.url || '', recommended: m.id === mirrors.default_pypi })),
+    }));
+  }
+  if (opts.showModelSelect && Array.isArray(opts.models) && opts.models.length) {
+    sections.push(mirrorSection({
+      title: '模型选择', hint: '安装时下载所选模型，其余模型可在安装后下载切换', name: 'model-select',
+      items: opts.models.map(m => ({ value: m.key, name: m.title, desc: m.desc || '', recommended: !!m.recommended })),
+    }));
+  }
 
-  const pypiSection = hasPypi ? `
-    <div class="mirror-section">
-      <div class="mirror-section-head">
-        <strong>通用 PyPI 镜像</strong>
-        <span class="mirror-section-hint">常规依赖包索引</span>
-      </div>
-      <div class="mirror-opts">${mirrors.pypi.map(m => {
-        const isDef = m.id === mirrors.default_pypi;
-        return `<label class="mirror-opt${isDef ? ' recommended selected' : ''}">
-          <input type="radio" name="pypi-mirror" value="${esc(m.id)}" ${isDef ? 'checked' : ''}/>
-          <span class="mirror-opt-name">${esc(m.name)}${isDef ? '<span class="mirror-rec-badge">默认</span>' : ''}</span>
-          <small class="mirror-opt-url">${esc(m.url)}</small>
-        </label>`;
-      }).join('')}</div>
-    </div>` : '';
-
-  const modelSection = opts.showModelSelect && Array.isArray(opts.models) && opts.models.length ? `
-    <div class="mirror-section">
-      <div class="mirror-section-head">
-        <strong>模型选择</strong>
-        <span class="mirror-section-hint">安装时下载所选模型，其余模型可在安装后下载切换</span>
-      </div>
-      <div class="mirror-opts">${opts.models.map(m => {
-        const isRec = !!m.recommended;
-        return `<label class="mirror-opt${isRec ? ' recommended selected' : ''}">
-          <input type="radio" name="model-select" value="${esc(m.key)}" ${isRec ? 'checked' : ''}/>
-          <span class="mirror-opt-name">${esc(m.title)}${isRec ? '<span class="mirror-rec-badge">推荐</span>' : ''}</span>
-          <small class="mirror-opt-url">${esc(m.desc || '')} · ${esc(m.size_label || '')}</small>
-        </label>`;
-      }).join('')}</div>
-    </div>` : '';
-
-  const bg = $('#confirmBg');
-  const box = bg.querySelector('.confirm-box');
-  const origHtml = box.innerHTML;
-  box.classList.add('mirror-dialog');
-  box.innerHTML = `
-    <div class="confirm-title">${esc(opts.title || '选择镜像站')}</div>
-    <div class="mirror-body">
-      ${gpuBanner}
-      ${deviceSection}
-      ${pypiSection}
-      ${modelSection}
-    </div>
+  const dlg = openMirrorDialog(`
+    <div class="mirror-body">${gpuBanner}${sections.join('')}</div>
     <div class="confirm-foot">
       <button class="btn" id="mirrorCancel">取消</button>
       <button class="btn primary" id="mirrorOk">${esc(opts.confirmText || '开始安装')}</button>
-    </div>`;
-  bg.classList.add('show');
-
-  box.querySelectorAll('.mirror-opt input').forEach(radio => {
-    radio.addEventListener('change', () => {
-      box.querySelectorAll(`input[name="${radio.name}"]`).forEach(r =>
-        r.closest('.mirror-opt').classList.toggle('selected', r.checked));
-    });
-  });
+    </div>`);
+  bindMirrorRadios(dlg.box);
 
   return new Promise(resolve => {
-    function close(val) {
-      bg.classList.remove('show');
-      box.classList.remove('mirror-dialog');
-      box.innerHTML = origHtml;
-      resolve(val);
-    }
-    $('#mirrorCancel').addEventListener('click', () => close(null));
+    $('#mirrorCancel').addEventListener('click', () => { dlg.close(); resolve(null); });
     $('#mirrorOk').addEventListener('click', () => {
-      const device = box.querySelector('input[name="device"]:checked');
-      const pypi = box.querySelector('input[name="pypi-mirror"]:checked');
-      const model = box.querySelector('input[name="model-select"]:checked');
-      close({ device: device ? device.value : null,
-              pypi: pypi ? pypi.value : 'sjtu',
-              model: model ? model.value : null });
+      const device = dlg.box.querySelector('input[name="device"]:checked');
+      const pypi = dlg.box.querySelector('input[name="pypi-mirror"]:checked');
+      const model = dlg.box.querySelector('input[name="model-select"]:checked');
+      dlg.close();
+      resolve({ device: device ? device.value : null,
+                pypi: pypi ? pypi.value : 'sjtu',
+                model: model ? model.value : null });
     });
   });
 }
@@ -438,79 +436,32 @@ async function showPixaiInstallDialog() {
     ? `<div class="mirror-gpu-banner">
         <div><strong>无法安装：${esc(issue)}</strong><span class="mirror-gpu-sub">TensorRT 推理无 CPU 回退，需要 NVIDIA GPU（GTX 16xx 及以上）且驱动支持 CUDA 13</span></div>
       </div>`
-    : (gpu && gpu.has_nvidia)
-      ? `<div class="mirror-gpu-banner has-gpu">
-          <div><strong>${esc(gpu.gpu_name)}</strong><span class="mirror-gpu-sub">驱动 ${esc(gpu.driver_version)}${gpu.cuda_max ? ` · 支持 CUDA ${esc(gpu.cuda_max)}` : ''} — 安装时按显卡自动构建对应精度的 TensorRT 引擎（GTX 16xx 等无 Tensor Core 用 FP32）</span></div>
-        </div>`
-      : '';
+    : gpuBannerHtml(gpu, '安装时按显卡自动构建对应精度的 TensorRT 引擎');
 
-  const sizeSection = `
-    <div class="mirror-section">
-      <div class="mirror-section-head">
-        <strong>输入尺寸</strong>
-        <span class="mirror-section-hint">安装时下载对应模型并构建引擎，更换需重新安装</span>
-      </div>
-      <div class="mirror-opts">${sizes.map((m, i) => {
-        const isRec = i === 0;
-        return `<label class="mirror-opt${isRec ? ' recommended selected' : ''}">
-          <input type="radio" name="pixai-size" value="${esc(m.id)}" ${isRec ? 'checked' : ''}/>
-          <span class="mirror-opt-name">${esc(m.name)}${isRec ? '<span class="mirror-rec-badge">推荐</span>' : ''}</span>
-          <small class="mirror-opt-url">${esc(m.desc || '')} · ${esc(m.size_label || '')}</small>
-        </label>`;
-      }).join('')}</div>
-    </div>`;
+  const sizeSection = mirrorSection({
+    title: '输入尺寸', hint: '安装时下载对应模型并构建引擎，更换需重新安装', name: 'pixai-size',
+    items: sizes.map((m, i) => ({ value: m.id, name: m.name, desc: m.desc || '', recommended: i === 0 })),
+  });
+  const siteSection = mirrorSection({
+    title: '下载站点', name: 'pixai-site',
+    items: sites.map(s => ({ value: s.id, name: s.name, desc: s.desc || '', recommended: s.id === defaultSite })),
+  });
 
-  const siteSection = `
-    <div class="mirror-section">
-      <div class="mirror-section-head">
-        <strong>下载站点</strong>
-      </div>
-      <div class="mirror-opts">${sites.map(s => {
-        const isDef = s.id === defaultSite;
-        return `<label class="mirror-opt${isDef ? ' recommended selected' : ''}">
-          <input type="radio" name="pixai-site" value="${esc(s.id)}" ${isDef ? 'checked' : ''}/>
-          <span class="mirror-opt-name">${esc(s.name)}${isDef ? '<span class="mirror-rec-badge">推荐</span>' : ''}</span>
-          <small class="mirror-opt-url">${esc(s.desc || '')}</small>
-        </label>`;
-      }).join('')}</div>
-    </div>`;
-
-  const bg = $('#confirmBg');
-  const box = bg.querySelector('.confirm-box');
-  const origHtml = box.innerHTML;
-  box.classList.add('mirror-dialog');
-  box.innerHTML = `
-    <div class="confirm-title">选择输入尺寸与站点 — PixAI Tagger</div>
-    <div class="mirror-body">
-      ${gpuBanner}
-      ${sizeSection}
-      ${siteSection}
-    </div>
+  const dlg = openMirrorDialog(`
+    <div class="mirror-body">${gpuBanner}${sizeSection}${siteSection}</div>
     <div class="confirm-foot">
       <button class="btn" id="mirrorCancel">取消</button>
       <button class="btn primary" id="mirrorOk" ${issue ? 'disabled' : ''}>开始安装</button>
-    </div>`;
-  bg.classList.add('show');
-
-  box.querySelectorAll('.mirror-opt input').forEach(radio => {
-    radio.addEventListener('change', () => {
-      box.querySelectorAll(`input[name="${radio.name}"]`).forEach(r =>
-        r.closest('.mirror-opt').classList.toggle('selected', r.checked));
-    });
-  });
+    </div>`);
+  bindMirrorRadios(dlg.box);
 
   return new Promise(resolve => {
-    function close(val) {
-      bg.classList.remove('show');
-      box.classList.remove('mirror-dialog');
-      box.innerHTML = origHtml;
-      resolve(val);
-    }
-    $('#mirrorCancel').addEventListener('click', () => close(null));
+    $('#mirrorCancel').addEventListener('click', () => { dlg.close(); resolve(null); });
     $('#mirrorOk').addEventListener('click', () => {
-      const size = box.querySelector('input[name="pixai-size"]:checked');
-      const site = box.querySelector('input[name="pixai-site"]:checked');
-      close({ size: size ? Number(size.value) : 1008, site: site ? site.value : 'sjtu' });
+      const size = dlg.box.querySelector('input[name="pixai-size"]:checked');
+      const site = dlg.box.querySelector('input[name="pixai-site"]:checked');
+      dlg.close();
+      resolve({ size: size ? Number(size.value) : 1008, site: site ? site.value : 'sjtu' });
     });
   });
 }
@@ -560,7 +511,7 @@ function _renderLlamaSection(llamaStatus) {
             ${_boolDd('llama-autorun-dd', !!cfg.auto_run)}
           </div>
           <div class="field">
-            <label data-tip="视频处理、字幕翻译与连接检测统一走本地服务；AI 配置页仅基础连接设置暂不生效，进阶采样参数依然生效">本地推理集成</label>
+            <label data-tip="自动重命名、字幕翻译与连接检测统一走本地服务；AI 配置页仅基础连接设置暂不生效，进阶采样参数依然生效">本地推理集成</label>
             ${_boolDd('llama-integrate-dd', !!cfg.integrate)}
           </div>
           <div class="field">
@@ -636,7 +587,7 @@ function _renderPixaiSection(exp, pStatus) {
   const enabled = !!state.pixaiTaggerEnabled;
   const ready = !!(pStatus && pStatus.ready);
   const specBadge = ready && pStatus.input_size
-    ? `${pStatus.input_size}x${pStatus.input_size}·${String(pStatus.precision || '').toUpperCase()}` : '';
+    ? `${pStatus.input_size} · ${String(pStatus.precision || '').toUpperCase()}` : '';
   const zhOn = exp.pixai_output_zh !== false;
   const scopeNames = { char: '仅角色', all: '角色/IP', off: '不使用' };
   const scopeOf = v => scopeNames[v] ? v : 'char';
@@ -1542,19 +1493,14 @@ function _hfStartDownload(box, sel) {
 const LLAMA_DEFAULT_PROXY = 'https://gh-proxy.com/';
 
 async function showLlamaCudaDialog() {
-  const bg = $('#confirmBg');
-  const box = bg.querySelector('.confirm-box');
-  const origHtml = box.innerHTML;
-  box.classList.add('mirror-dialog');
-  bg.classList.add('show');
+  const dlg = openMirrorDialog('');
+  const box = dlg.box;
 
   let cleaned = false;
   function cleanup() {
     if (cleaned) return;
     cleaned = true;
-    bg.classList.remove('show');
-    box.classList.remove('mirror-dialog');
-    box.innerHTML = origHtml;
+    dlg.close();
   }
 
   let method = 'direct';
@@ -1573,7 +1519,6 @@ async function showLlamaCudaDialog() {
 
   function renderShell() {
     box.innerHTML = `
-      <div class="confirm-title">选择构建版本 — llama.cpp</div>
       <div class="mirror-body">
         <div id="llama-build-wrap"></div>
         <div class="mirror-section">
@@ -1602,13 +1547,7 @@ async function showLlamaCudaDialog() {
         <button class="btn primary" id="llamaOk">开始安装</button>
       </div>`;
 
-    box.querySelectorAll('input[name="llama-method"]').forEach(radio => {
-      radio.addEventListener('change', () => {
-        box.querySelectorAll('input[name="llama-method"]').forEach(r =>
-          r.closest('.mirror-opt').classList.toggle('selected', r.checked));
-        onMethodChange();
-      });
-    });
+    bindMirrorRadios(box, onMethodChange);
 
     $('#llamaCancel').onclick = cleanup;
     $('#llamaOk').onclick = onOk;
@@ -1681,32 +1620,21 @@ async function showLlamaCudaDialog() {
     const rec = releases.builds.find(b => b.key === releases.recommended_key);
     const noNvidia = !gpu.has_nvidia;
     const autoKey = noNvidia ? ((releases.builds.find(b => b.type === 'cpu') || {}).key || null) : null;
-    const gpuBanner = (gpu.has_nvidia)
-      ? `<div class="mirror-gpu-banner has-gpu"><div><strong>${esc(gpu.gpu_name)}</strong><span class="mirror-gpu-sub">驱动 ${esc(gpu.driver_version)}${gpu.cuda_max ? ` · 支持 CUDA ${esc(gpu.cuda_max)}` : ''}${releases.recommended_key ? ` — 推荐 ${esc(buildLabel(rec))}` : ''}</span></div></div>`
-      : `<div class="mirror-gpu-banner"><div><strong>未检测到 NVIDIA 显卡</strong><span class="mirror-gpu-sub">请尝试选择CPU版本或 Vulkan 版「多数核显独显通用」</span></div></div>`;
-    const opts = releases.builds.map(b => {
-      const isRec = b.key === releases.recommended_key;
-      const checked = (isRec && gpu.has_nvidia) || b.key === autoKey;
-      return `<label class="mirror-opt${isRec ? ' recommended' : ''}">
-        <input type="radio" name="llama-build" value="${esc(b.key)}" ${checked ? 'checked' : ''}/>
-        <span class="mirror-opt-name">${esc(buildLabel(b))}${isRec ? '<span class="mirror-rec-badge">推荐</span>' : ''}</span>
-        <small class="mirror-opt-url">llama.cpp ${esc(releases.tag || '')}</small>
-      </label>`;
-    }).join('');
+    const gpuBanner = gpuBannerHtml(gpu,
+      releases.recommended_key ? `推荐 ${buildLabel(rec)}` : '',
+      '请尝试选择CPU版本或 Vulkan 版「多数核显独显通用」');
     $('#llama-build-wrap').innerHTML = `
       ${gpuBanner}
-      <div class="mirror-section">
-        <div class="mirror-section-head"><strong>可用构建</strong></div>
-        <div class="mirror-opts">${opts}</div>
-      </div>`;
-    box.querySelectorAll('#llama-build-wrap .mirror-opt input').forEach(radio => {
-      radio.addEventListener('change', () => {
-        box.querySelectorAll('input[name="llama-build"]').forEach(r =>
-          r.closest('.mirror-opt').classList.toggle('selected', r.checked));
-      });
-    });
-    box.querySelectorAll('#llama-build-wrap input[name="llama-build"]:checked').forEach(r =>
-      r.closest('.mirror-opt').classList.add('selected'));
+      ${mirrorSection({
+        title: '可用构建', name: 'llama-build',
+        items: releases.builds.map(b => {
+          const isRec = b.key === releases.recommended_key;
+          return { value: b.key, name: buildLabel(b), desc: `llama.cpp ${releases.tag || ''}`,
+                   recommended: isRec, badge: '推荐',
+                   checked: (isRec && gpu.has_nvidia) || b.key === autoKey };
+        }),
+      })}`;
+    bindMirrorRadios($('#llama-build-wrap'));
   }
 
   function onOk() {
@@ -1781,7 +1709,7 @@ async function launchLlama() {
     } else if (r && r.cancelled) {
       toast('已停止启动', 'ok', true);
     } else {
-      toast('启动失败: ' + ((r && r.error) || '').slice(0, 200), 'err', true);
+      toast('启动失败: ' + ((r && r.error) || '').slice(0, 600), 'err', true);
     }
   } catch (e) {
     toast('启动失败: ' + ((e && e.message) || e), 'err', true);
@@ -2670,7 +2598,7 @@ function _renderRagVecSection(exp, rvStatus) {
   const cfg = st.cfg || {};
   const variant = st.variant || '';
   const flavor = st.ort_flavor || '';
-  const variantNames = { gpu: 'GPU · fp32', cpu: 'CPU · int8' };
+  const variantNames = { gpu: 'GPU · FP32', cpu: 'CPU · int8' };
   let deviceNote;
   if (!st.venv_exists) {
     deviceNote = '模型 EmbeddingGemma-300m（ONNX）：点击「安装」选择运行设备（GPU / CPU），依赖与对应模型文件一并装好。';
@@ -2685,7 +2613,7 @@ function _renderRagVecSection(exp, rvStatus) {
     ? `<button class="ws-btn" id="btn-ragvec-stop" ${st.worker_running ? 'data-tip="停止嵌入后台进程，释放显存/内存；下次向量检索自动重启"' : 'disabled'}>释放资源</button>`
     : '';
   const deviceBadge = st.ready
-    ? `<span class="exp-badge ok">${icon('check')} 运行设备：${variantNames[variant] || variant}</span>`
+    ? `<span class="exp-badge ok">${icon('check')} ${variantNames[variant] || variant}</span>`
     : _statusBadge(st);
   return `
     <div class="exp-card ${!enabled ? 'is-disabled' : ''}">
@@ -2694,8 +2622,8 @@ function _renderRagVecSection(exp, rvStatus) {
           <input type="checkbox" id="ragvec-enable-toggle" ${enabled ? 'checked' : ''} ${!st.ready ? 'disabled' : ''}/>
         </label>
         <div class="exp-head-main">
-          <div class="exp-title-row"><strong>标签向量检索</strong>${deviceBadge}</div>
-          <div class="exp-desc">EmbeddingGemma-300m 语义召回，补充关键词匹配；仅在标签检索=「增强」时生效。</div>
+          <div class="exp-title-row"><strong>EmbeddingGemma 向量检索</strong>${deviceBadge}</div>
+          <div class="exp-desc">使用嵌入模型进行语义召回，补充关键词匹配；仅在标签检索=「增强」时生效。</div>
         </div>
         <div class="exp-head-actions">
           ${stopBtn}

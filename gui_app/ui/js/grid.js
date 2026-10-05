@@ -564,7 +564,7 @@ function makeCard(v) {
   if (isUnc) pixaiBadge += '<span class="tag-badge unc" data-tip="分类不确定（二次元/非二次元无法判定）">UNC</span>';
   if (state.pixaiTaggedIds.has(v.id)) pixaiBadge += '<span class="tag-badge pixai" data-tip="已获取角色/IP标签">IP</span>';
   const whisperBadge = state.whisperTranscribedIds.has(v.id) ? '<span class="tag-badge whisper" data-tip="已获取语音转录">CC</span>' : '';
-  const stBadge = v.status === 'failed' ? '<span class="tag-badge failed" data-tip="处理失败，位于 _failed 目录">FAIL</span>'
+  const stBadge = v.status === 'failed' ? '<span class="tag-badge failed" data-tip="自动重命名失败，位于 _failed 目录">FAIL</span>'
     : v.status === 'duplicate' ? '<span class="tag-badge dup" data-tip="去重移除，位于 _duplicates 目录">DUP</span>' : '';
   const badges = (pixaiBadge || whisperBadge || stBadge) ? `<div class="badges">${pixaiBadge}${whisperBadge}${stBadge}</div>` : '';
   card.innerHTML = `

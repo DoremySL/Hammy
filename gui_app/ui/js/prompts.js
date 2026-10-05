@@ -28,7 +28,7 @@ function renderPromptsTab(presets, activePreset) {
         <span class="exp-badge warn" id="pv-dirty-badge" style="display:none">未保存</span>
         <div class="preset-hero-actions">
           <button class="a-toggle${state.pvUseExample ? ' on' : ''}" id="pv-use-example" data-tip="开启后会附加示例段供模型参考，可调整示例让AI输出更符合个人需求的文风"><span class="dot"></span><span class="txt">拼接示例 · ${state.pvUseExample ? '开' : '关'}</span></button>
-          <button class="a-toggle${state.thumbOptimize ? ' on' : ''}" id="pv-thumb-opt" data-tip="开启后提示模型给出最符合视频主题的封面截图时间戳，处理完成时据此重新生成缩略图；对模型能力有要求"><span class="dot"></span><span class="txt">缩略图优化 · ${state.thumbOptimize ? '开' : '关'}</span></button>
+          <button class="a-toggle${state.thumbOptimize ? ' on' : ''}" id="pv-thumb-opt" data-tip="开启后提示模型给出最符合视频主题的封面截图时间戳，自动重命名完成时据此重新生成缩略图；对模型能力有要求"><span class="dot"></span><span class="txt">缩略图优化 · ${state.thumbOptimize ? '开' : '关'}</span></button>
           <button class="ws-btn" id="btn-save-as-preset">保存为新模板</button>
           <button class="ws-btn danger" id="btn-delete-preset" ${canSave ? '' : 'disabled'}>删除</button>
           <button class="ws-btn primary" id="btn-save-preset" ${canSave ? '' : 'disabled'} data-tip="${canSave ? '保存对该模板的修改' : '内置模板不可保存，请「保存为新模板」'}">保存</button>

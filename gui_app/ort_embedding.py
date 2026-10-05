@@ -189,9 +189,12 @@ def install_dependencies(
 
     steps.push(3)
     _log(f"━━ 步骤 3/4：安装 {ort_pkg} + numpy/tokenizers（{mir['name']}）━━", log_fn)
-    # 换设备重装前先卸旧 runtime 包（两者模块名相同）
+    # 换设备重装前先卸旧包（含 nvidia CUDA 库，未装时 uv 跳过并告警）
     rc, out = _run_subprocess_streaming(
-        [uv, "pip", "uninstall", "--python", venv_py, "onnxruntime", "onnxruntime-gpu"],
+        [uv, "pip", "uninstall", "--python", venv_py,
+         "onnxruntime", "onnxruntime-gpu",
+         "nvidia-cuda-runtime", "nvidia-cuda-nvrtc", "nvidia-cufft",
+         "nvidia-curand", "nvidia-cudnn-cu13"],
         _INSTALL_TIMEOUT_SEC, log_fn, stop_event,
     )
     if r := _cancelled():
@@ -205,6 +208,22 @@ def install_dependencies(
         return r
     if rc != 0:
         return {"ok": False, "error": f"安装依赖失败: {out[-500:]}"}
+    steps.push(3, 0.5)
+
+    if device == "gpu":
+        # CUDA 运行库固定走 NVIDIA 源（通用镜像不装这些）
+        _log("→ 安装 CUDA 运行库（NVIDIA 中国源）…", log_fn)
+        rc, out = _run_subprocess_streaming(
+            [uv, "pip", "install", "--python", venv_py,
+             "nvidia-cuda-runtime", "nvidia-cuda-nvrtc", "nvidia-cufft",
+             "nvidia-curand", "nvidia-cudnn-cu13",
+             "--index-url", installer.NVIDIA_PYPI_URL],
+            _INSTALL_TIMEOUT_SEC, log_fn, stop_event,
+        )
+        if r := _cancelled():
+            return r
+        if rc != 0:
+            return {"ok": False, "error": f"安装 CUDA 运行库失败: {out[-500:]}"}
 
     stop_worker()  # 依赖变更后丢弃旧 worker
 

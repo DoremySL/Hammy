@@ -78,19 +78,24 @@ class TestExtractDateStr(unittest.TestCase):
 
 class TestBuildNewStem(unittest.TestCase):
     def test_title_only(self):
-        cfg = Config(include_date=False, include_original=False)
+        cfg = Config(naming_mode="none")
         self.assertEqual(build_new_stem("x.mp4", {}, "My Title", cfg), "My_Title")
 
     def test_with_date(self):
-        cfg = Config(include_date=True, include_original=False)
+        cfg = Config(naming_mode="date")
         stem = build_new_stem("x.mp4", {"creation_time": "2023-05-10T12:30:00"}, "My Title", cfg)
         # 日期前缀 + 标题
         self.assertRegex(stem, r"^\d{8}-\d{4}_My_Title$")
 
     def test_with_original(self):
-        cfg = Config(include_date=False, include_original=True)
+        cfg = Config(naming_mode="original")
         self.assertEqual(build_new_stem("original_name.mp4", {}, "My Title", cfg),
                          "My_Title_original_name")
+
+    def test_with_both(self):
+        cfg = Config(naming_mode="both")
+        stem = build_new_stem("original_name.mp4", {"creation_time": "2023-05-10T12:30:00"}, "My Title", cfg)
+        self.assertRegex(stem, r"^\d{8}-\d{4}_My_Title_original_name$")
 
 
 class TestManualTransform(unittest.TestCase):

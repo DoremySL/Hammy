@@ -36,9 +36,11 @@ def ai_override(cfg: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]
     if not is_active(cfg):
         return None
     from .config_store import load_llama_config, load_llama_model_configs
+    from .llama_cpp import _local_host
     llama = load_llama_config() or {}
     model_cfg = load_llama_model_configs().get(str(llama.get("last_model") or ""), {}) or {}
     host = model_cfg.get("host") or llama.get("host") or "127.0.0.1"
+    host = _local_host(host)  # 0.0.0.0/:: 是监听地址，本机调用须走回环
     port = model_cfg.get("port") or llama.get("port") or 8080
     try:
         workers = max(1, int(llama.get("parallel") or 1))

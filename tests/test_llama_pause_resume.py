@@ -196,7 +196,8 @@ class TestTaskHooks(unittest.TestCase):
 
     def _pixai_patches(self, extract):
         """detect_ip_tags 的公共 mock：模块就绪、配置默认、不写真实 workspace、
-        假分析流（start_analyze_stream 在函数体内导入，patch 源模块）。"""
+        假分析流（start_analyze_stream 在函数体内导入，patch 源模块）。
+        ensure_model_files 同样在函数体内导入，必须 mock，否则缺失模型会触发真实下载。"""
         return [
             mock.patch("gui_app.pixai_tagger.get_status",
                        return_value={"ready": True}),
@@ -209,6 +210,8 @@ class TestTaskHooks(unittest.TestCase):
                        "/fake/ffmpeg.exe"),
             mock.patch("gui_app.pixai_tagger.cls_model_available",
                        return_value=False),
+            mock.patch("gui_app.pixai_tagger.ensure_model_files",
+                       return_value=None),
             mock.patch("gui_app.pixai_tagger.extract_frames_for_tagger",
                        **extract),
             mock.patch("gui_app.pixai_tagger.start_analyze_stream",

@@ -566,7 +566,7 @@ window.__ui = {
     const okN = summary && summary.ok_count != null ? summary.ok_count : 0;
     const errN = summary && summary.error_count != null ? summary.error_count : 0;
     const cancelN = summary && summary.cancelled_count != null ? summary.cancelled_count : 0;
-    let msg = ok ? '处理完成' : '处理结束（有错误）';
+    let msg = ok ? '自动重命名完成' : '自动重命名结束（有错误）';
     if (errN > 0) msg += `：成功 ${okN}，失败 ${errN}`;
     if (cancelN > 0) msg += `，${cancelN} 个未处理`;
     toast(msg, ok && errN === 0 ? 'ok' : 'err');
@@ -662,7 +662,7 @@ function updateStartBtn() {
     btn.disabled = false;
     btn.classList.add('stopping');
     btn.dataset.tip = state.stopRequested ? '正在停止…'
-      : task === 'install' ? '停止安装' : '停止处理';
+      : task === 'install' ? '停止安装' : '停止自动重命名';
     return;
   }
   btn.classList.remove('stopping');
@@ -672,7 +672,7 @@ function updateStartBtn() {
     : state.pending.length === 0 ? '请先添加视频'
     : state.llamaPendingLaunch ? '本地推理服务启动中…'
     : state.llamaIntegration && !state.aiConnected ? '本地推理服务未就绪，点击自动启动'
-    : '开始处理';
+    : '开始自动重命名';
 }
 
 let _connInflight = null;

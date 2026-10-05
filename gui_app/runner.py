@@ -125,8 +125,7 @@ def build_engine_config(cfg_dict: Dict[str, Any]) -> Config:
     cfg.frame_time_tags = _safe_int(video, "frame_time_tags", cfg.frame_time_tags)
 
     naming = _section("naming")
-    cfg.include_date = bool(naming.get("include_date", cfg.include_date))
-    cfg.include_original = bool(naming.get("include_original", cfg.include_original))
+    cfg.naming_mode = str(naming.get("naming_mode", cfg.naming_mode) or "date")
 
     active = prompts.get_active(with_thumb_time=(cfg.frame_time_tags == 2))
     cfg.prompt = active["prompt"]
@@ -295,7 +294,7 @@ class PipelineRunner:
     ) -> Dict[str, Any]:
         """启动处理。"""
         if self.is_running:
-            return {"ok": False, "error": "已有处理任务在运行"}
+            return {"ok": False, "error": "已有自动重命名任务在运行"}
 
         from .config_store import load_config
         cfg_dict = load_config()
@@ -496,7 +495,7 @@ class PipelineRunner:
 
             except Exception as e:
                 if on_log:
-                    on_log("err", f"处理异常: {e}")
+                    on_log("err", f"自动重命名异常: {e}")
                 if on_done:
                     on_done({"ok": False, "error": str(e),
                               "ok_count": 0, "error_count": 0, "skipped_count": 0})
@@ -522,7 +521,7 @@ class PipelineRunner:
 
         with self._start_lock:
             if self.is_running:
-                return {"ok": False, "error": "已有处理任务在运行"}
+                return {"ok": False, "error": "已有自动重命名任务在运行"}
             self._stop.clear()
             self._history_flushed.clear()
             self._thread = threading.Thread(target=_runner, name="pipeline-runner", daemon=True)

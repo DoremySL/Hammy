@@ -96,7 +96,7 @@ class ProcessingMixin:
         """启动批量处理。"""
         with self._process_lock:
             if self._runner and self._runner.is_running:
-                return {"ok": False, "error": "已有处理任务在运行"}
+                return {"ok": False, "error": "已有自动重命名任务在运行"}
             self._runner = runner.PipelineRunner()
 
             def _on_log(level: str, line: str):

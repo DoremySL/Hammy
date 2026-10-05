@@ -147,10 +147,11 @@ const CFG_FIELDS_PROCESSING = [
     { sec: 'video', key: 'frames_per_point', label: '每点帧数', type: 'number', min: 1, help: '每个点位取连续关键帧数，增大此项可给AI提供连续的画面信息', default: 3 },
     { sec: 'video', key: 'frame_max_side', label: '长边像素', type: 'number', min: 64, help: '抽帧图片长边上限，仅缩小不放大', default: 640 },
   ]},
-  { group: '命名与输出', noTitle: true, cols: 4, fields: [
-    { sec: 'naming', key: 'include_date', label: '日期前缀', type: 'bool', onText: '添加', offText: '不添加', help: '文件名前添加日期，降低重名几率' },
-    { sec: 'naming', key: 'include_original', label: '初始文件名后缀', type: 'bool', onText: '添加', offText: '不添加', help: '文件名末尾追加初始文件名，降低重名几率' },
-    { sec: '__gui', key: 'nfo_auto_export', label: 'NFO输出', type: 'bool', onText: '自动导出至同目录', offText: '手动导出', help: '自动导出：处理完成即写入视频同目录；手动导出：先存工作区，导出时再复制' },
+  { group: '命名与输出', noTitle: true, cols: 3, fields: [
+    { sec: 'naming', key: 'naming_mode', label: '日期与初始文件名', type: 'select',
+      options: [['date', '仅日期前缀'], ['original', '仅初始文件名后缀'], ['both', '添加两者'], ['none', '都不添加']], default: 'date',
+      help: '日期前缀：文件名前添加日期；初始文件名后缀：文件名末尾追加初始文件名；均降低重名几率' },
+    { sec: '__gui', key: 'nfo_auto_export', label: 'NFO输出', type: 'bool', onText: '自动导出至同目录', offText: '手动导出', help: '自动导出：自动重命名完成即写入视频同目录；手动导出：先存工作区，导出时再复制' },
     { sec: '__gui', key: 'animation_enabled', label: '动画效果', type: 'bool', default: true, help: '关闭后停用界面动画与过渡效果' },
   ]},
 ];
@@ -161,7 +162,10 @@ function collectConfigData() {
     if (el.disabled) return;
     const sec = el.dataset.sec, key = el.dataset.key;
     let v;
-    if (el.classList && el.classList.contains('dd')) v = el.dataset.bool ? el.dataset.value === '1' : el.dataset.value;
+    if (el.classList && el.classList.contains('dd')) {
+      const dv = el.dataset.value;
+      v = (el.dataset.bool && (dv === '1' || dv === '0')) ? dv === '1' : dv;
+    }
     else if (el.type === 'checkbox') v = el.checked;
     else if (el.type === 'number') {
       if (el.value === '') return;

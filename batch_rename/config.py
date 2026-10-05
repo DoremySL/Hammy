@@ -29,8 +29,7 @@ class Config:
     # prompt / system_prompt 由 GUI 注入激活预设
     system_prompt: str = ""
     prompt: str = ""
-    include_date: bool = True
-    include_original: bool = False
+    naming_mode: str = "date"  # date / original / both / none
     rag_top_k: int = 40
     # 调试开关（GUI 无界面）：完成日志在「召回N个关键词」后列出具体关键词。
     # 由 config.json ai 段同名键控制，手动改为 true 生效

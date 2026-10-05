@@ -32,6 +32,9 @@ PYPI_MIRRORS = {
 }
 DEFAULT_PYPI_MIRROR = "sjtu"
 
+# ── NVIDIA 包索引（CUDA 依赖专用，国内速度快）──
+NVIDIA_PYPI_URL = "https://pypi.nvidia.cn"
+
 # ── GPU 档位表 ──
 _CUDA_TIERS = {
     "cu132": {"name": "CUDA 13.2", "cuda": "13.2", "desc": "驱动 580 及以上"},
@@ -42,9 +45,9 @@ _CUDA_TIERS = {
 # ── TensorRT 站点（pixai-tagger）──
 TRT_SITES = {
     "sjtu": {"name": "上海交通大学", "desc": "国内高速（NVIDIA 中国源）",
-             "pypi": PYPI_MIRRORS["sjtu"]["url"], "nvidia": "https://pypi.nvidia.cn"},
+             "pypi": PYPI_MIRRORS["sjtu"]["url"], "nvidia": NVIDIA_PYPI_URL},
     "nju": {"name": "南京大学", "desc": "交大不通时的备用站点",
-            "pypi": PYPI_MIRRORS["nju"]["url"], "nvidia": "https://pypi.nvidia.cn"},
+            "pypi": PYPI_MIRRORS["nju"]["url"], "nvidia": NVIDIA_PYPI_URL},
     "official": {"name": "NVIDIA 官方", "desc": "pypi.nvidia.com，国内较慢",
                  "pypi": "https://pypi.org/simple", "nvidia": "https://pypi.nvidia.com"},
 }

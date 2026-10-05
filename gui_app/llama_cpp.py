@@ -1084,15 +1084,26 @@ def _build_args(model_path: Path, p: Dict[str, Any]) -> List[str]:
     return args
 
 
+# llama-server 输出尾部缓冲（供启动失败提示引用）
+_OUT_TAIL_MAX = 30
+
+
 def _reader_thread(proc: subprocess.Popen, log_fn, show_logs: bool = True,
-                   read_pipe: bool = True) -> None:
+                   read_pipe: bool = True,
+                   out_tail: Optional[List[str]] = None) -> None:
     try:
         if read_pipe:
             # show_logs=False 时静默，仅保留停止提示
             assert proc.stdout is not None
             for line in proc.stdout:
-                if line.strip() and show_logs:
-                    log_fn(line.rstrip())
+                s = line.strip()
+                if not s:
+                    continue
+                if out_tail is not None:
+                    out_tail.append(s)
+                    del out_tail[:-_OUT_TAIL_MAX]
+                if show_logs:
+                    log_fn(s)
     except Exception:
         pass
     finally:
@@ -1112,6 +1123,11 @@ def _reader_thread(proc: subprocess.Popen, log_fn, show_logs: bool = True,
             unregister_subprocess(proc)
         except Exception:
             pass
+
+
+def _tail_snippet(out_tail: List[str]) -> str:
+    """启动失败提示引用的 llama-server 输出尾部摘要。"""
+    return "；".join(ln[:150] for ln in out_tail[-3:])
 
 
 def _terminate_process(proc: subprocess.Popen, wait: float = 5.0) -> None:
@@ -1184,7 +1200,7 @@ def launch(model_path: str, params: Dict[str, Any], log_fn=None) -> Dict[str, An
                 _has_console = False
             if not _has_console:
                 use_pipe = True
-                log_fn("当前进程无有效控制台句柄（pythonw 启动？），llama-server 输出无法落到终端，已改由程序内部丢弃")
+                log_fn("当前进程无有效控制台句柄（pythonw 启动？），llama-server 输出无法落到终端，已改由程序内部捕获（失败提示用）")
 
         # mmproj：前端「多模态」选择框显式指定即加载；未指定时按 mmproj_auto 自动检测
         if not merged.get("mmproj") and merged.get("mmproj_auto", DEFAULTS["mmproj_auto"]):
@@ -1237,8 +1253,9 @@ def launch(model_path: str, params: Dict[str, Any], log_fn=None) -> Dict[str, An
         _notify_state_change()
 
     log_fn(f"正在加载模型: {mp.name}…")
+    out_tail: List[str] = []  # 失败提示引用的输出尾部
     threading.Thread(target=_reader_thread,
-                     args=(proc, log_fn, show_logs, use_pipe),
+                     args=(proc, log_fn, show_logs, use_pipe, out_tail),
                      daemon=True).start()
 
     host = merged.get("host", DEFAULTS["host"])
@@ -1257,32 +1274,36 @@ def launch(model_path: str, params: Dict[str, Any], log_fn=None) -> Dict[str, An
                     unregister_subprocess(proc)
                 except Exception:
                     pass
+                fail_msg = (f"服务启动后未在 {int(_HEALTH_TIMEOUT_SEC)} 秒内就绪"
+                            "（模型加载可能过慢或显存不足），已自动停止该进程")
+                tail = _tail_snippet(out_tail)
+                if tail:
+                    fail_msg += f"，最后输出：{tail}"
                 with _state_lock:
                     # 仅当自己仍是当前进程时才清状态/句柄，避免误清并发启动的新进程
                     if _llama_proc is proc:
                         _llama_state["running"] = False
                         _llama_state["starting"] = False
-                        _llama_state["launch_failed"] = (
-                            f"服务启动后未在 {int(_HEALTH_TIMEOUT_SEC)} 秒内就绪"
-                            "（模型加载可能过慢或显存不足），已自动停止该进程")
+                        _llama_state["launch_failed"] = fail_msg
                         _llama_proc = None
             _notify_state_change()
-            return {"ok": False, "error": (
-                f"服务启动后未在 {int(_HEALTH_TIMEOUT_SEC)} 秒内就绪"
-                "（模型加载可能过慢或显存不足），已自动停止该进程")}
+            return {"ok": False, "error": fail_msg}
         manual_stop = False
+        fail_msg = "llama-server 进程已退出"
+        tail = _tail_snippet(out_tail)
+        fail_msg += f"，最后输出：{tail}" if tail else "，请查看日志"
         with _state_lock:
             # 启动窗口内退出：_reader_thread 可能已清理，这里兜底补记失败原因
             if _llama_proc is proc:
                 _llama_state["running"] = False
                 _llama_state["starting"] = False
-                _llama_state["launch_failed"] = "llama-server 进程已退出（模型加载失败或显存不足），请查看日志"
+                _llama_state["launch_failed"] = fail_msg
             else:
                 manual_stop = True   # stop() 已接管：用户在启动过程中主动停止
         _notify_state_change()
         if manual_stop:
             return {"ok": False, "cancelled": True, "error": "启动已手动停止"}
-        return {"ok": False, "error": "llama-server 进程已退出（模型加载失败或显存不足），请查看日志"}
+        return {"ok": False, "error": fail_msg}
     log_fn("模型加载完成，服务已就绪。")
     # 并发数快照：记录本次启动实际生效的 -np，供本地推理集成接管 ai_workers
     try:

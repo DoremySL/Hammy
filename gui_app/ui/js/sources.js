@@ -58,7 +58,7 @@ function renderSources() {
   const clr = document.createElement('button');
   clr.className = 'src-action danger';
   clr.innerHTML = icon('trash', '14px') + ' 清空源';
-  clr.dataset.tip = '从源列表移除，不删除磁盘文件和已处理记录';
+  clr.dataset.tip = '从源列表移除，不删除磁盘文件和重命名记录';
   clr.onclick = clearSources;
   bar.appendChild(clr);
   const scNew = $('.src-scroll');
@@ -111,7 +111,7 @@ async function addFolder() {
   const total = (result.pending || []).length + (result.processed || []).length + (result.failed || []).length;
   const hasFailed = r.some(p => p.replace(/\\/g, '/').split('/').filter(Boolean).pop().toLowerCase() === '_failed');
   const ni = result.nfo_import;
-  const nfoMsg = ni && ni.imported ? `，从 NFO 恢复 ${ni.imported} 条处理记录` : '';
+  const nfoMsg = ni && ni.imported ? `，从 NFO 恢复 ${ni.imported} 条重命名记录` : '';
   if (total === 0) {
     toast(hasFailed ? '已添加，但 _failed 目录内的视频已自动排除' : '未扫描到视频', 'err', true);
   } else {
@@ -128,7 +128,7 @@ async function addFiles() {
   loadFromResult(result);
   const total = (result.pending || []).length + (result.processed || []).length + (result.failed || []).length;
   const ni = result.nfo_import;
-  const nfoMsg = ni && ni.imported ? `，从 NFO 恢复 ${ni.imported} 条处理记录` : '';
+  const nfoMsg = ni && ni.imported ? `，从 NFO 恢复 ${ni.imported} 条重命名记录` : '';
   if (total === 0) {
     toast('未扫描到视频', 'err', true);
   } else {
@@ -151,7 +151,7 @@ $('#btn-refresh').addEventListener('click', async () => {
   toast('已刷新', 'ok', true);
 });
 async function clearSources() {
-  if (!await showConfirm('将移除已添加的文件夹/文件。\n\n已处理记录仍保留，可在「设置 → 工作区」查看。\n\n确定清空所有源吗？', { okText: '清空' })) return;
+  if (!await showConfirm('将移除已添加的文件夹/文件。\n\n重命名记录仍保留，可在「设置 → 工作区」查看。\n\n确定清空所有源吗？', { okText: '清空' })) return;
   const r = await callApi('clear_sources');
   if (!r) return;
   state.hasAutoSwitched = false;
@@ -430,7 +430,7 @@ async function confirmDedup() {
   const moved = r.dedup_moved != null ? r.dedup_moved : paths.length;
   const failed = r.dedup_failed || 0;
   const cleaned = r.dedup_history_removed || 0;
-  const cleanMsg = cleaned ? `，清理 ${cleaned} 条处理记录` : '';
+  const cleanMsg = cleaned ? `，清理 ${cleaned} 条重命名记录` : '';
   if (_dedupStage === 'identical') {
     showDedupInterlude(`已移除 ${moved} 个完全相同副本` + (failed ? `，失败 ${failed} 个` : '') + cleanMsg);
   } else {

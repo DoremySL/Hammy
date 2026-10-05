@@ -39,8 +39,7 @@ def _default_config() -> Dict[str, Any]:
             "frame_time_tags": 2,
         },
         "naming": {
-            "include_date": True,
-            "include_original": False,
+            "naming_mode": "date",
         },
 
         "active_prompt_id": "default",

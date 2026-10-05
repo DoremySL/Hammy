@@ -12,7 +12,7 @@ const CW_CACHES = [
 const CW_RECORDS = [
   { key: 'missing', title: '失效记录',   unit: '条',
     desc: '对应视频已不在磁盘，一并清理孤立缓存' },
-  { key: 'history', title: '已处理记录', unit: '条',
+  { key: 'history', title: '重命名记录', unit: '条',
     desc: '重置后已处理视频重新进入待处理', warn: '影响处理状态' },
 ];
 
@@ -45,7 +45,7 @@ function renderWorkspaceTab(stats) {
         <span class="cw-bar-size">${cwFmtSize(c.bytes)}</span>
       </div>`).join('') + `
       <button class="btn primary cw-clear-all" id="btn-clear-all" ${totalItems <= 0 ? 'disabled' : ''}>
-        清理全部缓存并重置已处理记录
+        清理全部缓存并重置重命名记录
       </button>`;
 
   const cards = [...CW_RECORDS.map(r => ({
@@ -93,8 +93,8 @@ function renderWorkspaceTab(stats) {
     missing: () => workspaceAction('prune_history', [], null,
       r => `已清理 ${r.removed} 条失效记录、${r.thumbs || 0} 个缩略图、${r.nfos || 0} 个 NFO`),
     history: () => workspaceAction('clear_workspace', [true, false, false, false, false, false],
-      `确定重置全部已处理记录吗？\n\n${historyCount} 条已处理记录将被移除，对应视频重新进入待处理列表。\n不会删除视频文件与任何缓存。`,
-      '已重置已处理记录'),
+      `确定重置全部重命名记录吗？\n\n${historyCount} 条重命名记录将被移除，对应视频重新进入待处理列表。\n不会删除视频文件与任何缓存。`,
+      '已重置重命名记录'),
     thumb: () => workspaceAction('clear_workspace', [false, true, false, false, false, false],
       `确定清理 ${cwFmtCount(caches[0].count)} 个缩略图缓存吗？\n\n下次查看对应视频时会重新生成缩略图。`,
       r => `已清理 ${r.cleared.thumbs} 个缩略图`),
@@ -113,8 +113,8 @@ function renderWorkspaceTab(stats) {
   });
 
   $('#btn-clear-all').onclick = () => workspaceAction('clear_workspace', [true, true, true, false, true, true],
-    '确定清除全部缓存吗？\n\n将删除：\n• 所有已处理记录（已处理视频会重新进入待处理）\n• 所有缩略图缓存\n• 所有 NFO 缓存\n• 视频探针缓存与去重指纹缓存（下次使用时自动重建）\n\n不会删除任何视频文件，也不会清空已添加的源。',
-    r => `已清除：${r.cleared.history ? '已处理记录、' : ''}${r.cleared.thumbs} 个缩略图、${r.cleared.nfo} 个 NFO${r.cleared.probe ? '、探针缓存' : ''}${r.cleared.similar ? '、去重缓存' : ''}`,
+    '确定清除全部缓存吗？\n\n将删除：\n• 所有重命名记录（已处理视频会重新进入待处理）\n• 所有缩略图缓存\n• 所有 NFO 缓存\n• 视频探针缓存与去重指纹缓存（下次使用时自动重建）\n\n不会删除任何视频文件，也不会清空已添加的源。',
+    r => `已清除：${r.cleared.history ? '重命名记录、' : ''}${r.cleared.thumbs} 个缩略图、${r.cleared.nfo} 个 NFO${r.cleared.probe ? '、探针缓存' : ''}${r.cleared.similar ? '、去重缓存' : ''}`,
     '清除失败',
     async () => { const sr = await callApi('scan'); if (sr) loadFromResult(sr); });
 }
