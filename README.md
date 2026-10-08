@@ -31,6 +31,7 @@ AI模型（本地或云端均可）， 自动生成标题、剧情描述与标�
 | **ffmpeg / ffprobe** | 放入 `Hammy\ffmpeg\` 或加入系统 `PATH`，用于抽帧 / 探针 / 缩略图 |
 | **openai** | `pip install "openai>=1.0"`（AI 调用 SDK） |
 | **pywebview** | `pip install pywebview`（GUI 渲染后端） |
+| **pystray** | `pip install pystray`（最小化到托盘，自动带入 Pillow） |
 | **WebView2 Runtime** | Windows 版 pywebview 所需（系统自带 Edge 通常已包含） |
 | **.NET Framework 4.8** | 原生对话框（pythonnet / WinForms）所需，Windows 一般自带 |
 
@@ -38,7 +39,7 @@ AI模型（本地或云端均可）， 自动生成标题、剧情描述与标�
 安装 Python 依赖：
 
 ```bash
-pip install openai pywebview
+pip install openai pywebview pystray
 ```
 
 ---
