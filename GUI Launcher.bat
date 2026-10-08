@@ -19,21 +19,22 @@ exit /b 1
 set "PY_CMD="
 set "PY_IS_PORTABLE="
 
-if exist "!ROOT!python\python.exe" (
-    set "PY_CMD=!ROOT!python\python.exe"
-    set "PY_IS_PORTABLE=1"
-    echo [INFO] Using portable python: !PY_CMD!
-    goto :check_python
-)
 if exist "!ROOT!python\pythonw.exe" (
     set "PY_CMD=!ROOT!python\pythonw.exe"
     set "PY_IS_PORTABLE=1"
-    echo [WARN] python.exe not found, using pythonw.exe: !PY_CMD!
+    echo [INFO] Using portable pythonw: !PY_CMD!
+    goto :check_python
+)
+if exist "!ROOT!python\python.exe" (
+    set "PY_CMD=!ROOT!python\python.exe"
+    set "PY_IS_PORTABLE=1"
+    echo [WARN] pythonw.exe not found, using python.exe: !PY_CMD!
     goto :check_python
 )
 
 echo [INFO] Portable python not found, searching system PATH...
-for /f "delims=" %%I in ('where python 2^>nul') do if not defined PY_CMD set "PY_CMD=%%I"
+for /f "delims=" %%I in ('where pythonw 2^>nul') do if not defined PY_CMD set "PY_CMD=%%I"
+if not defined PY_CMD for /f "delims=" %%I in ('where python 2^>nul') do if not defined PY_CMD set "PY_CMD=%%I"
 if not defined PY_CMD for /f "delims=" %%I in ('where python3 2^>nul') do if not defined PY_CMD set "PY_CMD=%%I"
 if not defined PY_CMD goto :no_python
 set "PY_IS_PORTABLE=0"
@@ -65,21 +66,25 @@ set PYTHONUTF8=1
 set PYTHONUNBUFFERED=1
 set "PYTHONNET_RUNTIME="
 
-echo Starting GUI (logs will appear in this window)...
-echo.
+set "READY_FLAG=%TEMP%\hammy_gui_ready.flag"
+if exist "!READY_FLAG!" del /q "!READY_FLAG!" >nul 2>nul
 
-"!PY_CMD!" "!APP!"
-set "EXITCODE=!ERRORLEVEL!"
+echo Starting GUI, please wait...
+echo.
+rem No /min: its minimize state propagates to the GUI main window
+start "" "!PY_CMD!" "!APP!"
 
-echo.
-echo ============================================================
-if "!EXITCODE!"=="0" (
-    echo  GUI exited normally.
-    exit /b 0
-)
-echo  [ERROR] GUI exited with code !EXITCODE!
-echo  Check crash log: %TEMP%\video_rename_gui_crash.log
-echo.
-echo Press any key to close...
-pause >nul
-exit /b !EXITCODE!
+set /a WAITED=0
+:wait_ready
+if exist "!READY_FLAG!" goto :ready
+timeout /t 1 /nobreak >nul
+set /a WAITED+=1
+if !WAITED! lss 60 goto :wait_ready
+echo [WARN] GUI did not signal ready within 60s.
+echo If no window appeared, check crash log: %TEMP%\video_rename_gui_crash.log
+timeout /t 8 >nul
+exit /b 1
+
+:ready
+echo GUI started.
+exit /b 0
