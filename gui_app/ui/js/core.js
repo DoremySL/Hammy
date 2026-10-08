@@ -473,23 +473,33 @@ function pickSelection(sel, anchor, id, e, rangeIds) {
 /* ════════════════════════════════════════════════════════════
    后端 → 前端 推送回调
    ════════════════════════════════════════════════════════════ */
+function _appendLogLine(log, emptySel, line, level) {
+  const le = $(emptySel); if (le) le.remove();
+  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+  const d = document.createElement('div');
+  d.className = 'ln' + (level ? ' ' + level.toLowerCase() : '');
+  d.textContent = line;
+  log.appendChild(d);
+  const excess = log.childElementCount - 1000;
+  if (excess > 0) {
+    const range = document.createRange();
+    range.setStartBefore(log.firstChild);
+    range.setEndAfter(log.children[excess - 1]);
+    range.deleteContents();
+  }
+  if (atBottom) log.scrollTop = log.scrollHeight;
+}
+
 window.__ui = {
   appendLog(line, level) {
     const log = $('#log');
-    const le = $('#logEmpty'); if (le) le.remove();
-    const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
-    const d = document.createElement('div');
-    d.className = 'ln' + (level ? ' ' + level.toLowerCase() : '');
-    d.textContent = line;
-    log.appendChild(d);
-    const excess = log.childElementCount - 1000;
-    if (excess > 0) {
-      const range = document.createRange();
-      range.setStartBefore(log.firstChild);
-      range.setEndAfter(log.children[excess - 1]);
-      range.deleteContents();
-    }
-    if (atBottom) log.scrollTop = log.scrollHeight;
+    if (!log) return;
+    _appendLogLine(log, '#logEmpty', line, level);
+  },
+  appendLlamaLog(line) {
+    const log = $('#llamaLog');
+    if (!log) return;
+    _appendLogLine(log, '#llamaLogEmpty', line);
   },
   llamaStateChanged() {
     apiCall('get_llama_status').then(st => {

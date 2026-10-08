@@ -31,6 +31,10 @@ def _push_log(msg: str, level: str = "info") -> None:
     js_pusher.push("appendLog", msg, level)
 
 
+def _push_llama_log(msg: str) -> None:
+    js_pusher.push("appendLlamaLog", msg)
+
+
 def _load_pixai_tags() -> Dict[str, Any]:
     """读取 pixai 标签存储（缺失/损坏按空 dict 处理）。"""
     return read_json(PIXAI_TAGS_FILE, {})
@@ -424,7 +428,7 @@ class ExperimentalMixin:
                     if not pipeline_ok:
                         break
                     futures[ex.submit(extract_frames_for_tagger, vpath,
-                                      _gpu_stop_event, frames_n)] = i
+                                      _gpu_stop_event, frames_n, size)] = i
                 # 排空剩余抽帧任务
                 while futures and pipeline_ok:
                     for f in wait(futures, return_when=FIRST_COMPLETED)[0]:
@@ -486,7 +490,7 @@ class ExperimentalMixin:
         finally:
             # 恢复本地推理服务
             from ..llama_cpp import resume_after_task
-            resume_after_task(log_fn=_push_log)
+            resume_after_task(log_fn=_push_log, server_log_fn=_push_llama_log)
             _gpu_task_lock.release()
 
     def _pixai_engine_unavailable(self, vid_list: List, video_paths: List,
@@ -768,7 +772,7 @@ class ExperimentalMixin:
         finally:
             # 恢复本地推理服务
             from ..llama_cpp import resume_after_task
-            resume_after_task(log_fn=_push_log)
+            resume_after_task(log_fn=_push_log, server_log_fn=_push_llama_log)
             _gpu_task_lock.release()
 
     def get_whisper_transcript(self, video_id: str) -> Dict[str, Any]:
@@ -980,11 +984,9 @@ class ExperimentalMixin:
         from ..llama_cpp import launch as _launch
 
         params = dict(params or {})
-        # 卡片偏好 show_logs 并入启动参数
-        llama_cfg = load_llama_config() or {}
-        params.setdefault("show_logs", llama_cfg.get("show_logs", False))
 
-        r = _launch(model_path or "", params, log_fn=_push_log)
+        r = _launch(model_path or "", params, log_fn=_push_log,
+                    server_log_fn=_push_llama_log)
         if r.get("ok"):
             # 记录本次成功运行的模型
             _record_last_model(r.get("model") or model_path or "")
@@ -1004,7 +1006,6 @@ class ExperimentalMixin:
         from ..llama_cpp import _GLOBAL_ONLY_KEYS
         llama = load_llama_config() or {}
         params = {k: v for k, v in llama.items() if k not in _GLOBAL_ONLY_KEYS}
-        params["show_logs"] = bool(llama.get("show_logs", False))
         mcfg = load_llama_model_configs().get(target, {})
         params.update({k: v for k, v in mcfg.items() if v is not None})
         return params
@@ -1027,7 +1028,8 @@ class ExperimentalMixin:
 
         target = self._llama_autostart_target()
         _push_log("检测到自动运行已开启，正在启动本地推理服务…")
-        r = _launch(target, self._llama_autostart_params(target), log_fn=_push_log)
+        r = _launch(target, self._llama_autostart_params(target), log_fn=_push_log,
+                    server_log_fn=_push_llama_log)
         if r.get("ok"):
             _push_log("自动运行启动成功。")
             _record_last_model(r.get("model") or target or "")
@@ -1053,7 +1055,8 @@ class ExperimentalMixin:
 
         target = self._llama_autostart_target()
         _push_log("本地推理服务未运行，「开始自动重命名」触发自动启动…")
-        r = _launch(target, self._llama_autostart_params(target), log_fn=_push_log)
+        r = _launch(target, self._llama_autostart_params(target), log_fn=_push_log,
+                    server_log_fn=_push_llama_log)
         if r.get("ok"):
             _push_log("本地推理服务已自动启动。")
             _record_last_model(r.get("model") or target or "")

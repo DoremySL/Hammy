@@ -1,8 +1,7 @@
 """llama-server 显存让出/恢复（pause_for_task / resume_after_task）与启动状态测试。
 
 覆盖：pause/resume 的暂存-恢复语义、GPU 任务（标签获取/转录）前后挂钩、
-launch 的 show_logs 终端接管、启动 4 态（starting/launch_failed）流转、
-_reader_thread 无管道模式的退出等待。
+launch 的输出固定接管与 server_log_fn 分流、启动 4 态（starting/launch_failed）流转。
 """
 import sys
 from contextlib import ExitStack
@@ -107,7 +106,8 @@ class TestResumeAfterTask(unittest.TestCase):
         self.assertTrue(r["ok"])
         self.assertTrue(r["restarted"])
         launch_mock.assert_called_once_with(
-            "C:/m.gguf", {"port": 9999, "ctx": 8192}, log_fn=mock.ANY)
+            "C:/m.gguf", {"port": 9999, "ctx": 8192}, log_fn=mock.ANY,
+            server_log_fn=mock.ANY)
         self.assertIsNone(llama_cpp._paused_launch)  # 暂存被消费
 
     def test_saved_but_already_running_skips(self):
@@ -150,7 +150,9 @@ class TestLaunchSavesParams(unittest.TestCase):
              mock.patch("gui_app.llama_cpp.subprocess.Popen", return_value=proc), \
              mock.patch("gui_app.llama_cpp.register_subprocess"), \
              mock.patch("gui_app.llama_cpp._reader_thread"), \
-             mock.patch("gui_app.llama_cpp._wait_for_health", return_value=True):
+             mock.patch("gui_app.llama_cpp._wait_for_health", return_value=True), \
+             mock.patch("gui_app.llama_cpp._port_in_use", return_value=False), \
+             mock.patch("gui_app.config_store.update_llama_config"):
             r = llama_cpp.launch("C:/m.gguf", {"ctx": 8192, "port": 9090})
         self.assertTrue(r["ok"])
         saved = llama_cpp._llama_state["launch_params"]
@@ -208,8 +210,6 @@ class TestTaskHooks(unittest.TestCase):
             mock.patch("gui_app.api_mixins.experimental.update_json"),  # 标签落盘不入真实工作区
             mock.patch("batch_rename.dependencies.ffmpeg_tools.ffmpeg",
                        "/fake/ffmpeg.exe"),
-            mock.patch("gui_app.pixai_tagger.cls_model_available",
-                       return_value=False),
             mock.patch("gui_app.pixai_tagger.ensure_model_files",
                        return_value=None),
             mock.patch("gui_app.pixai_tagger.extract_frames_for_tagger",
@@ -263,7 +263,7 @@ class TestTaskHooks(unittest.TestCase):
 
 
 class TestLaunchTerminal(unittest.TestCase):
-    """「程序内显示 llama.cpp 日志」：show_logs 决定输出接管还是继承程序终端。"""
+    """llama-server 输出固定接管管道，转发到程序内专用日志视图。"""
 
     def setUp(self):
         _reset_runtime_state()
@@ -283,37 +283,24 @@ class TestLaunchTerminal(unittest.TestCase):
              mock.patch("gui_app.llama_cpp._reader_thread") as reader_mock, \
              mock.patch("gui_app.llama_cpp.threading.Thread") as thread_cls, \
              mock.patch("gui_app.llama_cpp._wait_for_health",
-                        return_value=True):
+                        return_value=True), \
+             mock.patch("gui_app.llama_cpp._port_in_use", return_value=False), \
+             mock.patch("gui_app.config_store.update_llama_config"):
             r = llama_cpp.launch("C:/m.gguf", params)
         self.assertTrue(r["ok"])
         return proc, popen_mock, reader_mock, thread_cls
 
-    def test_default_inherits_program_terminal(self):
-        # 默认 show_logs=False：不接管输出，llama-server 直接写到程序终端
+    def test_always_pipes_output(self):
+        # 始终接管管道：输出不再依赖程序终端，走程序内专用日志视图
         proc, popen_mock, reader_mock, thread_cls = self._launch({})
-        kw = popen_mock.call_args.kwargs
-        self.assertIsNone(kw["stdout"])
-        self.assertIsNone(kw["stderr"])
-        # 不能带 CREATE_NO_WINDOW：该 flag 使 console 子进程标准句柄不被设置，
-        # llama-server 日志会静默丢失（MSDN 文档行为）
-        self.assertEqual(kw["creationflags"], 0)
-        # 监听线程只等退出做状态清理，不读管道（read_pipe=False）
-        thread_cls.assert_called_once()
-        self.assertEqual(thread_cls.call_args.kwargs["target"], reader_mock)
-        self.assertEqual(thread_cls.call_args.kwargs["args"],
-                         (proc, mock.ANY, False, False))
-
-    def test_show_logs_pipes_to_log_bar(self):
-        # show_logs=True：接管管道逐行转发到日志栏，保留防弹窗 flag
-        proc, popen_mock, reader_mock, thread_cls = \
-            self._launch({"show_logs": True})
         kw = popen_mock.call_args.kwargs
         self.assertIs(kw["stdout"], llama_cpp.subprocess.PIPE)
         self.assertIs(kw["stderr"], llama_cpp.subprocess.STDOUT)
         self.assertIsNotNone(kw["creationflags"])  # SUBPROCESS_KWARGS 的 flag
         thread_cls.assert_called_once()
+        self.assertEqual(thread_cls.call_args.kwargs["target"], reader_mock)
         self.assertEqual(thread_cls.call_args.kwargs["args"],
-                         (proc, mock.ANY, True, True))
+                         (proc, mock.ANY, mock.ANY))
 
     def test_launch_success_clears_starting(self):
         # 健康检查通过后：starting 收起、无失败残留 → 胶囊「运行中」
@@ -321,6 +308,34 @@ class TestLaunchTerminal(unittest.TestCase):
         self.assertTrue(llama_cpp._llama_state["running"])
         self.assertFalse(llama_cpp._llama_state["starting"])
         self.assertIsNone(llama_cpp._llama_state["launch_failed"])
+
+    def test_server_log_fn_routes_raw_output(self):
+        # server_log_fn 指定时：原始输出转发给它，生命周期提示留在 log_fn
+        proc = mock.MagicMock()
+        proc.pid = 1234
+        proc.poll.return_value = None
+        life, server = [], []
+        life_append, server_append = life.append, server.append
+        with mock.patch("pathlib.Path.is_file", return_value=True), \
+             mock.patch("gui_app.llama_cpp.scan_models"), \
+             mock.patch("gui_app.llama_cpp.scan_mmprojs", return_value=[]), \
+             mock.patch("gui_app.llama_cpp._pick_mmproj", return_value=""), \
+             mock.patch("gui_app.llama_cpp._build_args", return_value=[]), \
+             mock.patch("gui_app.llama_cpp.subprocess.Popen",
+                        return_value=proc) as popen_mock, \
+             mock.patch("gui_app.llama_cpp.register_subprocess"), \
+             mock.patch("gui_app.llama_cpp._reader_thread"), \
+             mock.patch("gui_app.llama_cpp.threading.Thread") as thread_cls, \
+             mock.patch("gui_app.llama_cpp._wait_for_health", return_value=True), \
+             mock.patch("gui_app.llama_cpp._port_in_use", return_value=False), \
+             mock.patch("gui_app.config_store.update_llama_config"):
+            llama_cpp.launch("C:/m.gguf", {},
+                             log_fn=life_append, server_log_fn=server_append)
+        thread_cls.assert_called_once()
+        self.assertIs(thread_cls.call_args.kwargs["args"][1], server_append)
+        self.assertIn("正在加载模型", "".join(life))
+        self.assertIn("模型加载完成", "".join(life))
+        self.assertEqual(server, [])
 
 
 class TestLaunchState(unittest.TestCase):
@@ -346,6 +361,7 @@ class TestLaunchState(unittest.TestCase):
             mock.patch("gui_app.llama_cpp.register_subprocess"),
             mock.patch("gui_app.llama_cpp._reader_thread"),
             mock.patch("gui_app.llama_cpp.threading.Thread"),
+            mock.patch("gui_app.llama_cpp._port_in_use", return_value=False),
         ]
 
     def test_popen_failure_records_launch_failed(self):
@@ -356,7 +372,8 @@ class TestLaunchState(unittest.TestCase):
              mock.patch("gui_app.llama_cpp._pick_mmproj", return_value=""), \
              mock.patch("gui_app.llama_cpp._build_args", return_value=[]), \
              mock.patch("gui_app.llama_cpp.subprocess.Popen",
-                        side_effect=OSError("boom")):
+                        side_effect=OSError("boom")), \
+             mock.patch("gui_app.llama_cpp._port_in_use", return_value=False):
             r = llama_cpp.launch("C:/m.gguf", {}, log_fn=lambda m: None)
         self.assertFalse(r["ok"])
         st = llama_cpp._llama_state
@@ -440,34 +457,24 @@ class TestLaunchState(unittest.TestCase):
         self.assertFalse(st["running"])
 
 
-class TestReaderThreadNoPipe(unittest.TestCase):
-    """_reader_thread 无管道模式：等进程真正退出后才清状态（防 running 误清）。"""
+class TestReaderThreadExitCleanup(unittest.TestCase):
+    """_reader_thread 收尾语义：EOF 后快速 wait、退出后才清状态（防 running 误清）。"""
 
     def setUp(self):
         _reset_runtime_state()
 
-    def _run(self, read_pipe):
+    def _run(self, state):
         proc = mock.MagicMock()
         proc.stdout = None
-        state = {"running": True}
         with mock.patch("gui_app.llama_cpp._llama_proc", proc), \
              mock.patch("gui_app.llama_cpp._llama_state", state), \
              mock.patch("gui_app.llama_cpp.unregister_subprocess"):
-            llama_cpp._reader_thread(proc, lambda m: None,
-                                     show_logs=False, read_pipe=read_pipe)
+            llama_cpp._reader_thread(proc, lambda m: None)
         return proc, state
 
-    def test_no_pipe_waits_without_timeout(self):
-        # 无管道：wait() 不带超时（进程退出前阻塞，不吞超时清状态）
-        proc, state = self._run(read_pipe=False)
-        _, kwargs = proc.wait.call_args
-        self.assertNotIn("timeout", kwargs)
-        # wait 返回（进程已退出）后才清 running
-        self.assertFalse(state["running"])
-
     def test_pipe_waits_with_short_timeout(self):
-        # 管道模式保持原有快速收尾语义（EOF 后进程基本已退出）
-        proc, state = self._run(read_pipe=True)
+        # 固定管道模式保持快速收尾语义（EOF 后进程基本已退出）
+        proc, state = self._run({"running": True})
         _, kwargs = proc.wait.call_args
         self.assertEqual(kwargs.get("timeout"), 5)
         self.assertFalse(state["running"])
@@ -475,14 +482,7 @@ class TestReaderThreadNoPipe(unittest.TestCase):
     def test_reader_clears_starting_on_exit(self):
         # 进程在「正在启动」窗口内退出：收起启动中标记
         # （失败原因由 launch 的健康检查分支补记 launch_failed）
-        proc = mock.MagicMock()
-        proc.stdout = None
-        state = {"running": True, "starting": True}
-        with mock.patch("gui_app.llama_cpp._llama_proc", proc), \
-             mock.patch("gui_app.llama_cpp._llama_state", state), \
-             mock.patch("gui_app.llama_cpp.unregister_subprocess"):
-            llama_cpp._reader_thread(proc, lambda m: None,
-                                     show_logs=False, read_pipe=False)
+        state = self._run({"running": True, "starting": True})[1]
         self.assertFalse(state["running"])
         self.assertFalse(state["starting"])
 

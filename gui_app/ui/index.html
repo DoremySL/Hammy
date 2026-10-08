@@ -33,6 +33,7 @@
 <symbol id="ic-external" viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></symbol>
 <symbol id="ic-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="16.2" y1="16.2" x2="21" y2="21"/></symbol>
 <symbol id="ic-log" viewBox="0 0 24 24"><line x1="9" y1="6" x2="20" y2="6"/><line x1="9" y1="12" x2="20" y2="12"/><line x1="9" y1="18" x2="20" y2="18"/><circle cx="4.6" cy="6" r="1.25" fill="currentColor" stroke="none"/><circle cx="4.6" cy="12" r="1.25" fill="currentColor" stroke="none"/><circle cx="4.6" cy="18" r="1.25" fill="currentColor" stroke="none"/></symbol>
+<symbol id="ic-log-ai" viewBox="0 0 24 24"><rect x="3.4" y="3.4" width="17.2" height="17.2" rx="5"/><g transform="translate(4.8 4.8) scale(0.6)"><path d="M12 3C12.6 8.2 15.8 11.4 21 12C15.8 12.6 12.6 15.8 12 21C11.4 15.8 8.2 12.6 3 12C8.2 11.4 11.4 8.2 12 3Z" fill="currentColor" stroke="none"/></g></symbol>
 <symbol id="ic-info" viewBox="0 0 24 24"><rect x="3.4" y="3.4" width="17.2" height="17.2" rx="5"/><line x1="12" y1="16.8" x2="12" y2="11.4"/><circle cx="12" cy="7.6" r="1.15" fill="currentColor" stroke="none"/></symbol>
 <symbol id="ic-hammy" viewBox="35.7 64 139.8 149.2">
 <g stroke="none">
@@ -162,6 +163,9 @@
         <button class="tab" data-tab="detail" id="tab-detail" data-tip="详情" aria-label="详情">
           <svg class="ic"><use href="#ic-info"></use></svg>
         </button>
+        <button class="tab" data-tab="llama" id="tab-llama" data-tip="llama.cpp 日志" aria-label="llama.cpp 日志" style="display:none">
+          <svg class="ic"><use href="#ic-log-ai"></use></svg>
+        </button>
         <span class="head-sep" id="tabsEndSep"></span>
       </div>
       <button class="fab-start" id="btn-start" disabled data-tip="开始自动重命名">
@@ -174,7 +178,10 @@
         <div class="bar"><i id="prog-bar"></i></div>
         <div class="progress-num" id="prog-num"></div>
       </div>
-      <div class="log" id="log"><div class="log-empty" id="logEmpty">请添加文件夹或文件开始自动重命名</div></div>
+      <div class="log" id="log"><div class="log-empty" id="logEmpty">请添加文件夹或文件开始</div></div>
+    </div>
+    <div class="tabbody" id="body-llama">
+      <div class="log" id="llamaLog"><div class="log-empty" id="llamaLogEmpty">暂无 llama.cpp 日志</div></div>
     </div>
     <div class="tabbody" id="body-detail">
       <div class="detail" id="detail"><div class="empty">点击「已处理」中的视频查看详情</div></div>

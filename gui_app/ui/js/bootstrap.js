@@ -17,6 +17,16 @@
   window.addEventListener(evt, e => { e.preventDefault(); e.stopPropagation(); }, false);
 });
 
+/* ── 日志选中后 Ctrl+C 复制 ── */
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && !document.execCommand('copy')) {
+      navigator.clipboard && navigator.clipboard.writeText(sel.toString()).catch(() => {});
+    }
+  }
+});
+
 $('#conn-pill').addEventListener('click', () => openSettings('ai'));
 $$('.stats .pill[data-view]').forEach(p => p.addEventListener('click', () => switchView(p.dataset.view)));
 $('#searchMode .dd-btn').insertAdjacentHTML('beforeend', ddArrow());

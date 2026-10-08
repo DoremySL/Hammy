@@ -183,8 +183,9 @@
   .mini-prog-box.dl:hover{background:var(--panel);border-color:var(--border-strong)}
   .pane-head{display:flex;align-items:center;gap:4px;padding:9px 14px;border-bottom:1px solid var(--border);
     position:relative;z-index:10}
-  .selected-info{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;
-    margin-left:14px;color:var(--faint);font-size:12px;font-weight:500}
+  .selected-info{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;max-width:100%;
+    margin-left:14px;color:var(--faint);font-size:12px;font-weight:500;
+    transition:max-width .25s ease,opacity .18s ease}
   .pane-head .right{margin-left:auto;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
   .pane-head .right #btn-refresh,
   .pane-head .right #btn-select-all{width:28px;height:28px;padding:0;display:grid;place-items:center;
@@ -304,10 +305,10 @@
 
   /* ── 搜索组件 ── */
   .search-widget{display:flex;align-items:center;gap:0;border:1px solid var(--border-strong);
-    border-radius:var(--r-md);background:var(--panel-2);transition:border-color .15s,box-shadow .15s}
+    border-radius:var(--r-md);background:var(--panel-2);transition:border-color .15s,box-shadow .15s,background .15s}
   .search-widget:focus-within{border-color:var(--accent)}
   .search-widget .search-mode .dd-btn{padding:6px 10px;font-size:12px}
-  .search-sep{width:1px;height:16px;background:var(--border-strong);flex-shrink:0}
+  .search-sep{width:1px;height:16px;background:var(--border);flex-shrink:0}
   .search-widget input{border:none;outline:none;background:transparent;padding:7px 8px;
     font-size:12.5px;font-family:inherit;color:var(--text);width:130px;transition:width .2s}
   .search-widget input:focus,.search-widget.has-text input{width:260px}
@@ -317,28 +318,31 @@
   .search-widget #btn-clear-search .ic,.search-widget #btn-pt-clear-search .ic{width:11px;height:11px;display:block}
   .search-widget #btn-clear-search:hover,.search-widget #btn-pt-clear-search:hover{color:var(--err)}
   .search-widget.has-text #btn-clear-search,.search-widget.has-text #btn-pt-clear-search{display:flex;align-items:center}
-  /* 主工具栏的搜索：收起为图标按钮，点击后展开输入框 */
+  /* 主工具栏的搜索：收起为图标按钮，点击后展开输入框（宽度+透明度过渡） */
   #searchWidget{border-color:transparent;background:transparent;flex-shrink:0}
-  #searchWidget.open{border-color:var(--border-strong);background:var(--panel-2)}
+  #searchWidget.open{border-color:var(--border);background:var(--panel-2)}
   #searchWidget:not(.open):focus-within{border-color:transparent;box-shadow:none}
-  #searchWidget .search-fields{display:none;align-items:center}
-  #searchWidget.open .search-fields{display:flex}
+  #searchWidget .search-fields{display:flex;align-items:center;overflow:hidden;
+    max-width:0;opacity:0;visibility:hidden;
+    transition:max-width .25s ease,opacity .18s ease,visibility .25s}
+  #searchWidget.open .search-fields{max-width:360px;opacity:1;visibility:visible}
   #searchWidget .search-toggle{display:grid;place-items:center;width:30px;height:30px;padding:0;
-    border:none;background:none;border-radius:var(--r-md);color:var(--muted);cursor:pointer;
-    transition:background .16s ease,color .16s ease}
+    border:none;background:none;border-radius:var(--r-md);color:var(--muted);cursor:pointer;overflow:hidden;
+    transition:background .16s ease,color .16s ease,width .25s ease,opacity .18s ease,visibility .25s}
   #searchWidget .search-toggle .ic{width:18px;height:18px}
   #searchWidget .search-toggle:hover{background:var(--accent-soft);color:var(--accent-text)}
   #searchWidget.has-text .search-toggle{color:var(--accent-text)}
-  #searchWidget.open .search-toggle{display:none}
-  /* 底部栏内的搜索：对齐 28px 控件基线，展开时隐藏选中路径 */
+  #searchWidget.open .search-toggle{width:0;opacity:0;visibility:hidden}
+  /* 底部栏内的搜索：对齐 28px 控件基线，展开时渐隐选中路径 */
   .pane-head #searchWidget{height:28px}
   .pane-head #searchWidget .search-toggle{width:28px;height:28px}
+  .pane-head #searchWidget.open .search-toggle{width:0}
   .pane-head #searchWidget .search-toggle .ic{width:16px;height:16px}
   .pane-head #searchWidget .search-mode .dd-btn{padding:0 8px;height:26px;font-size:12px}
   .pane-head #searchWidget .search-sep{height:14px}
   .pane-head #searchWidget input{padding:0 8px;height:26px;font-size:12.5px;width:130px}
   .pane-head #searchWidget input:focus,.pane-head #searchWidget.has-text input{width:230px}
-  .pane-head #searchWidget.open ~ .selected-info{display:none}
+  .pane-head #searchWidget.open ~ .selected-info{max-width:0;opacity:0}
 
   /* ── 开始处理按钮 ── */
   .fab-start{display:grid;place-items:center;flex-shrink:0;
@@ -405,7 +409,7 @@
   .bar > i.done{background:var(--accent);animation:none}
   .progress-num{font-size:12.5px;color:var(--muted);font-variant-numeric:tabular-nums;text-align:right}
   .progress-num:empty{display:none}
-  .log{flex:1;overflow:auto;padding:10px 6px;font-family:var(--mono);font-size:12px;line-height:1.6;
+  .log{flex:1;overflow:auto;padding:10px 6px;font-family:var(--mono);font-size:12px;line-height:1.6;user-select:text;
     color:var(--log-text);background:var(--panel);border-top:1px solid var(--border);display:flex;flex-direction:column}
   .log .log-empty{margin:auto;color:var(--faint);font-size:13px;text-align:center;padding:20px;font-family:var(--font)}
   .log .ln{white-space:pre-wrap;word-break:break-all;padding:1px 0;animation:lnIn .2s ease}

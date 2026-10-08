@@ -18,6 +18,12 @@ if str(APP_ROOT) not in sys.path:
 
 os.environ.pop("PYTHONNET_RUNTIME", None)
 
+# pythonw 启动时 stdout/stderr 为 None，替换为 devnull 防止各处 write 崩溃
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
 # 记录 pythonnet 是否成功初始化，供 mainthread.py 选择对话框实现（WinForms STA vs 原生 ctypes）
 try:
     from gui_app.mainthread import set_pythonnet_status
@@ -34,6 +40,8 @@ except Exception:
 # ── 全局崩溃日志 ──
 CRASH_LOG = Path(tempfile.gettempdir()) / "video_rename_gui_crash.log"
 CRASH_LOG_PREV = Path(tempfile.gettempdir()) / "video_rename_gui_crash.prev.log"
+# GUI 就绪信号：GUI Launcher.bat 轮询到该文件后退出启动窗口
+READY_FLAG = Path(tempfile.gettempdir()) / "hammy_gui_ready.flag"
 
 
 def _crash_log(text: str) -> None:
@@ -222,7 +230,14 @@ def _ensure_single_instance() -> None:
             if hwnd:
                 if u32.IsIconic(hwnd):
                     u32.ShowWindow(hwnd, 9)  # SW_RESTORE：从最小化还原
+                elif not u32.IsWindowVisible(hwnd):
+                    u32.ShowWindow(hwnd, 9)  # 隐藏到托盘的窗口：还原显示
                 u32.SetForegroundWindow(hwnd)
+        except Exception:
+            pass
+        # 补写就绪标志：本进程不会走到 _on_started，需让等待本次启动的 bat 退出
+        try:
+            READY_FLAG.write_text("ok", encoding="utf-8")
         except Exception:
             pass
         sys.exit(0)
@@ -432,6 +447,57 @@ def _bind_window_events(window, api: "Api"):
     return _geo_flush_loop
 
 
+def _find_window_icon_file():
+    """任务栏/标题栏图标：与托盘同一查找规则（gui_app/ui 下 hammy.ico / icon.ico）。"""
+    uidir = SCRIPT_DIR / "ui"
+    for name in ("hammy.ico", "icon.ico"):
+        p = uidir / name
+        if p.is_file():
+            return p
+    return None
+
+
+def _apply_window_icon_async() -> None:
+    """给主窗口设置任务栏/标题栏图标（pywebview 无此配置项，手动 WM_SETICON）。
+
+    在后台线程轮询等待窗口句柄就绪；找不到图标文件或句柄超时则静默放弃。
+    """
+    path = _find_window_icon_file()
+    if path is None:
+        return
+    try:
+        import time
+        import ctypes.wintypes
+        u32 = ctypes.WinDLL("user32", use_last_error=True)
+        u32.FindWindowW.restype = ctypes.wintypes.HWND
+        u32.FindWindowW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
+        u32.LoadImageW.restype = ctypes.wintypes.HANDLE
+        u32.LoadImageW.argtypes = [ctypes.wintypes.HINSTANCE, ctypes.wintypes.LPCWSTR,
+                                   ctypes.wintypes.UINT, ctypes.c_int, ctypes.c_int,
+                                   ctypes.wintypes.UINT]
+        u32.SendMessageW.argtypes = [ctypes.wintypes.HWND, ctypes.wintypes.UINT,
+                                     ctypes.wintypes.WPARAM, ctypes.wintypes.LPARAM]
+    except Exception:
+        return
+    hwnd = None
+    for _ in range(20):  # 最多等 5s：webview.start 回调后 HWND 可能仍需片刻就绪
+        hwnd = u32.FindWindowW(None, WINDOW_TITLE)
+        if hwnd:
+            break
+        time.sleep(0.25)
+    if not hwnd:
+        return
+    IMAGE_ICON, LR_LOADFROMFILE, LR_DEFAULTSIZE = 1, 0x10, 0x40
+    for wparam in (1, 0):  # ICON_BIG：任务栏/Alt+Tab；ICON_SMALL：标题栏
+        try:
+            hicon = u32.LoadImageW(None, str(path), IMAGE_ICON, 0, 0,
+                                   LR_LOADFROMFILE | LR_DEFAULTSIZE)
+            if hicon:
+                u32.SendMessageW(hwnd, 0x80, wparam, hicon)  # WM_SETICON
+        except Exception:
+            pass
+
+
 def _start_background_loops(geo_flush_loop, api=None) -> callable:
     """构建后台循环，返回 webview.start 的 func 回调。
 
@@ -440,6 +506,37 @@ def _start_background_loops(geo_flush_loop, api=None) -> callable:
     def _on_started():
         from gui_app.js_push import js_pusher
         import time as _time
+
+        # 页面加载完成（窗口内容真正可见）后才通知启动器脚本退出，
+        # 避免 bat 窗口先消失、程序窗口后出现带来的"闪退感"
+        _ready_signaled = threading.Event()
+
+        def _signal_ready():
+            if _ready_signaled.is_set():
+                return
+            _ready_signaled.set()
+            try:
+                READY_FLAG.write_text("ok", encoding="utf-8")
+            except Exception:
+                pass
+
+        window = getattr(api, "_window", None) if api is not None else None
+        if window is not None:
+            try:
+                window.events.loaded += lambda *_a: _signal_ready()
+                # 兜底：loaded 不触发（订阅前已触发/注册失败）时 5s 后强制放行，
+                # 避免启动器空等 60s 超时
+                def _ready_fallback():
+                    _time.sleep(5)
+                    _signal_ready()
+                threading.Thread(
+                    target=_ready_fallback, name="ready-fallback", daemon=True
+                ).start()
+            except Exception as e:
+                sys.stderr.write(f"[events] loaded hook 注册失败，直接写就绪标志: {e}\n")
+                _signal_ready()
+        else:
+            _signal_ready()
 
         def _flush_loop():
             while True:
@@ -458,7 +555,6 @@ def _start_background_loops(geo_flush_loop, api=None) -> callable:
             t1 = threading.Thread(target=_flush_loop, name="js-flush", daemon=True)
             t1.start()
 
-        window = getattr(api, "_window", None) if api is not None else None
         if window is not None:
             try:
                 window.events.loaded += lambda *_a: _start_flush()
@@ -478,6 +574,18 @@ def _start_background_loops(geo_flush_loop, api=None) -> callable:
 
         t2 = threading.Thread(target=geo_flush_loop, name="geo-save", daemon=True)
         t2.start()
+
+        # 托盘（pystray 未安装时自动降级为普通最小化）
+        if window is not None:
+            try:
+                from gui_app.tray import start_tray
+                start_tray(window)
+            except Exception as e:
+                sys.stderr.write(f"[tray] 启动失败: {e}\n")
+
+        # 任务栏/标题栏图标（pywebview 无此配置，窗口就绪后手动 WM_SETICON）
+        threading.Thread(target=_apply_window_icon_async,
+                         name="win-icon", daemon=True).start()
 
         # 本地推理自动运行（扩展功能，未安装/未启用时在端点内直接跳过）
         if api is not None and hasattr(api, "auto_run_llama"):

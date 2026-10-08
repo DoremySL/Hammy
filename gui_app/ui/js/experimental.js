@@ -35,6 +35,7 @@ function syncLlamaState(llamaStatus) {
     checkConnection();
   }
   if (typeof updateLlamaTabVisibility === 'function') updateLlamaTabVisibility();
+  if (typeof updateLlamaLogTab === 'function') updateLlamaLogTab(!!(llamaStatus && llamaStatus.enabled));
 }
 
 let _expSaveToken = 0;
@@ -383,16 +384,16 @@ async function showMirrorSelectDialog(opts) {
       items: devices.map(d => ({ value: d.id, name: d.name, desc: d.desc || '', recommended: !!d.recommended })),
     }));
   }
-  if (Array.isArray(mirrors.pypi) && mirrors.pypi.length) {
-    sections.push(mirrorSection({
-      title: '通用 PyPI 镜像', hint: '常规依赖包索引', name: 'pypi-mirror', badge: '默认',
-      items: mirrors.pypi.map(m => ({ value: m.id, name: m.name, desc: m.url || '', recommended: m.id === mirrors.default_pypi })),
-    }));
-  }
   if (opts.showModelSelect && Array.isArray(opts.models) && opts.models.length) {
     sections.push(mirrorSection({
       title: '模型选择', hint: '安装时下载所选模型，其余模型可在安装后下载切换', name: 'model-select',
       items: opts.models.map(m => ({ value: m.key, name: m.title, desc: m.desc || '', recommended: !!m.recommended })),
+    }));
+  }
+  if (Array.isArray(mirrors.pypi) && mirrors.pypi.length) {
+    sections.push(mirrorSection({
+      title: '通用 PyPI 镜像', hint: '常规依赖包索引', name: 'pypi-mirror', badge: '默认',
+      items: mirrors.pypi.map(m => ({ value: m.id, name: m.name, desc: m.url || '', recommended: m.id === mirrors.default_pypi })),
     }));
   }
 
@@ -514,10 +515,6 @@ function _renderLlamaSection(llamaStatus) {
             <label data-tip="自动重命名、字幕翻译与连接检测统一走本地服务；AI 配置页仅基础连接设置暂不生效，进阶采样参数依然生效">本地推理集成</label>
             ${_boolDd('llama-integrate-dd', !!cfg.integrate)}
           </div>
-          <div class="field">
-            <label data-tip="开启后 llama-server 输出显示在日志栏，否则在程序终端">日志显示</label>
-            ${_boolDd('llama-showlogs-dd', !!cfg.show_logs, '日志栏', '程序终端')}
-          </div>
         </div>
       </div>
     </div>`;
@@ -560,8 +557,6 @@ function _bindLlamaEvents(llamaStatus) {
     state.llamaSynced = false;
     await ensureLlamaStateKnown();
   });
-  const showlogs = $('#llama-showlogs-dd');
-  if (showlogs) initDropdown(showlogs, v => _saveLlamaGlobals({ show_logs: v === '1' }));
 
   const pickBtn = $('#btn-llama-pickdir');
   if (pickBtn) pickBtn.addEventListener('click', async () => {

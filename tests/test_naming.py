@@ -4,7 +4,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import re
 import tempfile
 import unittest
-from pathlib import Path
 
 from batch_rename.naming import (
     sanitize_filename, resolve_collision, extract_date_str, build_new_stem,
@@ -143,48 +142,6 @@ class TestManualTransform(unittest.TestCase):
         self.assertEqual(apply_manual_transform("abc", "remove", "abc"),
                          ("abc", "重命名结果为空"))
 
-
-if __name__ == "__main__":
-    unittest.main()
-
-class TestCounterTemplate(unittest.TestCase):
-    """${...} 编号占位符展开（apply_manual_transform 的 counter 参数）。"""
-
-    def test_shorthand_n(self):
-        stem, err = apply_manual_transform("第1集", "replace", r"第(\d+)集",
-                                           r"S1E${n}", True, 1)
-        self.assertEqual((stem, err), ("S1E01", ""))
-
-    def test_sequential_counting(self):
-        for i, n in enumerate(("S1E01", "S1E02", "S1E03"), start=1):
-            stem, _ = apply_manual_transform("第x集", "replace", r"第x集",
-                                             r"S1E${n}", True, i)
-            self.assertEqual(stem, n)
-
-    def test_padding_start_custom(self):
-        stem, _ = apply_manual_transform("第x集", "replace", r"第x集",
-                                         r"${padding=3;start=0}", True, 10)
-        self.assertEqual(stem, "009")
-
-    def test_partial_keys_default(self):
-        stem, _ = apply_manual_transform("第x集", "replace", r"第x集",
-                                         r"${start=100}", True, 1)
-        self.assertEqual(stem, "100")
-
-    def test_backref_plus_counter(self):
-        stem, err = apply_manual_transform("第1集abc", "replace", r"第(\d+)集",
-                                           r"S\1E${n} ", True, 7)
-        self.assertEqual((stem, err), ("S1E07 abc", ""))
-
-    def test_counter_none_no_expand(self):
-        stem, err = apply_manual_transform("第1集", "replace", r"第(\d+)集",
-                                           r"S1E${n} ", True)
-        self.assertEqual((stem, err), ("S1E${n}", ""))
-
-    def test_invalid_spec_uses_defaults(self):
-        stem, _ = apply_manual_transform("第x集", "replace", r"第x集",
-                                         r"${padding=ab;start=x}", True, 2)
-        self.assertEqual(stem, "02")
 
 class TestCounterTemplate(unittest.TestCase):
     """${...} 编号占位符展开（apply_manual_transform 的 counter 参数）。"""

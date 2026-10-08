@@ -93,12 +93,20 @@ class TestAiOverride(unittest.TestCase):
         self.assertEqual(ov["ai_workers"], 4)
 
     def test_custom_host_port(self):
+        # 0.0.0.0 是监听地址，本机调用须归一为回环（_local_host）；端口仍取配置值
         self.llama_cfg.stop()
         self.llama_cfg = mock.patch("gui_app.config_store.load_llama_config",
                                     return_value={"host": "0.0.0.0", "port": 11434})
         self.llama_cfg.start()
         ov = li.ai_override(self.c)
-        self.assertEqual(ov["base_url"], "http://0.0.0.0:11434/v1")
+        self.assertEqual(ov["base_url"], "http://127.0.0.1:11434/v1")
+        # 非监听地址的自定义 host 原样保留
+        self.llama_cfg.stop()
+        self.llama_cfg = mock.patch("gui_app.config_store.load_llama_config",
+                                    return_value={"host": "192.168.1.5", "port": 8081})
+        self.llama_cfg.start()
+        ov = li.ai_override(self.c)
+        self.assertEqual(ov["base_url"], "http://192.168.1.5:8081/v1")
 
     def test_override_does_not_mutate_input(self):
         before = dict(self.c)

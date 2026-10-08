@@ -1088,30 +1088,23 @@ def _build_args(model_path: Path, p: Dict[str, Any]) -> List[str]:
 _OUT_TAIL_MAX = 30
 
 
-def _reader_thread(proc: subprocess.Popen, log_fn, show_logs: bool = True,
-                   read_pipe: bool = True,
+def _reader_thread(proc: subprocess.Popen, log_fn,
                    out_tail: Optional[List[str]] = None) -> None:
     try:
-        if read_pipe:
-            # show_logs=False 时静默，仅保留停止提示
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                s = line.strip()
-                if not s:
-                    continue
-                if out_tail is not None:
-                    out_tail.append(s)
-                    del out_tail[:-_OUT_TAIL_MAX]
-                if show_logs:
-                    log_fn(s)
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            s = line.strip()
+            if not s:
+                continue
+            if out_tail is not None:
+                out_tail.append(s)
+                del out_tail[:-_OUT_TAIL_MAX]
+            log_fn(s)
     except Exception:
         pass
     finally:
         try:
-            if read_pipe:
-                proc.wait(timeout=5)
-            else:
-                proc.wait()
+            proc.wait(timeout=5)
         except Exception:
             pass
         with _state_lock:
@@ -1162,9 +1155,14 @@ def _wait_for_health(host: str, port: int, timeout: float, log_fn, proc: subproc
     return False
 
 
-def launch(model_path: str, params: Dict[str, Any], log_fn=None) -> Dict[str, Any]:
-    """启动 llama-server。model_path 为空时自动从 models/ 选取（仅一个则用，多个则报错）。"""
+def launch(model_path: str, params: Dict[str, Any], log_fn=None,
+           server_log_fn=None) -> Dict[str, Any]:
+    """启动 llama-server。model_path 为空时自动从 models/ 选取（仅一个则用，多个则报错）。
+
+    log_fn 收生命周期提示（进普通日志栏），server_log_fn 收 llama-server 原始输出（进专用视图）。
+    """
     log_fn = log_fn or _stderr_log
+    server_log_fn = server_log_fn or log_fn
 
     exe = LLAMA_DIR / EXE_NAME
     if not exe.is_file():
@@ -1191,17 +1189,6 @@ def launch(model_path: str, params: Dict[str, Any], log_fn=None) -> Dict[str, An
         merged = dict(DEFAULTS)
         merged.update({k: v for k, v in (params or {}).items() if v is not None})
 
-        show_logs = bool((params or {}).get("show_logs"))
-        use_pipe = show_logs
-        if not use_pipe:
-            try:
-                _has_console = sys.stdout is not None and sys.stdout.fileno() >= 0
-            except Exception:
-                _has_console = False
-            if not _has_console:
-                use_pipe = True
-                log_fn("当前进程无有效控制台句柄（pythonw 启动？），llama-server 输出无法落到终端，已改由程序内部捕获（失败提示用）")
-
         # mmproj：前端「多模态」选择框显式指定即加载；未指定时按 mmproj_auto 自动检测
         if not merged.get("mmproj") and merged.get("mmproj_auto", DEFAULTS["mmproj_auto"]):
             auto = _pick_mmproj(mp, scan_mmprojs(mp))
@@ -1225,13 +1212,12 @@ def launch(model_path: str, params: Dict[str, Any], log_fn=None) -> Dict[str, An
             _llama_state["port_conflict"] = None
 
         try:
-            creationflags = SUBPROCESS_KWARGS.get("creationflags", 0) if use_pipe else 0
             proc = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE if use_pipe else None,
-                stderr=subprocess.STDOUT if use_pipe else None,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 text=True, encoding="utf-8", errors="replace",
-                cwd=str(LLAMA_DIR), creationflags=creationflags,
+                cwd=str(LLAMA_DIR), creationflags=SUBPROCESS_KWARGS.get("creationflags", 0),
             )
         except Exception as e:
             with _state_lock:
@@ -1255,7 +1241,7 @@ def launch(model_path: str, params: Dict[str, Any], log_fn=None) -> Dict[str, An
     log_fn(f"正在加载模型: {mp.name}…")
     out_tail: List[str] = []  # 失败提示引用的输出尾部
     threading.Thread(target=_reader_thread,
-                     args=(proc, log_fn, show_logs, use_pipe, out_tail),
+                     args=(proc, server_log_fn, out_tail),
                      daemon=True).start()
 
     host = merged.get("host", DEFAULTS["host"])
@@ -1376,7 +1362,7 @@ def pause_for_task(log_fn=None) -> Dict[str, Any]:
     return {"ok": True, "was_running": True}
 
 
-def resume_after_task(log_fn=None) -> Dict[str, Any]:
+def resume_after_task(log_fn=None, server_log_fn=None) -> Dict[str, Any]:
     """高显存任务完成后调用：若此前让出过显存则按暂存参数重启；期间被手动启动时跳过。"""
     global _paused_launch
     log_fn = log_fn or _stderr_log
@@ -1389,7 +1375,8 @@ def resume_after_task(log_fn=None) -> Dict[str, Any]:
         log_fn("本地推理服务已在运行，跳过恢复。")
         return {"ok": True, "restarted": False}
     log_fn("任务处理完成，正在重新加载本地推理服务…")
-    r = launch(saved.get("model") or "", saved.get("params") or {}, log_fn=log_fn)
+    r = launch(saved.get("model") or "", saved.get("params") or {},
+               log_fn=log_fn, server_log_fn=server_log_fn)
     if r.get("ok"):
         r["restarted"] = True
     return r

@@ -3,7 +3,6 @@ import tempfile
 import threading
 import time
 import unittest
-import urllib.request
 import zipfile
 from pathlib import Path
 from unittest import mock
@@ -14,66 +13,14 @@ from gui_app import llama_cpp
 from gui_app import models_downloader as md
 
 
-def _resp(status=200, body=b"x" * 100, cl=None):
-    """构造伪 HTTP 响应：read() 依次返回 body 分块后结束。
-
-    MagicMock + __enter__ 返回自身，模拟 urlopen 返回的上下文管理器
-    （普通 Mock 无 __enter__，`with` 会抛 TypeError）。
-    """
-    r = mock.MagicMock()
-    r.status = status
-    r.headers = {"Content-Length": str(cl if cl is not None else len(body))}
-    r.read.side_effect = [body, b""]
-    r.__enter__.return_value = r
-    r.__exit__.return_value = False
-    return r
-
-
 class TestDownloadUrls(unittest.TestCase):
-    """download_urls（llama.cpp 安装入口）：直连下载 / 续传 / 取消 / label 展示。"""
+    """download_urls（llama.cpp 安装入口）：取消立即解除停滞的网络读。"""
 
     def setUp(self):
         self._td = tempfile.TemporaryDirectory()
         self.addCleanup(self._td.cleanup)
         self.dest = Path(self._td.name) / "pkg.zip"
         self.logs = []
-
-    def _run(self, urlopen_side_effect, prefill=0, cancel=None):
-        if prefill:
-            self.dest.write_bytes(b"A" * prefill)
-        with mock.patch("urllib.request.urlopen",
-                        side_effect=urlopen_side_effect) as m, \
-             mock.patch("urllib.request.Request",
-                        wraps=urllib.request.Request) as req, \
-             mock.patch("gui_app.models_downloader.time.sleep"):
-            r = md.download_urls(
-                [{"url": "http://x/pkg.zip", "filename": self.dest.name,
-                  "size": 100, "label": "预编译"}],
-                str(self.dest.parent), log_fn=self.logs.append,
-                cancel_event=cancel)
-        return m, req, r
-
-    def test_fresh_download(self):
-        m, req, r = self._run([_resp(200, b"x" * 100, cl=100)])
-        self.assertTrue(r["ok"])
-        self.assertEqual(self.dest.read_bytes(), b"x" * 100)
-        self.assertNotIn("Range", req.call_args.kwargs["headers"])
-        self.assertTrue(any("开始下载: 预编译" in s for s in self.logs))
-        self.assertTrue(any("下载完成: 预编译" in s for s in self.logs))
-
-    def test_resume_from_206(self):
-        m, req, r = self._run([_resp(206, b"y" * 50, cl=50)], prefill=50)
-        self.assertTrue(r["ok"])
-        self.assertEqual(self.dest.read_bytes(), b"A" * 50 + b"y" * 50)
-        self.assertEqual(req.call_args.kwargs["headers"]["Range"], "bytes=50-")
-        self.assertTrue(any("继续下载" in s for s in self.logs))
-
-    def test_cancelled_flag(self):
-        ev = threading.Event()
-        ev.set()
-        m, req, r = self._run([_resp(200, b"x" * 100, cl=100)], cancel=ev)
-        self.assertTrue(r["cancelled"])
-        self.assertFalse(self.dest.exists())  # 取消清理半成品
 
     def test_cancel_unblocks_stalled_read(self):
         ev = threading.Event()

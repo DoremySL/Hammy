@@ -43,7 +43,6 @@ CLS_REPO = "deepghs/anime_real_cls"  # 二次元/真实二分类预筛模型
 
 TAG_THRESHOLD = 0.66
 CHAR_FREQ_WEIGHT = 0.1  # 角色得分频次权重
-EXCLUDED_IP_TAGS = frozenset({"original", "real_life"})  # 恒排除的非作品标签
 ANIME_CLS_THRESHOLD = 0.72  # 预筛二次元阈值（按帧分数中位数）
 REAL_CLS_THRESHOLD = 0.50  # 预筛真实阈值
 
@@ -56,6 +55,8 @@ _ENGINE_META_FILE = "engine_meta.json"  # 引擎指纹文件
 _CLS_MODEL_SUBDIR = "mobilenetv3_v1.4_dist"
 _CLS_ONNX_FILE = "model.onnx"      # 预筛模型，索引 0 = anime
 _CLS_ENGINE_NAME = "cls_384.trt"   # cls 引擎文件名
+_CLS_SHAPE_RANGE = (1, 2, 2)       # cls 动态 batch 范围（opt=2 为实测吞吐/显存平衡点）
+_TRT_WORKSPACE_GB = 4              # TRT 构建临时显存预算
 TAG_ZH_FILE = "tag_zh.json"  # 标签中文翻译表
 
 # 子进程超时
@@ -73,17 +74,13 @@ def normalize_size(value: Any) -> int:
     return size if size in SUPPORTED_SIZES else DEFAULT_INPUT_SIZE
 
 
-def _engine_workspace_gb(vram_mb: int) -> int:
-    return 2 if 0 < vram_mb <= 6 * 1024 else 4
-
-
 def get_mirrors_info() -> Dict[str, Any]:
     """返回 pixai 安装弹窗数据（尺寸/站点/GPU 检测）。"""
     gpu = installer.detect_gpu()
     return {
         "sizes": [
-            {"id": 1008, "name": "1008 × 1008（精准）", "desc": "原生分辨率", "size_label": "约 1 GB"},
-            {"id": 672, "name": "672 × 672（快速）", "desc": "约 2 倍速，精度略有损失", "size_label": "约 1 GB"},
+            {"id": 1008, "name": "1008 × 1008（精准）", "desc": "模型默认分辨率", "size_label": "约 1 GB"},
+            {"id": 672, "name": "672 × 672（快速）", "desc": "约 2 倍速，误判率略有提升", "size_label": "约 1 GB"},
         ],
         "sites": [{"id": k, "name": v["name"], "desc": v["desc"]}
                   for k, v in installer.TRT_SITES.items()],
@@ -136,10 +133,6 @@ def _configured_size_precision() -> Tuple[int, str]:
             resolve_precision("auto"))
 
 
-def cls_model_available() -> bool:
-    return _cls_model_dir() is not None
-
-
 _zh_cache: Dict[str, Any] = {}
 
 
@@ -174,7 +167,6 @@ def get_status() -> Dict[str, Any]:
         "dir_exists": PIXAI_TAGGER_DIR.is_dir(),
         "venv_exists": VENV_DIR.is_dir() and venv_python.exists(),
         "model_exists": model_dir is not None,
-        "cls_model_exists": cls_model_available(),
         "engine_exists": engine_ok,
         "input_size": size,
         "precision": precision,
@@ -210,7 +202,6 @@ def install_dependencies(
     if issue:
         return {"ok": False, "error": issue}
     precision = resolve_precision("auto", gpu)
-    workspace_gb = _engine_workspace_gb(gpu.get("vram_mb") or 0)
     _log(f"GPU: {gpu.get('gpu_name')}（驱动 {gpu.get('driver_version')}）"
          f" → 引擎精度 {precision.upper()}"
          + ("（无 Tensor Core，FP32 引擎更快）" if precision == "fp32" else ""), log_fn)
@@ -324,7 +315,7 @@ def install_dependencies(
     steps.push(6)
     _log("━━ 步骤 6/6：构建 TensorRT 引擎（约 1-3 分钟）━━", log_fn)
     err = _build_engines(size, precision, gpu_name=gpu.get("gpu_name") or "",
-                         workspace_gb=workspace_gb, log_fn=log_fn, stop_event=stop_event)
+                         log_fn=log_fn, stop_event=stop_event)
     if stop_event is not None and stop_event.is_set():
         return {"ok": False, "cancelled": True, "error": "安装已取消"}
     if err:
@@ -382,19 +373,18 @@ def ensure_model_files(size: int, precision: str,
 
 
 def _build_engines(size: int, precision: str, *, gpu_name: str = "",
-                   workspace_gb: int = 4,
                    log_fn: Optional[Callable[[str], None]] = None,
                    stop_event: Optional[threading.Event] = None) -> Optional[str]:
-    """在 venv 内现场构建 tagger（+cls）TRT 引擎并写指纹文件。"""
+    """在 venv 内现场构建 tagger 与预筛 cls TRT 引擎并写指纹文件。"""
     model_dir = MODEL_DIR / MAIN_REPO
+    cls_onnx = _cls_model_dir()
+    if cls_onnx is None:
+        return "预筛模型缺失，无法构建引擎"
     jobs = [{"onnx": str(model_dir / f"tagger_{size}_{precision}.onnx"),
              "out": str(_tagger_engine_path(model_dir, size, precision)),
-             "workspace_gb": workspace_gb}]
-    cls_onnx = _cls_model_dir()
-    with_cls = cls_onnx is not None
-    if with_cls:
-        jobs.append({"onnx": str(cls_onnx), "out": str(model_dir / _CLS_ENGINE_NAME),
-                     "workspace_gb": 1})
+             "workspace_gb": _TRT_WORKSPACE_GB},
+            {"onnx": str(cls_onnx), "out": str(model_dir / _CLS_ENGINE_NAME),
+             "workspace_gb": _TRT_WORKSPACE_GB, "shape_range": list(_CLS_SHAPE_RANGE)}]
 
     def _on_line(line: str):
         line = line.strip()
@@ -413,7 +403,7 @@ def _build_engines(size: int, precision: str, *, gpu_name: str = "",
         rc, _last, err_tail = _run_venv_script(
             VENV_DIR, _TRT_BUILD_SCRIPT,
             {"jobs": jobs, "gpu_name": gpu_name, "size": int(size),
-             "precision": precision, "with_cls": with_cls,
+             "precision": precision, "cls_shape": list(_CLS_SHAPE_RANGE),
              "meta_file": str(model_dir / _ENGINE_META_FILE)},
             timeout=_BUILD_TIMEOUT_SEC, stop_event=stop_event, on_line=_on_line)
     finally:
@@ -460,8 +450,8 @@ def _stage_ascii(onnx_path):
         shutil.copy2(side, tmpdir / side.name)
     return tmpdir / onnx_path.name, tmpdir
 
-def trt_build(onnx_path, engine_path, workspace_gb=4):
-    """从 ONNX 构建本机 TRT 引擎（动态维度钉在 1）。"""
+def trt_build(onnx_path, engine_path, workspace_gb=4, shape_range=None):
+    """从 ONNX 构建本机 TRT 引擎（动态维度钉在 1；shape_range=(min,opt,max) 按范围构建）。"""
     import tensorrt as trt
     onnx_path, engine_path = Path(onnx_path), Path(engine_path)
     logger = trt.Logger(trt.Logger.WARNING)
@@ -487,10 +477,17 @@ def trt_build(onnx_path, engine_path, workspace_gb=4):
             name = network.get_input(i).name
             shape = [int(d) for d in network.get_input(i).shape]
             if any(d < 0 for d in shape):
-                fixed = tuple(1 if d < 0 else d for d in shape)
                 if profile is None:
                     profile = builder.create_optimization_profile()
-                profile.set_shape(name, fixed, fixed, fixed)
+                if shape_range is None:
+                    fixed = tuple(1 if d < 0 else d for d in shape)
+                    profile.set_shape(name, fixed, fixed, fixed)
+                else:
+                    lo, opt, hi = (int(v) for v in shape_range)
+                    profile.set_shape(name,
+                                      tuple(lo if d < 0 else d for d in shape),
+                                      tuple(opt if d < 0 else d for d in shape),
+                                      tuple(hi if d < 0 else d for d in shape))
         if profile is not None:
             config.add_optimization_profile(profile)
         t0 = time.perf_counter()
@@ -522,12 +519,13 @@ try:
     except Exception:
         pass
     for job in params['jobs']:
-        trt_build(job['onnx'], job['out'], job.get('workspace_gb', 4))
+        trt_build(job['onnx'], job['out'], job.get('workspace_gb', 4),
+                  job.get('shape_range'))
     meta = {
         'gpu_name': _gpu_name,
         'trt_version': trt.__version__,
         'tagger': {'size': params.get('size'), 'precision': params.get('precision')},
-        'cls': bool(params.get('with_cls')),
+        'cls': {'shape': params.get('cls_shape') or []},
     }
     Path(params['meta_file']).write_text(
         json.dumps(meta, ensure_ascii=False, indent=1), encoding='utf-8')
@@ -562,14 +560,15 @@ _NO_STOP = threading.Event()
 
 def extract_frames_for_tagger(video_path: str,
                               stop_event: Optional[threading.Event] = None,
-                              frame_count: int = 15) -> List[str]:
+                              frame_count: int = 15,
+                              max_side: int = DEFAULT_INPUT_SIZE) -> List[str]:
     """复用主流程抽帧，返回 JPEG base64 帧列表。"""
     if stop_event is None:
         stop_event = _NO_STOP
     if stop_event.is_set():
         return []
     cfg = Config(sampling_points=max(1, frame_count), frames_per_point=1,
-                 frame_max_side=1008)
+                 frame_max_side=max_side)
     cfg.validate()
     _, frames = probe_and_extract_keyframes(video_path, cfg, stop_event)
     return [f.b64 for f in frames]
@@ -577,45 +576,6 @@ def extract_frames_for_tagger(video_path: str,
 
 def _inference_timeout(video_count: int) -> float:
     return _INFERENCE_BASE_SEC + _INFERENCE_PER_VIDEO_SEC * max(1, video_count)
-
-
-def apply_char_tag_rules(char_stats: Dict[str, Tuple[int, float]],
-                         char_threshold: float = TAG_THRESHOLD,
-                         freq_weight: float = CHAR_FREQ_WEIGHT,
-                         ) -> Dict[str, float]:
-    """角色标签输出规则（分析子进程脚本内同逻辑实现）。"""
-    return {t: mx for t, (cnt, mx) in char_stats.items()
-            if mx + (cnt - 1) * freq_weight > char_threshold}
-
-
-def apply_ip_tag_rules(ip_stats: Dict[str, Tuple[int, float]],
-                       excluded: "frozenset[str]" = EXCLUDED_IP_TAGS,
-                       ) -> Dict[str, float]:
-    """IP 标签输出规则（分析子进程脚本内同逻辑实现）。"""
-    cand = {t: s for t, s in ip_stats.items() if t not in excluded}
-    if not cand:
-        return {}
-    top = max(mx for _, mx in cand.values())
-    best = {t: s for t, s in cand.items() if s[1] == top}
-    if len(best) > 1:
-        top_cnt = max(cnt for cnt, _ in best.values())
-        best = {t: s for t, s in best.items() if s[0] == top_cnt}
-    return {t: mx for t, (cnt, mx) in best.items()}
-
-
-def apply_tag_output_rules(char_stats: Dict[str, Tuple[int, float]],
-                           ip_stats: Dict[str, Tuple[int, float]],
-                           char_threshold: float = TAG_THRESHOLD,
-                           freq_weight: float = CHAR_FREQ_WEIGHT,
-                           excluded: "frozenset[str]" = EXCLUDED_IP_TAGS,
-                           ) -> Tuple[Dict[str, float], Dict[str, float]]:
-    """完整输出规则：角色过滤 + IP 规则 + 角色兜底（分析子进程脚本内同逻辑实现）。"""
-    char_scores = apply_char_tag_rules(char_stats, char_threshold, freq_weight)
-    ip_scores = apply_ip_tag_rules(ip_stats, excluded)
-    if ip_scores and not char_scores and char_stats:
-        best = min(char_stats.items(), key=lambda kv: (-kv[1][1], kv[0]))
-        char_scores = {best[0]: best[1][1]}
-    return char_scores, ip_scores
 
 
 class AnalyzeStream:
@@ -834,17 +794,18 @@ def start_analyze_stream(
     model_dir = _model_dir(size, prec)
     if not model_dir:
         return None
-    gpu = installer.detect_gpu_cached()
-    workspace_gb = _engine_workspace_gb(gpu.get("vram_mb") or 0)
     cls_onnx = _cls_model_dir()
+    if cls_onnx is None:
+        return None  # 预筛模型缺失
     params = {
         "model_dir": str(model_dir),
-        "cls_model_path": str(cls_onnx) if cls_onnx else "",
+        "cls_model_path": str(cls_onnx),
         "cls_engine": _CLS_ENGINE_NAME,
+        "cls_shape": list(_CLS_SHAPE_RANGE),
         "meta_file": str(model_dir / _ENGINE_META_FILE),
         "size": size,
         "precision": prec,
-        "workspace_gb": workspace_gb,
+        "workspace_gb": _TRT_WORKSPACE_GB,
         "skip_real": skip_real,
         "anime_threshold": anime_threshold,
         "real_threshold": real_threshold,
@@ -883,19 +844,20 @@ with open(sys.argv[1], 'r', encoding='utf-8') as f:
     params = json.load(f)
 
 model_dir = Path(params['model_dir'])
-cls_onnx = params.get('cls_model_path') or ''
+cls_onnx = Path(params.get('cls_model_path') or '')
 cls_engine_path = model_dir / (params.get('cls_engine') or 'cls_384.trt')
 meta_file = Path(params.get('meta_file') or (model_dir / 'engine_meta.json'))
 skip_real = bool(params.get('skip_real', False))
 cls_threshold = float(params.get('anime_threshold', 0.72))
 real_threshold = float(params.get('real_threshold', 0.50))
-char_threshold = float(params.get('tag_threshold', 0.9))
+char_threshold = float(params.get('tag_threshold', 0.66))
 char_freq_w = float(params.get('char_freq_weight', 0.1))
 char_prefilter = char_threshold * 0.3
-ip_threshold = float(params.get('ip_threshold', 0.9))
+ip_threshold = float(params.get('ip_threshold', 0.66))
 size = int(params.get('size') or 1008)
 precision = str(params.get('precision') or 'fp16')
 workspace_gb = float(params.get('workspace_gb') or 4)
+cls_shape = tuple(int(v) for v in params.get('cls_shape') or (1, 2, 2))
 
 # ── 标签表与类别切分 ──
 try:
@@ -922,28 +884,34 @@ except Exception as e:
 
 tagger_engine = model_dir / f'tagger_{size}_{precision}.trt'
 
-def _engine_meta_fresh():
-    '''引擎指纹是否匹配当前 GPU/TRT 版本/尺寸/精度。'''
+def _read_meta():
     try:
-        meta = json.loads(meta_file.read_text(encoding='utf-8'))
+        return json.loads(meta_file.read_text(encoding='utf-8'))
     except Exception:
-        return False
-    tag = meta.get('tagger') or {}
+        return {}
+
+def _meta_base_fresh(meta):
+    '''引擎指纹是否匹配当前 GPU/TRT 版本。'''
     return (str(meta.get('gpu_name') or '').strip().lower() == GPU_NAME.lower()
-            and str(meta.get('trt_version') or '') == trt.__version__
-            and tag.get('size') == size and tag.get('precision') == precision
-            and tagger_engine.is_file())
+            and str(meta.get('trt_version') or '') == trt.__version__)
 
 def _write_engine_meta():
     meta = {'gpu_name': GPU_NAME, 'trt_version': trt.__version__,
             'tagger': {'size': size, 'precision': precision},
-            'cls': cls_engine_path.is_file()}
+            'cls': {'shape': list(cls_shape)}}
     meta_file.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding='utf-8')
 
-if not _engine_meta_fresh():
+_meta = _read_meta()
+_base_fresh = _meta_base_fresh(_meta)
+_tag = _meta.get('tagger') or {}
+
+# tagger 引擎：缺失或指纹过期则重建
+if not (_base_fresh and _tag.get('size') == size and _tag.get('precision') == precision
+        and tagger_engine.is_file()):
     onnx_file = model_dir / f'tagger_{size}_{precision}.onnx'
     if not onnx_file.is_file():
         _fatal(f'缺少 {onnx_file.name}，请重新安装 pixai-tagger')
+    tagger_engine.unlink(missing_ok=True)  # 删除过期引擎
     plog('TRT 引擎缺失或与当前 GPU/TRT 版本不符，正在构建（约 1-3 分钟）…')
     try:
         trt_build(onnx_file, tagger_engine, workspace_gb)
@@ -952,7 +920,7 @@ if not _engine_meta_fresh():
         _fatal(f'引擎构建失败: {e}')
 
 class TrtRunner:
-    '''单引擎封装：设备缓冲 + 异步前向。'''
+    '''单引擎封装：设备缓冲 + 异步前向（静态与 range 动态 batch 引擎通用）。'''
 
     def __init__(self, engine_path):
         engine = trt.Runtime(trt.Logger(trt.Logger.WARNING)).deserialize_cuda_engine(
@@ -970,56 +938,92 @@ class TrtRunner:
                 self.out_name = name
         if not self.in_name or not self.out_name:
             raise RuntimeError(f'引擎 IO 不完整: {Path(engine_path).name}')
-        in_shape = tuple(int(d) for d in self.ctx.get_tensor_shape(self.in_name))
-        out_shape = tuple(int(d) for d in self.ctx.get_tensor_shape(self.out_name))
         self.in_dtype = trt.nptype(engine.get_tensor_dtype(self.in_name))
-        out_dtype = trt.nptype(engine.get_tensor_dtype(self.out_name))
-        self._in_bytes = int(np.prod(in_shape)) * np.dtype(self.in_dtype).itemsize
-        self._out_bytes = int(np.prod(out_shape)) * np.dtype(out_dtype).itemsize
-        self.host_out = np.empty(out_shape, dtype=out_dtype)
-        _err, self.d_in = cudart.cudaMalloc(self._in_bytes)
-        _err2, self.d_out = cudart.cudaMalloc(self._out_bytes)
-        if _err != 0 or _err2 != 0:
-            raise RuntimeError('显存分配失败')
-        self.ctx.set_tensor_address(self.in_name, self.d_in)
-        self.ctx.set_tensor_address(self.out_name, self.d_out)
-        _err3, self.stream = cudart.cudaStreamCreate()
-        if _err3 != 0:
-            raise RuntimeError('CUDA 流创建失败')
+        self._out_dtype = trt.nptype(engine.get_tensor_dtype(self.out_name))
+        self._out_itemsize = np.dtype(self._out_dtype).itemsize
+        self._dyn = any(d < 0 for d in self.ctx.get_tensor_shape(self.in_name))
+        self.d_in = self.d_out = self.stream = None
+        self.host_out = None
+        self._in_bytes = self._out_bytes = 0
+        if not self._dyn:
+            in_shape = tuple(int(d) for d in self.ctx.get_tensor_shape(self.in_name))
+            out_shape = tuple(int(d) for d in self.ctx.get_tensor_shape(self.out_name))
+            self.host_out = np.empty(out_shape, dtype=self._out_dtype)
+            self._realloc(in_shape, out_shape)
+
+    def _realloc(self, in_shape, out_shape):
+        '''按需分配设备缓冲（只增不减），绑定张量地址。'''
+        if self.stream is None:
+            _err, self.stream = cudart.cudaStreamCreate()
+            if _err != 0:
+                raise RuntimeError('CUDA 流创建失败')
+        in_bytes = int(np.prod(in_shape)) * np.dtype(self.in_dtype).itemsize
+        out_bytes = int(np.prod(out_shape)) * self._out_itemsize
+        if in_bytes > self._in_bytes:
+            if self.d_in is not None:
+                cudart.cudaFree(self.d_in)
+            _err, self.d_in = cudart.cudaMalloc(in_bytes)
+            if _err != 0:
+                raise RuntimeError('显存分配失败')
+            self._in_bytes = in_bytes
+            self.ctx.set_tensor_address(self.in_name, self.d_in)
+        if out_bytes > self._out_bytes:
+            if self.d_out is not None:
+                cudart.cudaFree(self.d_out)
+            _err, self.d_out = cudart.cudaMalloc(out_bytes)
+            if _err != 0:
+                raise RuntimeError('显存分配失败')
+            self._out_bytes = out_bytes
+            self.ctx.set_tensor_address(self.out_name, self.d_out)
 
     def run(self, host_in):
         x = np.ascontiguousarray(host_in, dtype=self.in_dtype)
-        if x.nbytes != self._in_bytes:
-            raise RuntimeError(f'输入字节数不符: {x.nbytes} != {self._in_bytes}')
-        if _cerr(cudart.cudaMemcpyAsync(self.d_in, x.ctypes.data, self._in_bytes,
+        if self._dyn:
+            if not self.ctx.set_input_shape(self.in_name, x.shape):
+                raise RuntimeError('set_input_shape 失败')
+            out_shape = tuple(int(d) for d in self.ctx.get_tensor_shape(self.out_name))
+            self._realloc(x.shape, out_shape)
+            host_out = np.empty(out_shape, dtype=self._out_dtype)
+        else:
+            if x.nbytes != self._in_bytes:
+                raise RuntimeError(f'输入字节数不符: {x.nbytes} != {self._in_bytes}')
+            host_out = self.host_out
+        if _cerr(cudart.cudaMemcpyAsync(self.d_in, x.ctypes.data, x.nbytes,
                                         cudart.cudaMemcpyKind.cudaMemcpyHostToDevice,
                                         self.stream)) != 0:
             raise RuntimeError('主机→显存拷贝失败')
         if not self.ctx.execute_async_v3(self.stream):
             raise RuntimeError('推理执行失败')
-        if _cerr(cudart.cudaMemcpyAsync(self.host_out.ctypes.data, self.d_out, self._out_bytes,
+        if _cerr(cudart.cudaMemcpyAsync(host_out.ctypes.data, self.d_out, host_out.nbytes,
                                         cudart.cudaMemcpyKind.cudaMemcpyDeviceToHost,
                                         self.stream)) != 0:
             raise RuntimeError('显存→主机拷贝失败')
         if _cerr(cudart.cudaStreamSynchronize(self.stream)) != 0:
             raise RuntimeError('CUDA 流同步失败')
-        return self.host_out
+        return host_out
 
 try:
     tagger_runner = TrtRunner(tagger_engine)
 except Exception as e:
+    tagger_engine.unlink(missing_ok=True)  # 坏引擎自愈：删除后下次重建
     _fatal(f'tagger 引擎加载失败: {e}')
 
-cls_runner = None
-if cls_onnx:
+# cls 引擎（必装）：缺失、指纹过期或 shape 范围不符则重建
+if not (_base_fresh and list(((_meta.get('cls') or {}).get('shape') or [])) == list(cls_shape)
+        and cls_engine_path.is_file()):
+    cls_engine_path.unlink(missing_ok=True)  # 删除过期引擎
+    if not cls_onnx.is_file():
+        _fatal('预筛模型缺失，请重新安装 pixai-tagger')
     try:
-        if not cls_engine_path.is_file():
-            trt_build(cls_onnx, cls_engine_path, 1)
-            _write_engine_meta()
-        cls_runner = TrtRunner(cls_engine_path)
+        trt_build(cls_onnx, cls_engine_path, workspace_gb, shape_range=cls_shape)
+        _write_engine_meta()
     except Exception as e:
-        plog(f'预筛模型不可用，跳过预筛直接标签获取: {e}')
-        cls_runner = None
+        _fatal(f'预筛引擎构建失败: {e}')
+try:
+    cls_runner = TrtRunner(cls_engine_path)
+except Exception as e:
+    cls_engine_path.unlink(missing_ok=True)  # 坏引擎自愈：删除后下次重建
+    _fatal(f'预筛引擎加载失败: {e}')
 
 # ── 坏帧过滤 ──
 _DARK_BRIGHTNESS = 15.0  # 亮度低于此值视为坏帧
@@ -1062,11 +1066,13 @@ def cls_preprocess(img):
 
 # ── warmup ──
 try:
-    if cls_runner is not None:
-        cls_runner.run(cls_preprocess(Image.new('RGB', (384, 384))))
+    cls_runner.run(cls_preprocess(Image.new('RGB', (384, 384))))
+except Exception as e:
+    _fatal(f'预筛引擎 warmup 失败: {e}')
+try:
     tagger_runner.run(tag_preprocess(Image.new('RGB', (384, 216)), size, tagger_runner.in_dtype))
 except Exception as e:
-    plog(f'warmup 失败（忽略）: {e}')
+    plog(f'tagger warmup 失败（忽略）: {e}')
 
 def pil_to_rgb(image):
     if image.mode in ('RGBA', 'P'):
@@ -1088,35 +1094,41 @@ def decode_frames(b64_list):
     return frames
 
 def _run_cls_frames(images):
-    '''预筛：逐帧前向，返回 anime 分数。'''
+    '''预筛：按 opt batch 分块前向，返回逐帧 anime 分数（ONNX 输出已是 softmax 概率，索引 0 = anime）。'''
+    xs = [cls_preprocess(im) for im in images]
     scores = []
-    for im in images:
-        logits = cls_runner.run(cls_preprocess(im))[0]
-        e = np.exp(logits - logits.max())
-        scores.append(float((e / e.sum())[0]))
+    for i in range(0, len(xs), cls_shape[1]):
+        probs = cls_runner.run(np.concatenate(xs[i:i + cls_shape[1]]))
+        scores.extend(float(v) for v in probs[:, 0])
     return scores
 
+# ── 标签输出规则 ──
+
+def _accum_stats(stats, probs, off, cnt, threshold):
+    '''单帧单类别的 (出现次数, 最高分) 统计。'''
+    seg = probs[off:off + cnt]
+    for j in np.nonzero(seg > threshold)[0]:
+        t, p = TAGS[off + int(j)], float(seg[j])
+        c, mx = stats.get(t, (0, 0.0))
+        stats[t] = (c + 1, max(mx, p))
+
 def _apply_char_rules(char_stats):
-    '''角色规则（与父进程 apply_char_tag_rules 同逻辑）。'''
+    '''角色标签：频次加权得分过滤。'''
     return {t: mx for t, (cnt, mx) in char_stats.items()
             if mx + (cnt - 1) * char_freq_w > char_threshold}
 
 _EXCLUDED_IP = frozenset(('original', 'real_life'))
 
 def _apply_ip_rules(ip_stats):
-    '''IP 规则（与父进程 apply_ip_tag_rules 同逻辑）。'''
+    '''IP 标签：只留最高置信度作品。'''
     cand = {t: s for t, s in ip_stats.items() if t not in _EXCLUDED_IP}
     if not cand:
         return {}
-    top = max(mx for _, mx in cand.values())
-    best = {t: s for t, s in cand.items() if s[1] == top}
-    if len(best) > 1:
-        top_cnt = max(cnt for cnt, _ in best.values())
-        best = {t: s for t, s in best.items() if s[0] == top_cnt}
-    return {t: mx for t, (cnt, mx) in best.items()}
+    key = max((mx, cnt) for cnt, mx in cand.values())
+    return {t: mx for t, (cnt, mx) in cand.items() if (mx, cnt) == key}
 
 def _char_fallback(char_scores, ip_scores, char_stats):
-    '''角色兜底（与父进程 apply_tag_output_rules 同逻辑）。'''
+    '''IP 命中且角色全空时，补输出最高置信度角色。'''
     if ip_scores and not char_scores and char_stats:
         best = min(char_stats.items(), key=lambda kv: (-kv[1][1], kv[0]))
         return {best[0]: best[1][1]}
@@ -1125,22 +1137,17 @@ def _char_fallback(char_scores, ip_scores, char_stats):
 def _run_tag_frames(imgs):
     '''标签获取：逐帧前向，character/IP 跨帧统计。'''
     char_stats, ip_stats = {}, {}
-    c_off, c_cnt = _seg_off['character']
-    p_off, p_cnt = _seg_off['copyright']
     for im in imgs:
         logits = tagger_runner.run(tag_preprocess(im, size, tagger_runner.in_dtype))[0]
         probs = 1.0 / (1.0 + np.exp(-logits.astype(np.float32)))
-        seg = probs[c_off:c_off + c_cnt]
-        for j in np.nonzero(seg > char_prefilter)[0]:
-            t, p = TAGS[c_off + int(j)], float(seg[j])
-            cnt, mx = char_stats.get(t, (0, 0.0))
-            char_stats[t] = (cnt + 1, p if p > mx else mx)
-        seg = probs[p_off:p_off + p_cnt]
-        for j in np.nonzero(seg > ip_threshold)[0]:
-            t, p = TAGS[p_off + int(j)], float(seg[j])
-            cnt, mx = ip_stats.get(t, (0, 0.0))
-            ip_stats[t] = (cnt + 1, p if p > mx else mx)
+        _accum_stats(char_stats, probs, *_seg_off['character'], char_prefilter)
+        _accum_stats(ip_stats, probs, *_seg_off['copyright'], ip_threshold)
     return char_stats, ip_stats
+
+def _tag_list(scores):
+    '''{标签: 分数} → 按分数降序的输出列表。'''
+    return [{'name': t, 'score': round(s, 4)}
+            for t, s in sorted(scores.items(), key=lambda x: (-x[1], x[0]))]
 
 # ── 预取线程：stdin → 解码/坏帧过滤入有界队列 ──
 _prefetch_q = queue.Queue(maxsize=2)
@@ -1192,31 +1199,26 @@ while True:
 
     is_anime = None  # None = 不确定
     anime_score = 0.0
-    cls_ok = False
-    if cls_runner is not None:
-        try:
-            scores = _run_cls_frames(imgs)
-        except Exception as e:
-            plog(f'预筛推理异常 {name}: {e}（继续标签获取，不标记分类）')
-            scores = []
-        if scores:
-            sorted_scores = sorted(scores)
-            n = len(sorted_scores)
-            med = (sorted_scores[n // 2] + sorted_scores[(n - 1) // 2]) / 2
-            if med >= cls_threshold:
-                is_anime = True
-                verdict = '二次元'
-            elif med <= real_threshold:
-                is_anime = False
-                verdict = '非二次元'
-            else:
-                verdict = '不确定'
-            cls_ok = True
-            anime_score = round(med, 4)
-            if is_anime is not True:
-                plog(f'预筛 {name}: 中位数={anime_score} → {verdict}')
+    try:
+        scores = _run_cls_frames(imgs)
+    except Exception as e:
+        _fatal(f'预筛推理失败 {name}: {e}')
+    sorted_scores = sorted(scores)
+    n = len(sorted_scores)
+    med = (sorted_scores[n // 2] + sorted_scores[(n - 1) // 2]) / 2
+    if med >= cls_threshold:
+        is_anime = True
+        verdict = '二次元'
+    elif med <= real_threshold:
+        is_anime = False
+        verdict = '非二次元'
+    else:
+        verdict = '不确定'
+    anime_score = round(med, 4)
+    if is_anime is not True:
+        plog(f'预筛 {name}: 中位数={anime_score} → {verdict}')
 
-    if skip_real and cls_ok and is_anime is False:
+    if skip_real and is_anime is False:
         report({'index': vi, 'name': name, 'anime_score': anime_score,
                 'is_anime': False, 'character_tags': [], 'ip_tags': []})
         del imgs
@@ -1230,19 +1232,14 @@ while True:
         del imgs
         continue
     del imgs
-    char_scores = _apply_char_rules(char_stats)
     ip_scores = _apply_ip_rules(ip_stats)
-    char_scores = _char_fallback(char_scores, ip_scores, char_stats)
+    char_scores = _char_fallback(_apply_char_rules(char_stats), ip_scores, char_stats)
     result = {
         'index': vi, 'name': name,
-        'character_tags': [{'name': k, 'score': round(v, 4)}
-                           for k, v in sorted(char_scores.items(), key=lambda x: -x[1])],
-        'ip_tags': [{'name': ip, 'score': round(s, 4)}
-                    for ip, s in sorted(ip_scores.items(), key=lambda x: (-x[1], x[0]))],
+        'character_tags': _tag_list(char_scores),
+        'ip_tags': _tag_list(ip_scores),
+        'anime_score': anime_score,  # 分类信息（前端角标用）
+        'is_anime': is_anime,
     }
-    # 附带分类信息（前端角标用）
-    if cls_ok:
-        result['anime_score'] = anime_score
-        result['is_anime'] = is_anime
     report(result)
 """

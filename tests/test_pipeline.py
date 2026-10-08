@@ -126,7 +126,8 @@ class TestAIWorkerSuccess(unittest.TestCase):
         worker._on_file_done = _cb
         with mock.patch("batch_rename.pipeline.build_new_stem", return_value="新名"), \
              mock.patch("batch_rename.pipeline.rename_video",
-                        return_value=("C:/新名.mp4", "ok")):
+                        return_value=("C:/新名.mp4", "ok")), \
+             mock.patch("batch_rename.pipeline.write_nfo"):
             msg = worker._handle_success(
                 "C:/v.mp4", {"duration": 5.0}, "标题", "剧情", ["tag1"], 2)
 

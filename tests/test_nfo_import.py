@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 from xml.etree import ElementTree as ET
 
-from batch_rename.nfo import _build_nfo_xml, write_nfo
+from batch_rename.nfo import _build_nfo_xml
 from gui_app.nfo_import import import_from_sources, stable_id
 
 

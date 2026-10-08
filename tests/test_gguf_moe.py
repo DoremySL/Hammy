@@ -268,6 +268,8 @@ class TestLaunchMmprojAuto(unittest.TestCase):
             mock.patch("gui_app.llama_cpp.unregister_subprocess"),
             mock.patch("gui_app.llama_cpp._wait_for_health", return_value=True),
             mock.patch("gui_app.llama_cpp._reader_thread"),
+            mock.patch("gui_app.llama_cpp._port_in_use", return_value=False),
+            mock.patch("gui_app.config_store.update_llama_config"),
         ]
         for p in self._patches:
             p.start()

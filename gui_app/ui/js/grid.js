@@ -797,6 +797,7 @@ function switchView(view) {
 function switchTab(tab) {
   $$('.tab[data-tab]').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
   $('#body-progress').classList.toggle('active', tab === 'progress');
+  $('#body-llama').classList.toggle('active', tab === 'llama');
   $('#body-detail').classList.toggle('active', tab === 'detail');
   setBottomCollapsed(false);
 }
@@ -809,7 +810,22 @@ function gotoLog() {
   });
 }
 $('#tab-progress').addEventListener('click', () => switchTab('progress'));
+$('#tab-llama').addEventListener('click', () => {
+  switchTab('llama');
+  const log = $('#llamaLog');
+  if (log) requestAnimationFrame(() => {
+    log.scrollTop = log.scrollHeight;
+    requestAnimationFrame(() => { log.scrollTop = log.scrollHeight; });
+  });
+});
 $('#tab-detail').addEventListener('click', () => switchTab('detail'));
+
+function updateLlamaLogTab(visible) {
+  const btn = $('#tab-llama');
+  if (!btn) return;
+  btn.style.display = visible ? '' : 'none';
+  if (!visible && btn.classList.contains('active')) switchTab('progress');
+}
 function updateMiniProg() {
   const el = $('#miniProg'), arc = $('#miniProgArc');
   const box = $('#miniProgBox');
