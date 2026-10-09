@@ -114,6 +114,18 @@ def _tagger_engine_path(model_dir: Path, size: int, precision: str) -> Path:
     return model_dir / f"tagger_{int(size)}_{precision}.trt"
 
 
+def installed_precision(size: int) -> Optional[str]:
+    """从磁盘反推已安装的引擎精度（引擎文件优先，其次 ONNX），未安装返回 None。"""
+    d = MODEL_DIR / MAIN_REPO
+    for prec in ("fp16", "fp32"):
+        if (d / f"tagger_{int(size)}_{prec}.trt").is_file():
+            return prec
+    for prec in ("fp16", "fp32"):
+        if (d / f"tagger_{int(size)}_{prec}.onnx").is_file():
+            return prec
+    return None
+
+
 def resolve_precision(setting: str = "auto", gpu: Optional[Dict[str, Any]] = None) -> str:
     """把精度设置解析为实际引擎精度（无 Tensor Core 的卡用 fp32）。"""
     setting = (setting or "auto").lower()
@@ -124,13 +136,6 @@ def resolve_precision(setting: str = "auto", gpu: Optional[Dict[str, Any]] = Non
     if installer.gpu_has_tensor_core(gpu.get("gpu_name") or ""):
         return "fp16"
     return "fp32"
-
-
-def _configured_size_precision() -> Tuple[int, str]:
-    """从 pixai 配置读取（输入尺寸, 实际引擎精度）。"""
-    from .config_store import load_pixai_config
-    return (normalize_size(load_pixai_config().get("input_size")),
-            resolve_precision("auto"))
 
 
 _zh_cache: Dict[str, Any] = {}
@@ -159,18 +164,21 @@ def load_tag_zh() -> Dict[str, str]:
 
 def get_status() -> Dict[str, Any]:
     """获取 pixai-tagger 安装状态。"""
+    from .config_store import load_pixai_config
     venv_python = venv_python_path(VENV_DIR)
-    size, precision = _configured_size_precision()
-    model_dir = _model_dir(size, precision)
+    venv_ok = VENV_DIR.is_dir() and venv_python.exists()
+    size = normalize_size(load_pixai_config().get("input_size"))
+    precision = installed_precision(size)
+    model_dir = _model_dir(size, precision) if precision else None
     engine_ok = model_dir is not None and _tagger_engine_path(model_dir, size, precision).is_file()
     return {
         "dir_exists": PIXAI_TAGGER_DIR.is_dir(),
-        "venv_exists": VENV_DIR.is_dir() and venv_python.exists(),
+        "venv_exists": venv_ok,
         "model_exists": model_dir is not None,
         "engine_exists": engine_ok,
         "input_size": size,
-        "precision": precision,
-        "ready": VENV_DIR.is_dir() and venv_python.exists() and model_dir is not None,
+        "precision": precision or "",
+        "ready": venv_ok and model_dir is not None,
         "dir_path": str(PIXAI_TAGGER_DIR),
     }
 
@@ -790,8 +798,8 @@ def start_analyze_stream(
     if not status["ready"]:
         return None
     size = normalize_size(input_size)
-    prec = resolve_precision("auto")
-    model_dir = _model_dir(size, prec)
+    prec = installed_precision(size)
+    model_dir = _model_dir(size, prec) if prec else None
     if not model_dir:
         return None
     cls_onnx = _cls_model_dir()

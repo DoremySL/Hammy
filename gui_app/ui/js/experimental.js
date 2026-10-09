@@ -708,24 +708,25 @@ async function runInstallTask(run, onOk) {
   const logEmpty = $('#logEmpty'); if (logEmpty) logEmpty.remove();
   $('#prog-bar').style.width = '0%';
   $('#prog-bar').className = 'active';
-  $('#prog-num').textContent = '正在安装';
   updateStartBtn();
   toast('开始安装，请查看日志面板…');
   try {
     const r = await run();
     if (r && r.ok) {
       $('#prog-bar').style.width = '100%'; $('#prog-bar').className = 'done';
-      $('#prog-num').textContent = '安装完成';
       if (onOk) await onOk(r);
     } else if (r && r.cancelled) {
-      $('#prog-bar').className = ''; $('#prog-num').textContent = '安装已取消';
+      $('#prog-bar').className = '';
+      __ui.appendLog('安装已取消', 'dim');
       toast('安装已取消', 'dim');
     } else {
-      $('#prog-bar').className = ''; $('#prog-num').textContent = '安装失败';
+      $('#prog-bar').className = '';
+      __ui.appendLog('安装失败：' + ((r && r.error) || '').slice(0, 200), 'err');
       toast('安装失败: ' + ((r && r.error) || '').slice(0, 200), 'err');
     }
   } catch (e) {
-    $('#prog-bar').className = ''; $('#prog-num').textContent = '安装失败';
+    $('#prog-bar').className = '';
+    __ui.appendLog('安装失败：' + ((e && e.message) || e), 'err');
     toast('安装失败: ' + ((e && e.message) || e), 'err');
   } finally {
     state.installing = false;

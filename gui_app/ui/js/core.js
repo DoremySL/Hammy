@@ -512,7 +512,6 @@ window.__ui = {
     if (state.stopRequested) return;
     const pct = tot > 0 ? Math.round(cur / tot * 100) : 0;
     $('#prog-bar').style.width = pct + '%';
-    $('#prog-num').textContent = tot > 0 ? `${cur}/${tot} (${pct}%)` : '';
   },
   installProgress(pct) {
     if (!state.installing) return;

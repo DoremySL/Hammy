@@ -261,7 +261,7 @@ class ExperimentalMixin:
         """对选中视频执行 PixAI 标签获取（items: [[video_id, video_path], ...]）。"""
         from ..pixai_tagger import (get_status, start_analyze_stream,
                                     extract_frames_for_tagger, ensure_model_files,
-                                    resolve_precision, normalize_size,
+                                    installed_precision, normalize_size,
                                     ANIME_CLS_THRESHOLD, TAG_THRESHOLD)
         from batch_rename.dependencies import ffmpeg_tools
         from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
@@ -275,7 +275,7 @@ class ExperimentalMixin:
         threshold = min(1, max(0.1, safe_float(pcfg.get("threshold"), TAG_THRESHOLD)))
         skip_real = bool(pcfg.get("classify", False))
         size = normalize_size(pcfg.get("input_size"))
-        precision = resolve_precision("auto")
+        precision = installed_precision(size)
 
         if not ffmpeg_tools.ffmpeg:
             try:
@@ -303,6 +303,7 @@ class ExperimentalMixin:
             files_err = ensure_model_files(size, precision,
                                            log_fn=_push_log, stop_event=_gpu_stop_event)
             if files_err:
+                _push_log(f"IP分析失败：{files_err}", "err")
                 return {"ok": False, "results": {}, "ok_count": 0, "total": total,
                         "real_count": 0, "error": files_err}
 
@@ -485,6 +486,7 @@ class ExperimentalMixin:
                 except Exception:
                     pass
             ok_count = sum(1 for r in results.values() if not r.get("error"))
+            _push_log(f"IP分析失败：{str(e)[:200]}", "err")
             return {"ok": False, "results": results, "ok_count": ok_count,
                     "total": total, "real_count": 0, "error": str(e)}
         finally:
@@ -767,6 +769,7 @@ class ExperimentalMixin:
             return {"ok": True, "results": results, "ok_count": ok_count, "total": total, "error": None}
         except Exception as e:
             ok_count = sum(1 for r in results.values() if not r.get("error"))
+            _push_log(f"转录失败：{str(e)[:200]}", "err")
             return {"ok": False, "results": results, "ok_count": ok_count,
                     "total": total, "error": str(e)}
         finally:

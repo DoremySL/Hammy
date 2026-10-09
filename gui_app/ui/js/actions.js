@@ -11,7 +11,6 @@ async function startProcessing(paths, label) {
   $('#log').innerHTML = '';
   $('#prog-bar').style.width = '0%';
   $('#prog-bar').className = 'active';
-  $('#prog-num').textContent = '命名中…';
   gotoLog();
   updateMiniProg();
   updateStartBtn();
@@ -43,7 +42,6 @@ async function stopCurrentTask(task) {
       const res = await apiCall('stop_install');
       if (res && res.ok) {
         state.stopRequested = true;
-        $('#prog-num').textContent = '停止中…';
         updateStartBtn();
         toast(res.message || '正在停止安装…', 'info');
       } else {
@@ -59,7 +57,6 @@ async function stopCurrentTask(task) {
       const res = await apiCall('stop_gpu_task');
       if (res && res.ok) {
         state.stopRequested = true;
-        $('#prog-num').textContent = '停止中…';
         updateStartBtn();
         toast(res.message || '正在停止，进行中的步骤完成后生效', 'info');
       } else {
@@ -78,7 +75,7 @@ async function stopCurrentTask(task) {
     const res = await apiCall('stop');
     if (res && res.ok) {
       state.stopRequested = true;
-      $('#prog-num').textContent = '停止中…';
+      __ui.appendLog('正在停止…');
       updateStartBtn();
       toast('已发送停止请求');
     } else {
@@ -240,14 +237,13 @@ async function exportToFolder(withNfo) {
   }
 }
 
-async function withGpuBusy(progText, apiFn) {
+async function withGpuBusy(apiFn) {
   state.gpuBusy = true;
   state.stopRequested = false;
   updateStartBtn();
   gotoLog();
   $('#prog-bar').style.width = '0%';
   $('#prog-bar').className = 'active';
-  $('#prog-num').textContent = progText;
   try {
     return await apiFn();
   } finally {
@@ -265,8 +261,8 @@ async function detectIpTags(ids) {
   const videos = ids.map(id => findVideoById(id)).filter(v => v && v.status === 'pending');
   if (!videos.length) { toast('未选中待处理视频', 'err'); return; }
   const items = videos.map(v => [v.id, v.path]);
-  const r = await withGpuBusy('正在分析', () => callApi('detect_ip_tags', items));
-  if (!r) { $('#prog-bar').className = ''; $('#prog-num').textContent = ''; return; }
+  const r = await withGpuBusy(() => callApi('detect_ip_tags', items));
+  if (!r) { $('#prog-bar').className = ''; return; }
   if (r.results) {
     for (const [vid, d] of Object.entries(r.results)) {
       if (d.error) continue;
@@ -288,14 +284,12 @@ async function detectIpTags(ids) {
     const realN = r.real_count || 0;
     $('#prog-bar').style.width = '100%';
     $('#prog-bar').className = 'done';
-    $('#prog-num').textContent = stopped ? '已停止' : '分析完成';
     let msg = stopped ? `IP分析已停止: 成功 ${okN}/${r.total}` : `IP分析完成: 成功 ${okN}/${r.total}`;
     if (realN > 0) msg += `（其中 ${realN} 个非二次元作品）`;
     toast(msg, okN > 0 ? 'ok' : 'err', true);
     refreshGridData();
   } else {
     $('#prog-bar').className = '';
-    $('#prog-num').textContent = '分析失败';
     toast('IP分析失败: ' + (r.error || ''), 'err', true);
   }
 }
@@ -308,8 +302,8 @@ async function detectSpeech(ids) {
   const videos = ids.map(id => findVideoById(id)).filter(v => v && v.path);
   if (!videos.length) { toast('未选中有效视频', 'err'); return; }
   const items = videos.map(v => [v.id, v.path]);
-  const r = await withGpuBusy('正在转录', () => callApi('detect_speech', items));
-  if (!r) { $('#prog-bar').className = ''; $('#prog-num').textContent = ''; return; }
+  const r = await withGpuBusy(() => callApi('detect_speech', items));
+  if (!r) { $('#prog-bar').className = ''; return; }
   if (r.results) {
     for (const [vid, d] of Object.entries(r.results)) {
       if (!d.error) state.whisperTranscribedIds.add(vid);
@@ -320,12 +314,10 @@ async function detectSpeech(ids) {
     const okN = r.ok_count || 0;
     $('#prog-bar').style.width = '100%';
     $('#prog-bar').className = 'done';
-    $('#prog-num').textContent = stopped ? '已停止' : '转录完成';
     toast(`语音转录${stopped ? '已停止' : '完成'}: 成功 ${okN}/${r.total}`, okN > 0 ? 'ok' : 'err', true);
     refreshGridData();
   } else {
     $('#prog-bar').className = '';
-    $('#prog-num').textContent = '转录失败';
     toast('语音转录失败: ' + (r.error || ''), 'err', true);
   }
 }
@@ -368,16 +360,14 @@ async function exportSrtTranslated(ids) {
   }
   if (state.gpuBusy) { toast('GPU 正忙，请等待当前操作完成', 'err'); return; }
   const items = videos.map(v => [v.id, v.path]);
-  const r = await withGpuBusy('正在翻译', () => callApi('export_srt_translated', items));
+  const r = await withGpuBusy(() => callApi('export_srt_translated', items));
   if (r && (r.ok || r.cancelled)) {
     const done = r.exported || 0;
     $('#prog-bar').style.width = '100%';
     $('#prog-bar').className = 'done';
-    $('#prog-num').textContent = r.cancelled ? '已停止' : '翻译完成';
     toast(r.cancelled ? `翻译已停止: 成功 ${done}/${items.length}` : `翻译完成: 成功 ${done}/${items.length}`, done > 0 ? 'ok' : 'err');
   } else {
     $('#prog-bar').className = '';
-    $('#prog-num').textContent = '翻译失败';
     toast('翻译失败: ' + ((r && r.errors && r.errors[0]) || ''), 'err');
   }
 }
@@ -409,7 +399,7 @@ function showContextMenu(e, v) {
   if (pendingIds.length) {
     const noProcess = !(state.llamaIntegration || state.aiConnected) || state.processing
       || state.gpuBusy || state.installing || state.llamaPendingLaunch;
-    gTop.push({ label: `自动重命名（${pendingIds.length} 个）`, fn: () => processSelected(), disabled: noProcess });
+    gTop.push({ label: `自动重命名（${pendingIds.length} 个）`, fn: () => processSelected(), disabled: noProcess, accent: !noProcess });
   }
   if (!state.processing && !state.gpuBusy) {
     gTop.push({ label: `手动重命名（${selIds.length} 个）`, fn: () => openRenameDialog() });
@@ -425,7 +415,7 @@ function showContextMenu(e, v) {
 
   const gView = [];
   if (state.view === 'pending' && pendingIds.length) {
-    gView.push({ label: `移入回收站（${pendingIds.length} 个）`, fn: () => recycleVideos(pendingIds), danger: true, disabled: state.processing || state.gpuBusy });
+    gView.push({ label: `移入回收站（${pendingIds.length} 个）`, fn: () => recycleVideos(pendingIds), disabled: state.processing || state.gpuBusy });
   }
   const gPixai = [];
   if (state.view === 'pending' && state.pixaiTaggerEnabled) {
@@ -459,7 +449,7 @@ function showContextMenu(e, v) {
     });
     if (exIds.length) {
       gView.push({ label: `移回上级目录（${exIds.length} 个）`, fn: () => moveOut() });
-      gView.push({ label: `移入回收站（${exIds.length} 个）`, fn: () => recycleVideos(exIds), danger: true });
+      gView.push({ label: `移入回收站（${exIds.length} 个）`, fn: () => recycleVideos(exIds) });
     }
   }
   if (gView.length) groups.push(gView);
@@ -491,7 +481,7 @@ function showContextMenu(e, v) {
     const html = g.map(it => {
       const i = allItems.length;
       allItems.push(it);
-      return `<button data-i="${i}"${it.disabled ? ' disabled' : ''}>${it.label}</button>`;
+      return `<button data-i="${i}" class="${it.accent ? 'accent' : ''}"${it.disabled ? ' disabled' : ''}>${it.label}</button>`;
     }).join('');
     return html;
   }).join('<hr>');

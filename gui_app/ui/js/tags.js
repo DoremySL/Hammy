@@ -276,7 +276,7 @@ async function ptSetAddMode(guard = true) {
   state.ptSelAnchor = null;
   state.ptDirty = false;
   renderTagRows();
-  ptRenderEditor();
+  ptRenderEditor(true);
 }
 
 function ptGroupOptions(cur) {
@@ -330,7 +330,7 @@ function ptCollectFields(container) {
   };
 }
 
-function ptRenderEditor() {
+function ptRenderEditor(focusKw) {
   const ed = $('#pt-editor');
   if (!ed) return;
   let isAdd = state.ptAddMode || state.ptEditIdx < 0;
@@ -367,7 +367,7 @@ function ptRenderEditor() {
   };
   if (isAdd) {
     ed.querySelector('#pt-add').onclick = ptApplyAdd;
-    kwEl.focus();
+    if (focusKw) kwEl.focus();
   } else {
     ed.querySelector('#pt-to-add').onclick = () => ptSetAddMode(true);
     ed.querySelector('#pt-del').onclick = () => ptDeleteIndices([state.ptEditIdx]);
