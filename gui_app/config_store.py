@@ -141,7 +141,7 @@ _PIXAI_KEY_MAP = {
     "frames": "pixai_frames",
     "threshold": "pixai_threshold",
     "output_zh": "pixai_output_zh",
-    "input_size": "pixai_input_size",
+    "variant": "pixai_variant",
     "prompt_scope": "pixai_prompt_scope",
     "recall_scope": "pixai_recall_scope",
 }
@@ -167,8 +167,8 @@ _LLAMA_KEYS = frozenset({"llama_enabled", "llama_integrate"})
 
 def _pixai_defaults() -> Dict[str, Any]:
     """pixai 模块配置默认值（文件缺失/损坏时的兜底）。"""
-    return {"enabled": False, "classify": True, "frames": 15, "threshold": 0.66,
-            "output_zh": True, "input_size": 1008,
+    return {"enabled": False, "classify": False, "frames": 15, "threshold": 0.66,
+            "output_zh": True, "variant": "448-ft",
             "prompt_scope": "char", "recall_scope": "char"}
 
 

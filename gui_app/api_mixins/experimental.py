@@ -224,11 +224,11 @@ class ExperimentalMixin:
         return {"ok": True, "enabled": enabled}
 
     def get_pixai_mirrors(self) -> Dict[str, Any]:
-        """获取 pixai-tagger 安装选项（尺寸/站点/GPU 检测）。"""
+        """获取 pixai-tagger 安装选项（版本/站点/GPU 检测）。"""
         from ..pixai_tagger import get_mirrors_info
         return get_mirrors_info()
 
-    def install_pixai_tagger(self, input_size: int = 1008,
+    def install_pixai_tagger(self, variant: str = "448-ft",
                              site: str = DEFAULT_TRT_SITE) -> Dict[str, Any]:
         """安装 pixai-tagger 依赖（uv + venv + tensorrt + 模型下载 + TRT 引擎构建）。"""
         from ..pixai_tagger import install_dependencies
@@ -237,7 +237,7 @@ class ExperimentalMixin:
             return {"ok": False, "error": "已有模块正在安装，请等待完成后再试"}
         _install_stop_event.clear()
         try:
-            r = install_dependencies(input_size=input_size,
+            r = install_dependencies(variant=variant,
                                      site=site, log_fn=_push_log,
                                      stop_event=_install_stop_event)
             if r.get("ok"):
@@ -261,7 +261,7 @@ class ExperimentalMixin:
         """对选中视频执行 PixAI 标签获取（items: [[video_id, video_path], ...]）。"""
         from ..pixai_tagger import (get_status, start_analyze_stream,
                                     extract_frames_for_tagger, ensure_model_files,
-                                    installed_precision, normalize_size,
+                                    installed_precision, normalize_variant,
                                     ANIME_CLS_THRESHOLD, TAG_THRESHOLD)
         from batch_rename.dependencies import ffmpeg_tools
         from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
@@ -274,8 +274,8 @@ class ExperimentalMixin:
         frames_n = max(1, safe_int(pcfg.get("frames"), 15))
         threshold = min(1, max(0.1, safe_float(pcfg.get("threshold"), TAG_THRESHOLD)))
         skip_real = bool(pcfg.get("classify", False))
-        size = normalize_size(pcfg.get("input_size"))
-        precision = installed_precision(size)
+        variant = normalize_variant(pcfg.get("variant"))
+        precision = installed_precision(variant)
 
         if not ffmpeg_tools.ffmpeg:
             try:
@@ -300,7 +300,7 @@ class ExperimentalMixin:
             t0 = time.time()
 
             # ONNX 预检：缺失则补下载
-            files_err = ensure_model_files(size, precision,
+            files_err = ensure_model_files(variant, precision,
                                            log_fn=_push_log, stop_event=_gpu_stop_event)
             if files_err:
                 _push_log(f"IP分析失败：{files_err}", "err")
@@ -318,7 +318,7 @@ class ExperimentalMixin:
                 anime_threshold=ANIME_CLS_THRESHOLD,
                 tag_threshold=threshold,
                 ip_threshold=threshold,
-                input_size=size,
+                variant=variant,
                 stop_event=_gpu_stop_event,
                 on_log=_push_log,
                 on_video_result=None,
@@ -429,7 +429,7 @@ class ExperimentalMixin:
                     if not pipeline_ok:
                         break
                     futures[ex.submit(extract_frames_for_tagger, vpath,
-                                      _gpu_stop_event, frames_n, size)] = i
+                                      _gpu_stop_event, frames_n)] = i
                 # 排空剩余抽帧任务
                 while futures and pipeline_ok:
                     for f in wait(futures, return_when=FIRST_COMPLETED)[0]:

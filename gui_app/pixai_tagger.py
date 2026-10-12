@@ -6,7 +6,6 @@ import os
 import queue
 import shutil
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -17,7 +16,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from batch_rename.subprocess_registry import register_subprocess, unregister_subprocess
 from batch_rename.env import SUBPROCESS_KWARGS
 from batch_rename.config import Config
-from batch_rename.utils import fmt_size, safe_int
+from batch_rename.utils import fmt_size
 from batch_rename.video import probe_and_extract_keyframes
 from .env import APP_ROOT, PYTHON_EXE, make_logger
 from . import installer
@@ -38,7 +37,7 @@ VENV_DIR = PIXAI_TAGGER_DIR / "venv"
 MODEL_DIR = PIXAI_TAGGER_DIR / "models"  # 模型根目录（hf 布局）
 
 # tagger：ONNX 导出仓库，TRT 引擎现场构建
-MAIN_REPO = "DoremySL/pixai-tagger-v1.0-onnx-1008-672"
+MAIN_REPO = "DoremySL/pixai-tagger-v1.0-onnx-1008-672-336-ft"
 CLS_REPO = "deepghs/anime_real_cls"  # 二次元/真实二分类预筛模型
 
 TAG_THRESHOLD = 0.66
@@ -46,11 +45,12 @@ CHAR_FREQ_WEIGHT = 0.1  # 角色得分频次权重
 ANIME_CLS_THRESHOLD = 0.72  # 预筛二次元阈值（按帧分数中位数）
 REAL_CLS_THRESHOLD = 0.50  # 预筛真实阈值
 
-# 支持的模型输入尺寸
-SUPPORTED_SIZES = (1008, 672)
-DEFAULT_INPUT_SIZE = 1008
+# 模型版本（仓库子目录）：A = 448-ft，B = 448-Hammy
+VARIANTS = ("448-ft", "448-Hammy")
+DEFAULT_VARIANT = "448-ft"
+INPUT_SIZE = 448  # 模型输入边长
 
-# 仓库文件名规则：tagger_<size>_<fp16|fp32>.onnx
+# 仓库内路径规则：<variant>/onnx/fp16.onnx 或 fp32.onnx(+.data)
 _ENGINE_META_FILE = "engine_meta.json"  # 引擎指纹文件
 _CLS_MODEL_SUBDIR = "mobilenetv3_v1.4_dist"
 _CLS_ONNX_FILE = "model.onnx"      # 预筛模型，索引 0 = anime
@@ -65,22 +65,30 @@ _BUILD_TIMEOUT_SEC = 1200.0
 _INFERENCE_BASE_SEC = 240.0
 _INFERENCE_PER_VIDEO_SEC = 120.0
 
+# 抽帧滤镜：短边压到 336（只缩不放）→ 裁成 4:3；横屏水平居中，竖屏偏上（偏移 = 多余高度的 0.25）
+FRAME_VF = ("scale=trunc(iw*min(1\\,336/min(iw\\,ih))/2)*2"
+            ":trunc(ih*min(1\\,336/min(iw\\,ih))/2)*2,"
+            "crop=w=min(iw\\,trunc(ih*4/3/2)*2)"
+            ":h=min(ih\\,trunc(iw*4/3/2)*2)"
+            ":x=(iw-ow)/2"
+            ":y=trunc((ih-oh)*0.25)")
+
 
 _log = make_logger("pixai_tagger")
 
 
-def normalize_size(value: Any) -> int:
-    size = safe_int(value, DEFAULT_INPUT_SIZE)
-    return size if size in SUPPORTED_SIZES else DEFAULT_INPUT_SIZE
+def normalize_variant(value: Any) -> str:
+    v = str(value or "")
+    return v if v in VARIANTS else DEFAULT_VARIANT
 
 
 def get_mirrors_info() -> Dict[str, Any]:
-    """返回 pixai 安装弹窗数据（尺寸/站点/GPU 检测）。"""
+    """返回 pixai 安装弹窗数据（版本/站点/GPU 检测）。"""
     gpu = installer.detect_gpu()
     return {
-        "sizes": [
-            {"id": 1008, "name": "1008 × 1008（精准）", "desc": "模型默认分辨率", "size_label": "约 1 GB"},
-            {"id": 672, "name": "672 × 672（快速）", "desc": "约 2 倍速，误判率略有提升", "size_label": "约 1 GB"},
+        "versions": [
+            {"id": "448-ft", "name": "A · 448-ft", "desc": "角色/IP 校准的微调模型", "size_label": "约 1 GB"},
+            {"id": "448-Hammy", "name": "B · 448-Hammy", "desc": "Hammy 微调版", "size_label": "约 1 GB"},
         ],
         "sites": [{"id": k, "name": v["name"], "desc": v["desc"]}
                   for k, v in installer.TRT_SITES.items()],
@@ -92,17 +100,22 @@ def get_mirrors_info() -> Dict[str, Any]:
     }
 
 
-def tagger_model_files(size: int, precision: str) -> Tuple[str, ...]:
-    """tagger 仓库文件清单。"""
-    files = ["config.json", f"tagger_{int(size)}_{precision}.onnx"]
+def tagger_model_files(variant: str, precision: str) -> Tuple[str, ...]:
+    """tagger 仓库文件清单（仓库内相对路径）。"""
+    return tuple(f"{variant}/onnx/{n}" for n in _onnx_files(precision))
+
+
+def _onnx_files(precision: str) -> Tuple[str, ...]:
+    """版本目录内的本地文件名。"""
+    files = ["config.json", f"{precision}.onnx"]
     if precision == "fp32":
-        files.append(f"tagger_{int(size)}_{precision}.onnx.data")
+        files.append(f"{precision}.onnx.data")
     return tuple(files)
 
 
-def _model_dir(size: int, precision: str) -> Optional[Path]:
-    d = MODEL_DIR / MAIN_REPO
-    return d if all((d / f).is_file() for f in tagger_model_files(size, precision)) else None
+def _tagger_dir(variant: str) -> Path:
+    """某版本模型的本地目录。"""
+    return MODEL_DIR / MAIN_REPO / variant / "onnx"
 
 
 def _cls_model_dir() -> Optional[Path]:
@@ -110,18 +123,18 @@ def _cls_model_dir() -> Optional[Path]:
     return p if p.is_file() else None
 
 
-def _tagger_engine_path(model_dir: Path, size: int, precision: str) -> Path:
-    return model_dir / f"tagger_{int(size)}_{precision}.trt"
+def _tagger_engine_path(variant: str, precision: str) -> Path:
+    return _tagger_dir(variant) / f"{precision}.trt"
 
 
-def installed_precision(size: int) -> Optional[str]:
+def installed_precision(variant: str) -> Optional[str]:
     """从磁盘反推已安装的引擎精度（引擎文件优先，其次 ONNX），未安装返回 None。"""
-    d = MODEL_DIR / MAIN_REPO
+    d = _tagger_dir(variant)
     for prec in ("fp16", "fp32"):
-        if (d / f"tagger_{int(size)}_{prec}.trt").is_file():
+        if (d / f"{prec}.trt").is_file():
             return prec
     for prec in ("fp16", "fp32"):
-        if (d / f"tagger_{int(size)}_{prec}.onnx").is_file():
+        if (d / f"{prec}.onnx").is_file():
             return prec
     return None
 
@@ -167,31 +180,32 @@ def get_status() -> Dict[str, Any]:
     from .config_store import load_pixai_config
     venv_python = venv_python_path(VENV_DIR)
     venv_ok = VENV_DIR.is_dir() and venv_python.exists()
-    size = normalize_size(load_pixai_config().get("input_size"))
-    precision = installed_precision(size)
-    model_dir = _model_dir(size, precision) if precision else None
-    engine_ok = model_dir is not None and _tagger_engine_path(model_dir, size, precision).is_file()
+    variant = normalize_variant(load_pixai_config().get("variant"))
+    precision = installed_precision(variant)
+    d = _tagger_dir(variant)
+    model_exists = precision is not None and all((d / n).is_file() for n in _onnx_files(precision))
+    engine_ok = model_exists and _tagger_engine_path(variant, precision).is_file()
     return {
         "dir_exists": PIXAI_TAGGER_DIR.is_dir(),
         "venv_exists": venv_ok,
-        "model_exists": model_dir is not None,
+        "model_exists": model_exists,
         "engine_exists": engine_ok,
-        "input_size": size,
+        "variant": variant,
         "precision": precision or "",
-        "ready": venv_ok and model_dir is not None,
+        "ready": venv_ok and model_exists,
         "dir_path": str(PIXAI_TAGGER_DIR),
     }
 
 
 def install_dependencies(
-    input_size: int = DEFAULT_INPUT_SIZE,
+    variant: str = DEFAULT_VARIANT,
     site: str = DEFAULT_TRT_SITE,
     log_fn: Optional[Callable[[str], None]] = None,
     stop_event: Optional[threading.Event] = None,
 ) -> Dict[str, Any]:
     """安装全部依赖（uv + venv + tensorrt + 模型下载 + TRT 引擎构建），返回 {"ok", "error"}。"""
     plan = installer.resolve_trt_site(site)
-    size = normalize_size(input_size)
+    variant = normalize_variant(variant)
     steps = InstallSteps(6)
 
     PIXAI_TAGGER_DIR.mkdir(parents=True, exist_ok=True)
@@ -211,8 +225,7 @@ def install_dependencies(
         return {"ok": False, "error": issue}
     precision = resolve_precision("auto", gpu)
     _log(f"GPU: {gpu.get('gpu_name')}（驱动 {gpu.get('driver_version')}）"
-         f" → 引擎精度 {precision.upper()}"
-         + ("（无 Tensor Core，FP32 引擎更快）" if precision == "fp32" else ""), log_fn)
+         f" → 引擎精度 {precision.upper()}", log_fn)
 
     # ── 步骤 2 ──
     steps.push(2)
@@ -291,9 +304,9 @@ def install_dependencies(
                 steps.push(5, 1.0)
 
         steps.push(4)
-        _log(f"━━ 步骤 4/6：从魔搭下载 PixAI Tagger ONNX 模型（{size}px · {precision.upper()}）━━", log_fn)
+        _log(f"━━ 步骤 4/6：从魔搭下载 PixAI Tagger ONNX 模型（{variant} · {precision.upper()}）━━", log_fn)
         dl = models_downloader.download_files(
-            "ms", MAIN_REPO, [*tagger_model_files(size, precision), TAG_ZH_FILE],
+            "ms", MAIN_REPO, [*tagger_model_files(variant, precision), TAG_ZH_FILE],
             str(MODEL_DIR), log_fn=_dl_log, progress_cb=_model_progress,
             cancel_event=stop_event, cleanup_on_cancel=True)
         if dl.get("cancelled"):
@@ -321,8 +334,8 @@ def install_dependencies(
 
     # ── 步骤 6：构建 TRT 引擎 ──
     steps.push(6)
-    _log("━━ 步骤 6/6：构建 TensorRT 引擎（约 1-3 分钟）━━", log_fn)
-    err = _build_engines(size, precision, gpu_name=gpu.get("gpu_name") or "",
+    _log("━━ 步骤 6/6：构建 TensorRT 引擎 ━━", log_fn)
+    err = _build_engines(variant, precision, gpu_name=gpu.get("gpu_name") or "",
                          log_fn=log_fn, stop_event=stop_event)
     if stop_event is not None and stop_event.is_set():
         return {"ok": False, "cancelled": True, "error": "安装已取消"}
@@ -330,20 +343,20 @@ def install_dependencies(
         return {"ok": False, "error": err}
 
     from .config_store import update_pixai_config
-    update_pixai_config(lambda c: c.update(input_size=int(size)) or c)
+    update_pixai_config(lambda c: c.update(variant=variant) or c)
     _log("━━ 全部完成 ━━", log_fn)
     return {"ok": True, "error": None}
 
 
-def ensure_model_files(size: int, precision: str,
+def ensure_model_files(variant: str, precision: str,
                        log_fn: Optional[Callable[[str], None]] = None,
                        stop_event: Optional[threading.Event] = None) -> Optional[str]:
     """分析前预检：缺失的模型/翻译表从魔搭补下载，返回错误信息或 None。"""
     from . import models_downloader
-    main_dir = MODEL_DIR / MAIN_REPO
-    missing_tagger = [f for f in tagger_model_files(size, precision)
-                      if not (main_dir / f).is_file()]
-    missing_zh = [] if (main_dir / TAG_ZH_FILE).is_file() else [TAG_ZH_FILE]
+    tagger_dir = _tagger_dir(variant)
+    missing_tagger = [f"{variant}/onnx/{n}" for n in _onnx_files(precision)
+                      if not (tagger_dir / n).is_file()]
+    missing_zh = [] if (MODEL_DIR / MAIN_REPO / TAG_ZH_FILE).is_file() else [TAG_ZH_FILE]
     missing_cls = [] if _cls_model_dir() is not None else [f"{_CLS_MODEL_SUBDIR}/{_CLS_ONNX_FILE}"]
     if not missing_tagger and not missing_zh and not missing_cls:
         return None
@@ -380,18 +393,18 @@ def ensure_model_files(size: int, precision: str,
     return None
 
 
-def _build_engines(size: int, precision: str, *, gpu_name: str = "",
+def _build_engines(variant: str, precision: str, *, gpu_name: str = "",
                    log_fn: Optional[Callable[[str], None]] = None,
                    stop_event: Optional[threading.Event] = None) -> Optional[str]:
     """在 venv 内现场构建 tagger 与预筛 cls TRT 引擎并写指纹文件。"""
-    model_dir = MODEL_DIR / MAIN_REPO
+    tagger_dir = _tagger_dir(variant)
     cls_onnx = _cls_model_dir()
     if cls_onnx is None:
         return "预筛模型缺失，无法构建引擎"
-    jobs = [{"onnx": str(model_dir / f"tagger_{size}_{precision}.onnx"),
-             "out": str(_tagger_engine_path(model_dir, size, precision)),
+    jobs = [{"onnx": str(tagger_dir / f"{precision}.onnx"),
+             "out": str(_tagger_engine_path(variant, precision)),
              "workspace_gb": _TRT_WORKSPACE_GB},
-            {"onnx": str(cls_onnx), "out": str(model_dir / _CLS_ENGINE_NAME),
+            {"onnx": str(cls_onnx), "out": str(MODEL_DIR / MAIN_REPO / _CLS_ENGINE_NAME),
              "workspace_gb": _TRT_WORKSPACE_GB, "shape_range": list(_CLS_SHAPE_RANGE)}]
 
     def _on_line(line: str):
@@ -410,9 +423,9 @@ def _build_engines(size: int, precision: str, *, gpu_name: str = "",
     try:
         rc, _last, err_tail = _run_venv_script(
             VENV_DIR, _TRT_BUILD_SCRIPT,
-            {"jobs": jobs, "gpu_name": gpu_name, "size": int(size),
+            {"jobs": jobs, "gpu_name": gpu_name, "variant": variant,
              "precision": precision, "cls_shape": list(_CLS_SHAPE_RANGE),
-             "meta_file": str(model_dir / _ENGINE_META_FILE)},
+             "meta_file": str(MODEL_DIR / MAIN_REPO / _ENGINE_META_FILE)},
             timeout=_BUILD_TIMEOUT_SEC, stop_event=stop_event, on_line=_on_line)
     finally:
         resume_after_task(log_fn=log_fn)
@@ -420,7 +433,7 @@ def _build_engines(size: int, precision: str, *, gpu_name: str = "",
         return "安装已取消"
     if rc != 0:
         return f"引擎构建失败: {(err_tail or '子进程异常退出')[-300:]}"
-    if not _tagger_engine_path(model_dir, size, precision).is_file():
+    if not _tagger_engine_path(variant, precision).is_file():
         return "引擎构建失败: 引擎文件未生成"
     return None
 
@@ -532,7 +545,7 @@ try:
     meta = {
         'gpu_name': _gpu_name,
         'trt_version': trt.__version__,
-        'tagger': {'size': params.get('size'), 'precision': params.get('precision')},
+        'tagger': {'variant': params.get('variant'), 'precision': params.get('precision')},
         'cls': {'shape': params.get('cls_shape') or []},
     }
     Path(params['meta_file']).write_text(
@@ -568,17 +581,15 @@ _NO_STOP = threading.Event()
 
 def extract_frames_for_tagger(video_path: str,
                               stop_event: Optional[threading.Event] = None,
-                              frame_count: int = 15,
-                              max_side: int = DEFAULT_INPUT_SIZE) -> List[str]:
-    """复用主流程抽帧，返回 JPEG base64 帧列表。"""
+                              frame_count: int = 15) -> List[str]:
+    """复用主流程抽帧（FRAME_VF：短边 336 + 裁 4:3），返回 JPEG base64 帧列表。"""
     if stop_event is None:
         stop_event = _NO_STOP
     if stop_event.is_set():
         return []
-    cfg = Config(sampling_points=max(1, frame_count), frames_per_point=1,
-                 frame_max_side=max_side)
+    cfg = Config(sampling_points=max(1, frame_count), frames_per_point=1)
     cfg.validate()
-    _, frames = probe_and_extract_keyframes(video_path, cfg, stop_event)
+    _, frames = probe_and_extract_keyframes(video_path, cfg, stop_event, frame_vf=FRAME_VF)
     return [f.b64 for f in frames]
 
 
@@ -788,7 +799,7 @@ def start_analyze_stream(
     tag_threshold: float = TAG_THRESHOLD,
     ip_threshold: float = TAG_THRESHOLD,
     char_freq_weight: float = CHAR_FREQ_WEIGHT,
-    input_size: int = DEFAULT_INPUT_SIZE,
+    variant: str = DEFAULT_VARIANT,
     stop_event=None,
     on_log: Optional[Callable[[str], None]] = None,
     on_video_result: Optional[Callable[[Dict[str, Any]], None]] = None,
@@ -797,23 +808,24 @@ def start_analyze_stream(
     status = get_status()
     if not status["ready"]:
         return None
-    size = normalize_size(input_size)
-    prec = installed_precision(size)
-    model_dir = _model_dir(size, prec) if prec else None
-    if not model_dir:
+    variant = normalize_variant(variant)
+    prec = installed_precision(variant)
+    if prec is None:
+        return None
+    tagger_dir = _tagger_dir(variant)
+    if not all((tagger_dir / n).is_file() for n in _onnx_files(prec)):
         return None
     cls_onnx = _cls_model_dir()
     if cls_onnx is None:
         return None  # 预筛模型缺失
     params = {
-        "model_dir": str(model_dir),
+        "repo_dir": str(MODEL_DIR / MAIN_REPO),
+        "tagger_dir": str(tagger_dir),
+        "variant": variant,
         "cls_model_path": str(cls_onnx),
-        "cls_engine": _CLS_ENGINE_NAME,
         "cls_shape": list(_CLS_SHAPE_RANGE),
-        "meta_file": str(model_dir / _ENGINE_META_FILE),
-        "size": size,
+        "size": INPUT_SIZE,
         "precision": prec,
-        "workspace_gb": _TRT_WORKSPACE_GB,
         "skip_real": skip_real,
         "anime_threshold": anime_threshold,
         "real_threshold": real_threshold,
@@ -851,25 +863,27 @@ def _cerr(res):
 with open(sys.argv[1], 'r', encoding='utf-8') as f:
     params = json.load(f)
 
-model_dir = Path(params['model_dir'])
+model_dir = Path(params['repo_dir'])
+tagger_dir = Path(params['tagger_dir'])
 cls_onnx = Path(params.get('cls_model_path') or '')
-cls_engine_path = model_dir / (params.get('cls_engine') or 'cls_384.trt')
-meta_file = Path(params.get('meta_file') or (model_dir / 'engine_meta.json'))
+cls_engine_path = model_dir / 'cls_384.trt'
+meta_file = model_dir / 'engine_meta.json'
 skip_real = bool(params.get('skip_real', False))
 cls_threshold = float(params.get('anime_threshold', 0.72))
 real_threshold = float(params.get('real_threshold', 0.50))
 char_threshold = float(params.get('tag_threshold', 0.66))
-char_freq_w = float(params.get('char_freq_weight', 0.1))
-char_prefilter = char_threshold * 0.3
 ip_threshold = float(params.get('ip_threshold', 0.66))
-size = int(params.get('size') or 1008)
+char_freq_w = float(params.get('char_freq_weight', 0.1))
+char_prefilter = char_threshold * 0.3  # 低阈值预筛，加权规则再按正式阈值过滤
+ip_prefilter = ip_threshold * 0.3
+size = int(params.get('size') or 448)
 precision = str(params.get('precision') or 'fp16')
 workspace_gb = float(params.get('workspace_gb') or 4)
 cls_shape = tuple(int(v) for v in params.get('cls_shape') or (1, 2, 2))
 
 # ── 标签表与类别切分 ──
 try:
-    cfg = json.loads((model_dir / 'config.json').read_text(encoding='utf-8'))
+    cfg = json.loads((tagger_dir / 'config.json').read_text(encoding='utf-8'))
     TAGS, SPLIT = cfg['tags'], cfg['tags_split']
 except Exception as e:
     _fatal(f'标签表读取失败: {e}')
@@ -890,7 +904,7 @@ try:
 except Exception as e:
     _fatal(f'未检测到可用的 NVIDIA GPU: {e}')
 
-tagger_engine = model_dir / f'tagger_{size}_{precision}.trt'
+tagger_engine = tagger_dir / f'{precision}.trt'
 
 def _read_meta():
     try:
@@ -905,7 +919,7 @@ def _meta_base_fresh(meta):
 
 def _write_engine_meta():
     meta = {'gpu_name': GPU_NAME, 'trt_version': trt.__version__,
-            'tagger': {'size': size, 'precision': precision},
+            'tagger': {'variant': params.get('variant'), 'precision': precision},
             'cls': {'shape': list(cls_shape)}}
     meta_file.write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding='utf-8')
 
@@ -914,13 +928,14 @@ _base_fresh = _meta_base_fresh(_meta)
 _tag = _meta.get('tagger') or {}
 
 # tagger 引擎：缺失或指纹过期则重建
-if not (_base_fresh and _tag.get('size') == size and _tag.get('precision') == precision
+if not (_base_fresh and _tag.get('variant') == params.get('variant')
+        and _tag.get('precision') == precision
         and tagger_engine.is_file()):
-    onnx_file = model_dir / f'tagger_{size}_{precision}.onnx'
+    onnx_file = tagger_dir / f'{precision}.onnx'
     if not onnx_file.is_file():
         _fatal(f'缺少 {onnx_file.name}，请重新安装 pixai-tagger')
     tagger_engine.unlink(missing_ok=True)  # 删除过期引擎
-    plog('TRT 引擎缺失或与当前 GPU/TRT 版本不符，正在构建（约 1-3 分钟）…')
+    plog('TRT 引擎缺失或与当前 GPU/TRT 版本不符，正在构建…')
     try:
         trt_build(onnx_file, tagger_engine, workspace_gb)
         _write_engine_meta()
@@ -1120,20 +1135,22 @@ def _accum_stats(stats, probs, off, cnt, threshold):
         c, mx = stats.get(t, (0, 0.0))
         stats[t] = (c + 1, max(mx, p))
 
-def _apply_char_rules(char_stats):
-    '''角色标签：频次加权得分过滤。'''
-    return {t: mx for t, (cnt, mx) in char_stats.items()
-            if mx + (cnt - 1) * char_freq_w > char_threshold}
+def _apply_freq_rules(stats, threshold):
+    '''标签过滤：频次加权得分超过阈值。'''
+    return {t: mx for t, (cnt, mx) in stats.items()
+            if mx + (cnt - 1) * char_freq_w > threshold}
 
 _EXCLUDED_IP = frozenset(('original', 'real_life'))
 
 def _apply_ip_rules(ip_stats):
-    '''IP 标签：只留最高置信度作品。'''
-    cand = {t: s for t, s in ip_stats.items() if t not in _EXCLUDED_IP}
+    '''IP 标签：与角色同规则过滤后，只留最高分（同分并列输出，不计次数）。'''
+    cand = {t: (cnt, mx) for t, (cnt, mx) in ip_stats.items()
+            if t not in _EXCLUDED_IP
+            and mx + (cnt - 1) * char_freq_w > ip_threshold}
     if not cand:
         return {}
-    key = max((mx, cnt) for cnt, mx in cand.values())
-    return {t: mx for t, (cnt, mx) in cand.items() if (mx, cnt) == key}
+    top = max(mx for _, mx in cand.values())
+    return {t: mx for t, (_, mx) in cand.items() if mx == top}
 
 def _char_fallback(char_scores, ip_scores, char_stats):
     '''IP 命中且角色全空时，补输出最高置信度角色。'''
@@ -1149,7 +1166,7 @@ def _run_tag_frames(imgs):
         logits = tagger_runner.run(tag_preprocess(im, size, tagger_runner.in_dtype))[0]
         probs = 1.0 / (1.0 + np.exp(-logits.astype(np.float32)))
         _accum_stats(char_stats, probs, *_seg_off['character'], char_prefilter)
-        _accum_stats(ip_stats, probs, *_seg_off['copyright'], ip_threshold)
+        _accum_stats(ip_stats, probs, *_seg_off['copyright'], ip_prefilter)
     return char_stats, ip_stats
 
 def _tag_list(scores):
@@ -1216,15 +1233,9 @@ while True:
     med = (sorted_scores[n // 2] + sorted_scores[(n - 1) // 2]) / 2
     if med >= cls_threshold:
         is_anime = True
-        verdict = '二次元'
     elif med <= real_threshold:
         is_anime = False
-        verdict = '非二次元'
-    else:
-        verdict = '不确定'
     anime_score = round(med, 4)
-    if is_anime is not True:
-        plog(f'预筛 {name}: 中位数={anime_score} → {verdict}')
 
     if skip_real and is_anime is False:
         report({'index': vi, 'name': name, 'anime_score': anime_score,
@@ -1241,7 +1252,7 @@ while True:
         continue
     del imgs
     ip_scores = _apply_ip_rules(ip_stats)
-    char_scores = _char_fallback(_apply_char_rules(char_stats), ip_scores, char_stats)
+    char_scores = _char_fallback(_apply_freq_rules(char_stats, char_threshold), ip_scores, char_stats)
     result = {
         'index': vi, 'name': name,
         'character_tags': _tag_list(char_scores),

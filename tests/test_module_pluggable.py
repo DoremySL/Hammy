@@ -124,8 +124,8 @@ class TestAssemble(_WorkspaceTestCase):
             **_PIXAI_KEYMAP_DEFAULTS(), **_WHISPER_KEYMAP_DEFAULTS(),
             "llama_enabled": False, "llama_integrate": False,
         })
-        # 「识别二次元作品」默认开启
-        self.assertIs(exp["pixai_classify"], True)
+        # 「跳过非二次元作品」默认关闭
+        self.assertIs(exp["pixai_classify"], False)
 
     def test_assemble_reflects_module_files(self):
         from gui_app import config_store

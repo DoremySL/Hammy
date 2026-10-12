@@ -224,7 +224,7 @@ function _bindManageButtons(uvStatus, llamaStatus, pStatus, wStatus, rvStatus) {
   const pInstallBtn = $('#btn-pixai-install');
   if (pInstallBtn && !pStatus.ready) pInstallBtn.addEventListener('click', async () => {
     const sel = await showPixaiInstallDialog();
-    if (sel) startPixaiInstall(sel.size || 1008, sel.site || 'sjtu');
+    if (sel) startPixaiInstall(sel.version || '448-ft', sel.site || 'sjtu');
   });
 
   const pRemoveBtn = $('#btn-pixai-remove');
@@ -420,7 +420,7 @@ async function showMirrorSelectDialog(opts) {
 }
 
 /* ════════════════════════════════════════════════════════════
-   PixAI 安装弹窗（GPU 必需 + 输入尺寸 + 站点）
+   PixAI 安装弹窗（GPU 必需 + 模型版本 + 站点）
    ════════════════════════════════════════════════════════════ */
 async function showPixaiInstallDialog() {
   let mirrors;
@@ -429,7 +429,7 @@ async function showPixaiInstallDialog() {
 
   const gpu = mirrors.gpu || null;
   const issue = mirrors.gpu_issue || '';
-  const sizes = Array.isArray(mirrors.sizes) ? mirrors.sizes : [];
+  const versions = Array.isArray(mirrors.versions) ? mirrors.versions : [];
   const sites = Array.isArray(mirrors.sites) ? mirrors.sites : [];
   const defaultSite = mirrors.default_site || 'sjtu';
 
@@ -439,9 +439,9 @@ async function showPixaiInstallDialog() {
       </div>`
     : gpuBannerHtml(gpu, '安装时按显卡自动构建对应精度的 TensorRT 引擎');
 
-  const sizeSection = mirrorSection({
-    title: '输入尺寸', hint: '安装时下载对应模型并构建引擎，更换需重新安装', name: 'pixai-size',
-    items: sizes.map((m, i) => ({ value: m.id, name: m.name, desc: m.desc || '', recommended: i === 0 })),
+  const versionSection = mirrorSection({
+    title: '模型版本', hint: '安装时下载所选版本模型并构建引擎，更换需重新安装', name: 'pixai-version',
+    items: versions.map((m, i) => ({ value: m.id, name: m.name, desc: m.desc || '', recommended: i === 0 })),
   });
   const siteSection = mirrorSection({
     title: '下载站点', name: 'pixai-site',
@@ -449,7 +449,7 @@ async function showPixaiInstallDialog() {
   });
 
   const dlg = openMirrorDialog(`
-    <div class="mirror-body">${gpuBanner}${sizeSection}${siteSection}</div>
+    <div class="mirror-body">${gpuBanner}${versionSection}${siteSection}</div>
     <div class="confirm-foot">
       <button class="btn" id="mirrorCancel">取消</button>
       <button class="btn primary" id="mirrorOk" ${issue ? 'disabled' : ''}>开始安装</button>
@@ -459,10 +459,10 @@ async function showPixaiInstallDialog() {
   return new Promise(resolve => {
     $('#mirrorCancel').addEventListener('click', () => { dlg.close(); resolve(null); });
     $('#mirrorOk').addEventListener('click', () => {
-      const size = dlg.box.querySelector('input[name="pixai-size"]:checked');
+      const version = dlg.box.querySelector('input[name="pixai-version"]:checked');
       const site = dlg.box.querySelector('input[name="pixai-site"]:checked');
       dlg.close();
-      resolve({ size: size ? Number(size.value) : 1008, site: site ? site.value : 'sjtu' });
+      resolve({ version: version ? version.value : '448-ft', site: site ? site.value : 'sjtu' });
     });
   });
 }
@@ -581,8 +581,8 @@ function _bindLlamaEvents(llamaStatus) {
 function _renderPixaiSection(exp, pStatus) {
   const enabled = !!state.pixaiTaggerEnabled;
   const ready = !!(pStatus && pStatus.ready);
-  const specBadge = ready && pStatus.input_size
-    ? `${pStatus.input_size} · ${String(pStatus.precision || '').toUpperCase()}` : '';
+  const specBadge = ready && pStatus.variant
+    ? `${pStatus.variant} · ${String(pStatus.precision || '').toUpperCase()}` : '';
   const zhOn = exp.pixai_output_zh !== false;
   const scopeNames = { char: '仅角色', all: '角色/IP', off: '不使用' };
   const scopeOf = v => scopeNames[v] ? v : 'char';
@@ -736,9 +736,9 @@ async function runInstallTask(run, onOk) {
   }
 }
 
-async function startPixaiInstall(size, site) {
+async function startPixaiInstall(variant, site) {
   await runInstallTask(
-    () => apiCall('install_pixai_tagger', size, site),
+    () => apiCall('install_pixai_tagger', variant, site),
     async () => {
       await apiCall('set_pixai_tagger_enabled', true);
       state.pixaiTaggerEnabled = true;
