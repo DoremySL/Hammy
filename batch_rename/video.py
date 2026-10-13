@@ -260,12 +260,18 @@ def _extract_single_frame(video_path: str, ts: float, vf: str,
     return None
 
 
-def _extract_frame(video_path: str, ts: float, config: Config, stop_event: threading.Event) -> Optional[Frame]:
+def _default_frame_vf(config: Config) -> str:
+    """默认抽帧滤镜：等比缩到长边不超过 frame_max_side。"""
+    return (f"scale=min({config.frame_max_side}\\,iw):min({config.frame_max_side}\\,ih)"
+            f":force_original_aspect_ratio=decrease")
+
+
+def _extract_frame(video_path: str, ts: float, config: Config, stop_event: threading.Event,
+                   frame_vf: Optional[str] = None) -> Optional[Frame]:
     if stop_event.is_set():
         return None
     try:
-        vf = f"scale=min({config.frame_max_side}\\,iw):min({config.frame_max_side}\\,ih):force_original_aspect_ratio=decrease"
-        jpeg = _extract_single_frame(video_path, ts, vf, stop_event)
+        jpeg = _extract_single_frame(video_path, ts, frame_vf or _default_frame_vf(config), stop_event)
         if jpeg:
             return Frame(ts, base64.b64encode(jpeg).decode())
         return None
@@ -293,15 +299,15 @@ def _split_jpegs(data: bytes) -> List[bytes]:
 
 def _extract_frames_ts(video_path: str, targets: List[float], config: Config,
                        stop_event: threading.Event,
-                       frame_rate: float = 0.0) -> List[Optional[Frame]]:
+                       frame_rate: float = 0.0,
+                       frame_vf: Optional[str] = None) -> List[Optional[Frame]]:
     """mpegts 专用抽帧：不 seek 单次顺序解码，select 放行目标帧。"""
     if stop_event.is_set():
         return [None] * len(targets)
     # 帧率未知时窗口只需覆盖浮点误差（目标即关键帧精确 pts），过宽会在高帧率下罩住两帧
     win = 0.5 / frame_rate if frame_rate > 1 else 0.005
     wins = "+".join(f"between(t\\,{t - 0.001:.3f}\\,{t + win:.3f})" for t in targets)
-    vf = (f"select={wins},"
-          f"scale=min({config.frame_max_side}\\,iw):min({config.frame_max_side}\\,ih):force_original_aspect_ratio=decrease")
+    vf = f"select={wins}," + (frame_vf or _default_frame_vf(config))
     cmd = [
         ffmpeg_tools.ffmpeg, "-y", "-i", video_path, "-copyts",
         "-vf", vf, "-fps_mode", "passthrough",
@@ -378,8 +384,12 @@ def select_sampled_timestamps(duration: float, key_ts: List[float],
     return out or select_timestamps(duration, key_ts, points)
 
 
-def probe_and_extract_keyframes(video_path: str, config: Config, stop_event: threading.Event) -> Tuple[Dict[str, Any], List[Frame]]:
-    """探测视频元数据 + 关键帧 → 选取时间戳 → 逐帧抽取为 Frame（时间戳+base64）。"""
+def probe_and_extract_keyframes(video_path: str, config: Config, stop_event: threading.Event,
+                                frame_vf: Optional[str] = None) -> Tuple[Dict[str, Any], List[Frame]]:
+    """探测视频元数据 + 关键帧 → 选取时间戳 → 逐帧抽取为 Frame（时间戳+base64）。
+
+    frame_vf 传入时替换默认的 frame_max_side 缩放滤镜（调用方自定义抽帧尺寸/裁剪）。
+    """
     if stop_event.is_set():
         return {}, []
     if not ffmpeg_tools.ffprobe or not ffmpeg_tools.ffmpeg:
@@ -398,12 +408,13 @@ def probe_and_extract_keyframes(video_path: str, config: Config, stop_event: thr
     frames: List[Frame] = []
     if "mpegts" in (info.get("format_name") or ""):
         fr = (info.get("video") or {}).get("frame_rate") or 0.0
-        for f in _extract_frames_ts(video_path, timestamps, config, stop_event, fr):
+        for f in _extract_frames_ts(video_path, timestamps, config, stop_event, fr,
+                                    frame_vf=frame_vf):
             if f:
                 frames.append(f)
     else:
         for ts in timestamps:
-            frame = _extract_frame(video_path, ts, config, stop_event)
+            frame = _extract_frame(video_path, ts, config, stop_event, frame_vf=frame_vf)
             if frame:
                 frames.append(frame)
     return info, frames
