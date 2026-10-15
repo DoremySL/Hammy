@@ -167,7 +167,7 @@ _LLAMA_KEYS = frozenset({"llama_enabled", "llama_integrate"})
 
 def _pixai_defaults() -> Dict[str, Any]:
     """pixai 模块配置默认值（文件缺失/损坏时的兜底）。"""
-    return {"enabled": False, "classify": False, "frames": 15, "threshold": 0.66,
+    return {"enabled": False, "classify": True, "frames": 15, "threshold": 0.66,
             "output_zh": True, "variant": "448-ft",
             "prompt_scope": "char", "recall_scope": "char"}
 

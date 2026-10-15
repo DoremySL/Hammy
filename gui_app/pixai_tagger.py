@@ -65,13 +65,9 @@ _BUILD_TIMEOUT_SEC = 1200.0
 _INFERENCE_BASE_SEC = 240.0
 _INFERENCE_PER_VIDEO_SEC = 120.0
 
-# 抽帧滤镜：短边压到 336（只缩不放）→ 裁成 4:3；横屏水平居中，竖屏偏上（偏移 = 多余高度的 0.25）
-FRAME_VF = ("scale=trunc(iw*min(1\\,336/min(iw\\,ih))/2)*2"
-            ":trunc(ih*min(1\\,336/min(iw\\,ih))/2)*2,"
-            "crop=w=min(iw\\,trunc(ih*4/3/2)*2)"
-            ":h=min(ih\\,trunc(iw*4/3/2)*2)"
-            ":x=(iw-ow)/2"
-            ":y=trunc((ih-oh)*0.25)")
+# 抽帧滤镜：短边压到 448（只缩不放）；去黑边与比例裁剪在分析脚本内做
+FRAME_VF = ("scale=trunc(iw*min(1\\,448/min(iw\\,ih))/2)*2"
+            ":trunc(ih*min(1\\,448/min(iw\\,ih))/2)*2")
 
 
 _log = make_logger("pixai_tagger")
@@ -582,7 +578,7 @@ _NO_STOP = threading.Event()
 def extract_frames_for_tagger(video_path: str,
                               stop_event: Optional[threading.Event] = None,
                               frame_count: int = 15) -> List[str]:
-    """复用主流程抽帧（FRAME_VF：短边 336 + 裁 4:3），返回 JPEG base64 帧列表。"""
+    """复用主流程抽帧（FRAME_VF：短边压到 448），返回 JPEG base64 帧列表。"""
     if stop_event is None:
         stop_event = _NO_STOP
     if stop_event.is_set():
@@ -793,7 +789,7 @@ class AnalyzeStream:
 
 def start_analyze_stream(
     video_count: int,
-    skip_real: bool = False,
+    skip_real: bool = True,
     anime_threshold: float = ANIME_CLS_THRESHOLD,
     real_threshold: float = REAL_CLS_THRESHOLD,
     tag_threshold: float = TAG_THRESHOLD,
@@ -845,7 +841,7 @@ def start_analyze_stream(
 _ANALYZE_SCRIPT = _TRT_CORE + r"""
 import base64, io, queue, threading
 import numpy as np
-from PIL import Image, ImageStat
+from PIL import Image
 import tensorrt as trt
 from cuda.bindings import runtime as cudart
 
@@ -868,7 +864,7 @@ tagger_dir = Path(params['tagger_dir'])
 cls_onnx = Path(params.get('cls_model_path') or '')
 cls_engine_path = model_dir / 'cls_384.trt'
 meta_file = model_dir / 'engine_meta.json'
-skip_real = bool(params.get('skip_real', False))
+skip_real = bool(params.get('skip_real', True))
 cls_threshold = float(params.get('anime_threshold', 0.72))
 real_threshold = float(params.get('real_threshold', 0.50))
 char_threshold = float(params.get('tag_threshold', 0.66))
@@ -1048,25 +1044,7 @@ except Exception as e:
     cls_engine_path.unlink(missing_ok=True)  # 坏引擎自愈：删除后下次重建
     _fatal(f'预筛引擎加载失败: {e}')
 
-# ── 坏帧过滤 ──
-_DARK_BRIGHTNESS = 15.0  # 亮度低于此值视为坏帧
-
-def _mean_brightness(image):
-    '''粗略亮度（0-255）。'''
-    return ImageStat.Stat(image.convert('L').resize((64, 64))).mean[0]
-
-def _is_flat_frame(image):
-    '''纯色/低信息量帧判定。'''
-    g = image.convert('L').resize((64, 64))
-    stddev = ImageStat.Stat(g).stddev[0]
-    if stddev >= 60:
-        return False
-    if stddev < 8:
-        return True
-    rgb = image.convert('RGB').resize((32, 32))
-    r, gr, b = ImageStat.Stat(rgb).mean
-    return (max(r, gr, b) - min(r, gr, b)) / 255.0 < 0.05
-
+# ── 帧预处理 ──
 def tag_preprocess(img, size, dtype):
     '''等比缩放 + 居中黑边填充到 size×size，归一化 [-1,1]。'''
     w, h = img.size
@@ -1080,16 +1058,16 @@ def tag_preprocess(img, size, dtype):
     a = (a - 0.5) / 0.5
     return np.ascontiguousarray(np.transpose(a, (2, 0, 1))[None].astype(dtype))
 
-def cls_preprocess(img):
-    '''Resize 384×384 + 归一化 [-1,1] + CHW。'''
+def cls_preprocess(img, dtype):
+    '''Resize 384×384 + 归一化 [-1,1] + CHW（按引擎 dtype 出张量）。'''
     im = img.resize((384, 384), Image.BILINEAR)
     a = np.asarray(im, dtype=np.float32) / 255.0
     a = (a - 0.5) / 0.5
-    return np.ascontiguousarray(np.transpose(a, (2, 0, 1))[None])
+    return np.ascontiguousarray(np.transpose(a, (2, 0, 1))[None].astype(dtype))
 
 # ── warmup ──
 try:
-    cls_runner.run(cls_preprocess(Image.new('RGB', (384, 384))))
+    cls_runner.run(cls_preprocess(Image.new('RGB', (384, 384)), cls_runner.in_dtype))
 except Exception as e:
     _fatal(f'预筛引擎 warmup 失败: {e}')
 try:
@@ -1116,12 +1094,54 @@ def decode_frames(b64_list):
             frames.append(None)
     return frames
 
-def _run_cls_frames(images):
-    '''预筛：按 opt batch 分块前向，返回逐帧 anime 分数（ONNX 输出已是 softmax 概率，索引 0 = anime）。'''
-    xs = [cls_preprocess(im) for im in images]
+# ── 黑帧过滤 + 去黑边 + 比例裁剪 ──
+_BAR_PIXEL = 20       # 像素值低于此视为黑
+_BLACK_FRAME = 0.99   # 全帧黑像素占比 ≥ 此值 → 黑帧
+_BAR_RATIO = 0.99     # 行/列黑像素占比 ≥ 此值计为黑边
+_BAR_MAX_TRIM = 0.30  # 每条边最多裁掉的比例
+
+def _trim_crop(im):
+    '''黑帧过滤 + 四边去黑边 + 比例裁剪（横屏 4:3，竖屏 3:2 偏上），黑帧返回 None。'''
+    mask = np.asarray(im.convert('L')) < _BAR_PIXEL
+    if mask.mean() >= _BLACK_FRAME:
+        return None
+    h, w = mask.shape
+    rows, cols = mask.mean(axis=1), mask.mean(axis=0)
+    top = 0
+    while top < h * _BAR_MAX_TRIM and rows[top] >= _BAR_RATIO:
+        top += 1
+    bottom = h
+    while h - bottom < h * _BAR_MAX_TRIM and rows[bottom - 1] >= _BAR_RATIO:
+        bottom -= 1
+    left = 0
+    while left < w * _BAR_MAX_TRIM and cols[left] >= _BAR_RATIO:
+        left += 1
+    right = w
+    while w - right < w * _BAR_MAX_TRIM and cols[right - 1] >= _BAR_RATIO:
+        right -= 1
+    im = im.crop((left, top, right, bottom))
+    w, h = im.size
+    if w >= h:  # 横屏 → 4:3
+        tw = min(w, round(h * 4 / 3))
+        if tw < w:
+            x = (w - tw) // 2
+            return im.crop((x, 0, x + tw, h))
+        th = round(w * 3 / 4)
+        if th < h:
+            y = int((h - th) * 0.25)
+            return im.crop((0, y, w, y + th))
+        return im
+    th = round(w * 3 / 2)  # 竖屏 → 3:2 偏上
+    if th < h:
+        y = int((h - th) * 0.25)
+        return im.crop((0, y, w, y + th))
+    return im
+
+def _cls_scores(cls_xs):
+    '''预筛：按 opt batch 分块前向，返回逐帧 anime 分数（输出已是 softmax 概率，索引 0 = anime）。'''
     scores = []
-    for i in range(0, len(xs), cls_shape[1]):
-        probs = cls_runner.run(np.concatenate(xs[i:i + cls_shape[1]]))
+    for i in range(0, len(cls_xs), cls_shape[1]):
+        probs = cls_runner.run(np.concatenate(cls_xs[i:i + cls_shape[1]]))
         scores.extend(float(v) for v in probs[:, 0])
     return scores
 
@@ -1159,11 +1179,11 @@ def _char_fallback(char_scores, ip_scores, char_stats):
         return {best[0]: best[1][1]}
     return char_scores
 
-def _run_tag_frames(imgs):
+def _tag_stats(tag_xs):
     '''标签获取：逐帧前向，character/IP 跨帧统计。'''
     char_stats, ip_stats = {}, {}
-    for im in imgs:
-        logits = tagger_runner.run(tag_preprocess(im, size, tagger_runner.in_dtype))[0]
+    for x in tag_xs:
+        logits = tagger_runner.run(x)[0]
         probs = 1.0 / (1.0 + np.exp(-logits.astype(np.float32)))
         _accum_stats(char_stats, probs, *_seg_off['character'], char_prefilter)
         _accum_stats(ip_stats, probs, *_seg_off['copyright'], ip_prefilter)
@@ -1174,7 +1194,7 @@ def _tag_list(scores):
     return [{'name': t, 'score': round(s, 4)}
             for t, s in sorted(scores.items(), key=lambda x: (-x[1], x[0]))]
 
-# ── 预取线程：stdin → 解码/坏帧过滤入有界队列 ──
+# ── 预取线程：stdin → 解码/去边/双模型预处理入有界队列 ──
 _prefetch_q = queue.Queue(maxsize=2)
 
 def _prefetch_reader():
@@ -1202,12 +1222,23 @@ def _prefetch_reader():
         if not imgs:
             _prefetch_q.put({'report': {'index': vi, 'name': name, 'error': '帧解码失败'}})
             continue
-        # 坏帧过滤：保留不足 2 帧时回退全量
-        bright = [im for im in imgs if _mean_brightness(im) >= _DARK_BRIGHTNESS
-                  and not _is_flat_frame(im)]
-        if len(bright) >= 2:
-            imgs = bright
-        _prefetch_q.put({'vi': vi, 'name': name, 'imgs': imgs})
+        # 去边/黑帧过滤 + 双模型预处理，逐帧隔离异常（坏帧直接弃）
+        kept = []
+        for f in imgs:
+            try:
+                f = _trim_crop(f)
+                if f is None:
+                    continue  # 黑帧
+                kept.append((cls_preprocess(f, cls_runner.in_dtype),
+                             tag_preprocess(f, size, tagger_runner.in_dtype)))
+            except Exception:
+                pass
+        if not kept:
+            _prefetch_q.put({'report': {'index': vi, 'name': name, 'error': '全帧无效'}})
+            continue
+        _prefetch_q.put({'vi': vi, 'name': name,
+                         'cls_xs': [c for c, _ in kept],
+                         'tag_xs': [t for _, t in kept]})
     _prefetch_q.put(None)  # stdin EOF
 
 threading.Thread(target=_prefetch_reader, name='prefetch', daemon=True).start()
@@ -1220,14 +1251,14 @@ while True:
         report(item['report'])
         continue
     vi, name = item['vi'], item['name']
-    imgs = item['imgs']
 
     is_anime = None  # None = 不确定
     anime_score = 0.0
     try:
-        scores = _run_cls_frames(imgs)
+        scores = _cls_scores(item['cls_xs'])
     except Exception as e:
         _fatal(f'预筛推理失败 {name}: {e}')
+    del item['cls_xs']  # CLS 段结束，先释放该视频张量
     sorted_scores = sorted(scores)
     n = len(sorted_scores)
     med = (sorted_scores[n // 2] + sorted_scores[(n - 1) // 2]) / 2
@@ -1240,17 +1271,17 @@ while True:
     if skip_real and is_anime is False:
         report({'index': vi, 'name': name, 'anime_score': anime_score,
                 'is_anime': False, 'character_tags': [], 'ip_tags': []})
-        del imgs
+        del item['tag_xs']
         continue
 
     # ── 标签获取 ──
     try:
-        char_stats, ip_stats = _run_tag_frames(imgs)
+        char_stats, ip_stats = _tag_stats(item['tag_xs'])
     except Exception as e:
         report({'index': vi, 'name': name, 'error': f'标签获取异常: {e}'})
-        del imgs
+        del item['tag_xs']
         continue
-    del imgs
+    del item['tag_xs']
     ip_scores = _apply_ip_rules(ip_stats)
     char_scores = _char_fallback(_apply_freq_rules(char_stats, char_threshold), ip_scores, char_stats)
     result = {
