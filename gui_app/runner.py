@@ -123,6 +123,7 @@ def build_engine_config(cfg_dict: Dict[str, Any]) -> Config:
     cfg.frames_per_point = _safe_int(video, "frames_per_point", cfg.frames_per_point)
     cfg.frame_max_side = _safe_int(video, "frame_max_side", cfg.frame_max_side)
     cfg.frame_time_tags = _safe_int(video, "frame_time_tags", cfg.frame_time_tags)
+    cfg.frame_extract_mode = str(video.get("frame_extract_mode", cfg.frame_extract_mode) or "auto")
 
     naming = _section("naming")
     cfg.naming_mode = str(naming.get("naming_mode", cfg.naming_mode) or "date")

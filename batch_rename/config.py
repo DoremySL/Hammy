@@ -18,6 +18,7 @@ class Config:
     frames_per_point: int = 3
     frame_max_side: int = 640
     frame_time_tags: int = 2  # 0=不添加 1=添加时间标签 2=添加并用于优化缩略图
+    frame_extract_mode: str = "auto"  # auto=TS逐帧+关键帧concat / per_frame=全部逐帧 / legacy=全部旧行为
     ai_workers: int = 4
     retry_times: int = 2
     ai_timeout: int = 60
@@ -48,6 +49,8 @@ class Config:
         self.sampling_points = max(1, self.sampling_points)
         self.frames_per_point = max(1, self.frames_per_point)
         self.frame_max_side = max(64, self.frame_max_side)
+        if self.frame_extract_mode not in ("auto", "per_frame", "legacy"):
+            self.frame_extract_mode = "auto"
         self.ai_workers = max(1, self.ai_workers)
         self.ai_timeout = max(1, self.ai_timeout)
         self.retry_times = max(0, self.retry_times)

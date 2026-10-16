@@ -124,7 +124,6 @@ class SourcesMixin:
         时长预筛 → 分阶段指纹（window0 粗判 → 存活对补全窗）→ 对齐聚组。"""
         global _similar_stop
         from batch_rename import similarity as sim
-        from batch_rename.collector import is_mpeg_ts
         from batch_rename.utils import path_stat
         mode_cfg = sim.SCAN_MODES.get(mode) or sim.FAST
         if not _similar_lock.acquire(blocking=False):
@@ -162,12 +161,11 @@ class SourcesMixin:
                 if ent_ok:
                     for k, v in ent.get("windows", {}).items():
                         have.setdefault(int(k), [tuple(f) for f in v])
-                is_ts = is_mpeg_ts(p)
-                need = [0] if is_ts or metas[p]["duration"] <= mode_cfg.short_sec else list(idxs)
+                need = [0] if metas[p]["duration"] <= mode_cfg.short_sec else list(idxs)
                 miss = [i for i in need if not have.get(i)]
                 if miss:
                     frames = sim.fingerprint_windows(
-                        p, metas[p]["duration"], is_ts, miss, stop, mode=mode_cfg)
+                        p, metas[p]["duration"], miss, stop, mode=mode_cfg)
                     session.setdefault(key, {}).update(frames)
                     have.update(frames)
                     # 从 have（会话已抽 + 磁盘已有 + 本次新抽）全量合并，
@@ -180,7 +178,7 @@ class SourcesMixin:
 
             cand = sorted({p for pr in pairs for p in pr})
             single = {p for p in cand
-                      if is_mpeg_ts(p) or metas[p]["duration"] <= mode_cfg.short_sec}
+                      if metas[p]["duration"] <= mode_cfg.short_sec}
             fps1, accepted, surv = self._similar_phase1(
                 cand, pairs, single, get_fp, metas, mode_cfg)
             fpsf, accepted2, full_edges = self._similar_phase2(
@@ -236,7 +234,7 @@ class SourcesMixin:
 
     @staticmethod
     def _similar_phase1(cand: List[str], pairs, single, get_fp, metas, mode_cfg):
-        """阶段 1：并行抽中间窗粗判；单段模式（ts/短视频）一次即全量，直接定案。
+        """阶段 1：并行抽中间窗粗判；短视频整段一次抽取、直接定案。
         返回 (fps1, accepted, surv)。"""
         from batch_rename import similarity as sim
 

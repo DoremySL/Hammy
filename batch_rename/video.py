@@ -1,7 +1,9 @@
 """视频探测、关键帧抽取。"""
 import json
 import base64
+import os
 import subprocess
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -24,7 +26,8 @@ _PROBE_META_TIMEOUT_SEC = 15.0    # ffprobe 元数据 JSON 探测
 _PROBE_KEYFRAMES_TIMEOUT_SEC = 60.0  # 关键帧窗口采样探测超时
 _PROBE_WINDOW_HALF_SEC = 5.0     # 采样窗口基础半径（秒），实际取 max(此值, 2×每点帧数)
 EXTRACT_FRAME_TIMEOUT_SEC = 30.0    # ffmpeg 单帧抽取
-_EXTRACT_TS_TIMEOUT_SEC = 300.0    # mpegts 整片顺序抽帧
+_EXTRACT_CONCAT_TIMEOUT_SEC = 120.0  # ffmpeg concat 多段一次出全部帧
+_EXTRACT_TS_TIMEOUT_SEC = 300.0    # mpegts 单 pass 顺序抽帧（legacy 模式）
 
 
 def run_subprocess_with_cancel(cmd: list, timeout: float, stop_event: threading.Event) -> Tuple[Optional[bytes], Optional[bytes]]:
@@ -69,12 +72,14 @@ def _parse_frame_rate(rate_str: str) -> float:
 def _parse_format(fmt: Dict[str, Any]) -> Dict[str, Any]:
     """解析 ffprobe format 部分，返回含 format 字段 + 空 video/audio 的 meta dict。"""
     meta: Dict[str, Any] = {
-        "duration": 0.0, "creation_time": "",
+        "duration": 0.0, "start_time": 0.0, "creation_time": "",
         "size": 0, "bit_rate": 0, "format_name": "",
         "encoder": "", "container_title": "",
         "video": {}, "audio": [],
     }
     meta["duration"] = safe_float(fmt.get("duration"))
+    # 流时间基（ts 的 -ss 需扣除）
+    meta["start_time"] = max(0.0, safe_float(fmt.get("start_time")))
     meta["size"] = safe_int(fmt.get("size"))
     meta["bit_rate"] = safe_int(fmt.get("bit_rate"))
     meta["format_name"] = fmt.get("format_name", "")
@@ -204,7 +209,7 @@ def probe_video(video_path: str, stop_event: threading.Event,
     key_ts: List[float] = []
 
     try:
-        entries = ("format=duration,size,bit_rate,format_name:"
+        entries = ("format=duration,start_time,size,bit_rate,format_name:"
                    "format_tags=creation_time,title,encoder:"
                    "stream=codec_name,codec_type,width,height,r_frame_rate,"
                    "bit_rate,pix_fmt,profile,field_order,duration,"
@@ -234,13 +239,15 @@ def probe_video(video_path: str, stop_event: threading.Event,
 
 
 def _extract_single_frame(video_path: str, ts: float, vf: str,
-                          stop_event: threading.Event) -> Optional[bytes]:
+                          stop_event: threading.Event,
+                          start_time: float = 0.0) -> Optional[bytes]:
     """按时间戳抽取单帧：ffmpeg 输出 JPEG 经 stdout 管道返回，失败/取消返回 None。"""
     if stop_event.is_set():
         return None
+    ss = max(0.0, ts - start_time)
     cmd = [
         ffmpeg_tools.ffmpeg, "-y",
-        "-ss", f"{ts:.3f}",
+        "-ss", f"{ss:.6f}",
         "-i", video_path,
         "-vframes", "1",
         "-vf", vf,
@@ -267,11 +274,13 @@ def _default_frame_vf(config: Config) -> str:
 
 
 def _extract_frame(video_path: str, ts: float, config: Config, stop_event: threading.Event,
-                   frame_vf: Optional[str] = None) -> Optional[Frame]:
+                   frame_vf: Optional[str] = None,
+                   start_time: float = 0.0) -> Optional[Frame]:
     if stop_event.is_set():
         return None
     try:
-        jpeg = _extract_single_frame(video_path, ts, frame_vf or _default_frame_vf(config), stop_event)
+        jpeg = _extract_single_frame(video_path, ts, frame_vf or _default_frame_vf(config),
+                                     stop_event, start_time)
         if jpeg:
             return Frame(ts, base64.b64encode(jpeg).decode())
         return None
@@ -322,6 +331,60 @@ def _extract_frames_ts(video_path: str, targets: List[float], config: Config,
                      f"jpegs={len(jpegs)} targets={len(targets)}")
         return [None] * len(targets)
     return [Frame(t, base64.b64encode(j).decode()) for t, j in zip(targets, jpegs)]
+
+
+def _write_ffconcat_script(video_path: str, segments) -> str:
+    """segments: [(inpoint, outpoint)] → ffconcat 脚本。"""
+    lines = ["ffconcat version 1.0"]
+    for lo, hi in segments:
+        lines.append(f"file '{video_path}'")
+        lines.append(f"inpoint {lo:.6f}")
+        lines.append(f"outpoint {hi:.6f}")
+    fd, path = tempfile.mkstemp(suffix=".ffconcat")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write("\n".join(lines) + "\n")
+    except Exception:
+        os.unlink(path)
+        raise
+    return path
+
+
+def _extract_frames_concat(video_path: str, targets: List[float], config: Config,
+                           stop_event: threading.Event, frame_rate: float,
+                           frame_vf: Optional[str] = None) -> Optional[List[Frame]]:
+    """关键帧点位单进程多段抽取：出帧数与 targets 一一配对成功才交付，否则 None 回退逐帧。"""
+    if stop_event.is_set():
+        return None
+    tau = 1.0 / frame_rate if frame_rate > 1 else 0.033
+    epochs = [(t, t + 0.5 * tau) for t in targets]
+    script = _write_ffconcat_script(video_path, epochs)
+    try:
+        cmd = [
+            ffmpeg_tools.ffmpeg, "-y",
+            "-skip_frame", "nokey",
+            "-f", "concat", "-safe", "0", "-i", script,
+            "-fps_mode", "passthrough",
+            "-vf", frame_vf or _default_frame_vf(config),
+            "-q:v", "2", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1",
+        ]
+        stdout, _ = run_subprocess_with_cancel(cmd, _EXTRACT_CONCAT_TIMEOUT_SEC, stop_event)
+        if not stdout:
+            return None
+        jpegs = _split_jpegs(stdout)
+        if len(jpegs) != len(targets) or any(not jpeg.startswith(b"\xff\xd8") for jpeg in jpegs):
+            logger.debug(f"concat 配帧不齐，回退逐帧 ({Path(video_path).name}): "
+                         f"jpegs={len(jpegs)} targets={len(targets)}")
+            return None
+        return [Frame(t, base64.b64encode(j).decode()) for t, j in zip(targets, jpegs)]
+    except Exception as e:
+        logger.debug(f"concat 抽帧异常，回退逐帧 ({Path(video_path).name}): {e}", exc_info=True)
+        return None
+    finally:
+        try:
+            os.unlink(script)
+        except OSError:
+            pass
 
 
 def _sparsify_keyframes(key_ts: List[float], min_gap: float) -> List[float]:
@@ -401,20 +464,47 @@ def probe_and_extract_keyframes(video_path: str, config: Config, stop_event: thr
     per_point = max(1, config.frames_per_point)
     info, key_ts = probe_video(video_path, stop_event, points, per_point)
     duration = info.get("duration", 0.0)
+    start_time = info.get("start_time", 0.0)
     if stop_event.is_set():
         return info, []
 
     timestamps = select_sampled_timestamps(duration, key_ts, points, per_point)
     frames: List[Frame] = []
-    if "mpegts" in (info.get("format_name") or ""):
-        fr = (info.get("video") or {}).get("frame_rate") or 0.0
-        for f in _extract_frames_ts(video_path, timestamps, config, stop_event, fr,
-                                    frame_vf=frame_vf):
+    mode = config.frame_extract_mode
+    is_ts = "mpegts" in (info.get("format_name") or "")
+    frame_rate = (info.get("video") or {}).get("frame_rate") or 0.0
+    key_set = set(key_ts)
+    aligned = bool(key_ts) and all(t in key_set for t in timestamps)
+
+    # ── 抽帧路由 ──
+    if is_ts and mode == "legacy":
+        # legacy：TS 单 pass 顺序解码（旧行为）
+        for f in _extract_frames_ts(video_path, timestamps, config, stop_event,
+                                    frame_rate, frame_vf=frame_vf):
             if f:
                 frames.append(f)
-    else:
+    elif is_ts:
+        # TS：逐帧
         for ts in timestamps:
-            frame = _extract_frame(video_path, ts, config, stop_event, frame_vf=frame_vf)
+            frame = _extract_frame(video_path, ts, config, stop_event,
+                                   frame_vf=frame_vf, start_time=start_time)
+            if frame:
+                frames.append(frame)
+    elif mode == "auto" and key_ts and aligned:
+        # auto：关键帧点位单进程多段，配帧不齐回退逐帧
+        frames = _extract_frames_concat(video_path, timestamps, config, stop_event,
+                                        frame_rate, frame_vf=frame_vf) or []
+        if not frames:
+            for ts in timestamps:
+                frame = _extract_frame(video_path, ts, config, stop_event,
+                                       frame_vf=frame_vf, start_time=start_time)
+                if frame:
+                    frames.append(frame)
+    else:
+        # per_frame / legacy 非TS / 兜底点位（非关键帧对齐）：逐帧
+        for ts in timestamps:
+            frame = _extract_frame(video_path, ts, config, stop_event,
+                                   frame_vf=frame_vf, start_time=start_time)
             if frame:
                 frames.append(frame)
     return info, frames

@@ -840,6 +840,7 @@ def start_analyze_stream(
 # ── 分析脚本（venv 中执行）──
 _ANALYZE_SCRIPT = _TRT_CORE + r"""
 import base64, io, queue, threading
+from collections import deque
 import numpy as np
 from PIL import Image
 import tensorrt as trt
@@ -1194,10 +1195,47 @@ def _tag_list(scores):
     return [{'name': t, 'score': round(s, 4)}
             for t, s in sorted(scores.items(), key=lambda x: (-x[1], x[0]))]
 
-# ── 预取线程：stdin → 解码/去边/双模型预处理入有界队列 ──
+# ── 预取：stdin 线程解析 → 预处理 worker 池（skip_real 时懒做 tagger 预处理 + 双 worker）──
+_PREFETCH_WORKERS = 2 if skip_real else 1
+_raw_q = queue.Queue(maxsize=2)
 _prefetch_q = queue.Queue(maxsize=2)
+_pending = 0
+_pending_cond = threading.Condition()
 
-def _prefetch_reader():
+def _prep_request(req):
+    '''单视频解码/去边/预处理 → 队列项或错误上报。'''
+    vi = int(req.get('index', 0))
+    name = req.get('name') or f'视频{vi + 1}'
+    b64s = req.pop('frames')
+    del req
+    try:
+        imgs = [f for f in decode_frames(b64s) if f is not None]
+    finally:
+        del b64s
+    if not imgs:
+        return {'report': {'index': vi, 'name': name, 'error': '帧解码失败'}}
+    # 去边/黑帧过滤 + 预处理，逐帧隔离异常（坏帧直接弃）
+    kept = []
+    for f in imgs:
+        try:
+            f = _trim_crop(f)
+            if f is None:
+                continue  # 黑帧
+            c = cls_preprocess(f, cls_runner.in_dtype)
+            if skip_real:
+                kept.append((c, f))
+            else:
+                kept.append((c, tag_preprocess(f, size, tagger_runner.in_dtype)))
+        except Exception:
+            pass
+    if not kept:
+        return {'report': {'index': vi, 'name': name, 'error': '全帧无效'}}
+    item = {'vi': vi, 'name': name, 'cls_xs': [c for c, _ in kept]}
+    item['imgs' if skip_real else 'tag_xs'] = [v for _, v in kept]
+    return item
+
+def _stdin_reader():
+    global _pending
     for _line in sys.stdin:
         _line = _line.strip()
         if not _line:
@@ -1209,87 +1247,143 @@ def _prefetch_reader():
             continue
         if not isinstance(req, dict):
             continue
-        vi = int(req.get('index', 0))
-        name = req.get('name') or f'视频{vi + 1}'
-        b64s = req.get('frames') or []
-        if not b64s:
-            _prefetch_q.put({'report': {'index': vi, 'name': name, 'error': '无帧数据'}})
+        if not req.get('frames'):
+            vi = int(req.get('index', 0))
+            _prefetch_q.put({'report': {'index': vi,
+                                        'name': req.get('name') or f'视频{vi + 1}',
+                                        'error': '无帧数据'}})
             continue
-        try:
-            imgs = [f for f in decode_frames(b64s) if f is not None]
-        finally:
-            del b64s
-        if not imgs:
-            _prefetch_q.put({'report': {'index': vi, 'name': name, 'error': '帧解码失败'}})
-            continue
-        # 去边/黑帧过滤 + 双模型预处理，逐帧隔离异常（坏帧直接弃）
-        kept = []
-        for f in imgs:
-            try:
-                f = _trim_crop(f)
-                if f is None:
-                    continue  # 黑帧
-                kept.append((cls_preprocess(f, cls_runner.in_dtype),
-                             tag_preprocess(f, size, tagger_runner.in_dtype)))
-            except Exception:
-                pass
-        if not kept:
-            _prefetch_q.put({'report': {'index': vi, 'name': name, 'error': '全帧无效'}})
-            continue
-        _prefetch_q.put({'vi': vi, 'name': name,
-                         'cls_xs': [c for c, _ in kept],
-                         'tag_xs': [t for _, t in kept]})
-    _prefetch_q.put(None)  # stdin EOF
+        with _pending_cond:
+            _pending += 1
+        _raw_q.put(req)
+    with _pending_cond:  # stdin EOF：等全部请求出结果后再发哨兵
+        while _pending > 0:
+            _pending_cond.wait(timeout=0.1)
+    _prefetch_q.put(None)
 
-threading.Thread(target=_prefetch_reader, name='prefetch', daemon=True).start()
+def _prefetch_worker():
+    global _pending
+    while True:
+        out = _prep_request(_raw_q.get())
+        _prefetch_q.put(out)
+        with _pending_cond:
+            _pending -= 1
+            _pending_cond.notify_all()
 
-while True:
-    item = _prefetch_q.get()
-    if item is None:
-        break  # stdin EOF
-    if 'report' in item:
-        report(item['report'])
-        continue
+threading.Thread(target=_stdin_reader, name='stdin-reader', daemon=True).start()
+for _i in range(_PREFETCH_WORKERS):
+    threading.Thread(target=_prefetch_worker, name=f'prefetch-{_i}', daemon=True).start()
+
+def _cls_step(item):
+    '''cls 前向 + 中位数判定，返回 (vi, name, anime_score, is_anime)。'''
     vi, name = item['vi'], item['name']
-
-    is_anime = None  # None = 不确定
-    anime_score = 0.0
-    try:
-        scores = _cls_scores(item['cls_xs'])
-    except Exception as e:
-        _fatal(f'预筛推理失败 {name}: {e}')
-    del item['cls_xs']  # CLS 段结束，先释放该视频张量
-    sorted_scores = sorted(scores)
-    n = len(sorted_scores)
-    med = (sorted_scores[n // 2] + sorted_scores[(n - 1) // 2]) / 2
+    scores = _cls_scores(item['cls_xs'])
+    del item['cls_xs']
+    s = sorted(scores)
+    med = (s[len(s) // 2] + s[(len(s) - 1) // 2]) / 2
     if med >= cls_threshold:
         is_anime = True
     elif med <= real_threshold:
         is_anime = False
-    anime_score = round(med, 4)
+    else:
+        is_anime = None
+    return vi, name, round(med, 4), is_anime
 
-    if skip_real and is_anime is False:
-        report({'index': vi, 'name': name, 'anime_score': anime_score,
-                'is_anime': False, 'character_tags': [], 'ip_tags': []})
-        del item['tag_xs']
-        continue
-
-    # ── 标签获取 ──
+def _finish_tags(vi, name, anime_score, is_anime, tag_xs):
+    '''tagger 前向 + 频次规则 + 上报。'''
+    if not tag_xs:
+        report({'index': vi, 'name': name, 'error': '标签获取异常: 无有效帧'})
+        return
     try:
-        char_stats, ip_stats = _tag_stats(item['tag_xs'])
+        char_stats, ip_stats = _tag_stats(tag_xs)
     except Exception as e:
         report({'index': vi, 'name': name, 'error': f'标签获取异常: {e}'})
-        del item['tag_xs']
-        continue
-    del item['tag_xs']
+        return
     ip_scores = _apply_ip_rules(ip_stats)
     char_scores = _char_fallback(_apply_freq_rules(char_stats, char_threshold), ip_scores, char_stats)
-    result = {
+    report({
         'index': vi, 'name': name,
         'character_tags': _tag_list(char_scores),
         'ip_tags': _tag_list(ip_scores),
         'anime_score': anime_score,  # 分类信息（前端角标用）
         'is_anime': is_anime,
-    }
-    report(result)
+    })
+
+if not skip_real:
+    # ── 急切路径：全部视频做 tagger ──
+    while True:
+        item = _prefetch_q.get()
+        if item is None:
+            break  # stdin EOF
+        if 'report' in item:
+            report(item['report'])
+            continue
+        try:
+            vi, name, anime_score, is_anime = _cls_step(item)
+        except Exception as e:
+            _fatal(f'预筛推理失败 {item["name"]}: {e}')
+        _finish_tags(vi, name, anime_score, is_anime, item['tag_xs'])
+else:
+    # ── 懒做路径：判定通过后交后台线程预处理，主循环按序错峰执行 tagger 前向 ──
+    _MAX_INFLIGHT = 3  # 待 tagger 的最大在途视频数（背压上限）
+    _prep_q = queue.Queue()
+    _tag_ready = {}
+    _tag_cond = threading.Condition()
+
+    def _tag_prep_worker():
+        while True:
+            it = _prep_q.get()
+            if it is None:
+                break
+            tag_xs = []
+            for f in it['imgs']:
+                try:
+                    tag_xs.append(tag_preprocess(f, size, tagger_runner.in_dtype))
+                except Exception:
+                    pass
+            del it['imgs']
+            with _tag_cond:
+                _tag_ready[it['vi']] = tag_xs
+                _tag_cond.notify_all()
+
+    threading.Thread(target=_tag_prep_worker, name='tag-prep', daemon=True).start()
+
+    deferred = deque()
+    eof = False
+    while True:
+        # 队首预处理完成 → 立即 tagger 前向（预处理已与其它视频的 cls 重叠）
+        if deferred:
+            with _tag_cond:
+                tag_xs = _tag_ready.pop(deferred[0][0], None)
+            if tag_xs is not None:
+                vi, name, anime_score, is_anime = deferred.popleft()
+                _finish_tags(vi, name, anime_score, is_anime, tag_xs)
+                continue
+        if eof and not deferred:
+            break
+        # 在途满 → 等队首预处理完成
+        if len(deferred) >= _MAX_INFLIGHT:
+            with _tag_cond:
+                _tag_cond.wait_for(lambda: deferred[0][0] in _tag_ready, timeout=0.05)
+            continue
+        try:
+            item = _prefetch_q.get(timeout=0.05)
+        except queue.Empty:
+            continue
+        if item is None:
+            eof = True
+            continue
+        if 'report' in item:
+            report(item['report'])
+            continue
+        try:
+            vi, name, anime_score, is_anime = _cls_step(item)
+        except Exception as e:
+            _fatal(f'预筛推理失败 {item["name"]}: {e}')
+        if is_anime is False:
+            report({'index': vi, 'name': name, 'anime_score': anime_score,
+                    'is_anime': False, 'character_tags': [], 'ip_tags': []})
+            continue
+        deferred.append((vi, name, anime_score, is_anime))
+        _prep_q.put({'vi': vi, 'imgs': item.pop('imgs')})
 """

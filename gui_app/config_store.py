@@ -37,6 +37,7 @@ def _default_config() -> Dict[str, Any]:
             "frames_per_point": 3,
             "frame_max_side": 640,
             "frame_time_tags": 2,
+            "frame_extract_mode": "auto",
         },
         "naming": {
             "naming_mode": "date",

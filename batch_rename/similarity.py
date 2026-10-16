@@ -86,11 +86,10 @@ def _frames_from_raw(raw: bytes, t0: float) -> List[Tuple[float, int]]:
 
 
 def fingerprint_windows(path: str, duration: float,
-                        is_ts: bool, idxs: Sequence[int],
+                        idxs: Sequence[int],
                         stop_event: threading.Event,
                         mode: ScanMode = NORMAL) -> Dict[int, List[Tuple[float, int]]]:
-    """抽取指纹帧 [(t, hash)]：全解码 fps=1 均匀采样。
-    """
+    """抽取指纹帧 [(t, hash)]：短视频整段单次解码；长片按比例多点开窗。"""
     if not ffmpeg_tools.ffmpeg:
         ffmpeg_tools.locate()
     vf = "fps=1,scale=9:8,format=gray"
@@ -100,8 +99,8 @@ def fingerprint_windows(path: str, duration: float,
         stdout, _ = run_subprocess_with_cancel(cmd, timeout, stop_event)
         return _frames_from_raw(stdout or b"", t0)
 
-    # mpegts / 短视频：整段单次解码
-    if is_ts or duration <= mode.short_sec:
+    # 短视频：整段单次解码
+    if duration <= mode.short_sec:
         cmd = ["-i", path, "-vf", vf, *raw_out]
         return {0: run([ffmpeg_tools.ffmpeg, "-y", *cmd], 0.0, _FULL_TIMEOUT)}
     result: Dict[int, List[Tuple[float, int]]] = {}
