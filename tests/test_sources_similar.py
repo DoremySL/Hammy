@@ -204,7 +204,7 @@ class TestSimilarScanFlow(_SimilarTestBase):
         good = {i: _const_frames(0xF0F0, 10) for i in range(5)}
         bad = {i: _const_frames(0x111 << 20, 10) for i in range(5)}
 
-        def fake_fp(path, duration, is_ts, idxs, stop, mode=None):
+        def fake_fp(path, duration, idxs, stop, start_time=0.0, mode=None):
             src_frames = good if path in (a, b) else bad
             return {i: list(src_frames[i]) for i in idxs}
 
@@ -221,7 +221,7 @@ class TestSimilarScanFlow(_SimilarTestBase):
         self._patch_discovery([a, b], metas)
         started = threading.Event()
 
-        def blocking_fp(path, duration, is_ts, idxs, stop, mode=None):
+        def blocking_fp(path, duration, idxs, stop, start_time=0.0, mode=None):
             started.set()
             stop.wait(5)                          # 挂起直到取消（或 5s 超时兜底）
             return {i: [] for i in idxs}
