@@ -361,11 +361,10 @@ async function renderPromptsTabWrapper() {
   const body = $('#modal-body');
   await renderTabWithLoading(body,
     async () => {
-      const presets = await apiCall('list_presets');
-      const active = await apiCall('get_active_preset');
-      state.active_preset_id = active.preset.id;
-      state.pvUseExample = !!active.use_example;
-      return { presets, preset: active.preset };
+      const page = await apiCall('get_prompts_page');
+      state.active_preset_id = page.active.preset.id;
+      state.pvUseExample = !!page.active.use_example;
+      return { presets: page.presets, preset: page.active.preset };
     },
     (data) => renderPromptsTab(data.presets, data.preset),
     () => renderSettings()

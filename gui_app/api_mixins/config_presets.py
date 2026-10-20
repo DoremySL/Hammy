@@ -27,6 +27,10 @@ class ConfigPresetMixin:
     def get_active_preset(self) -> Dict[str, Any]:
         return prompts.get_active()
 
+    def get_prompts_page(self) -> Dict[str, Any]:
+        """提示词页聚合数据：全部模板 + 当前激活（共用一次读盘）。"""
+        return prompts.get_prompts_page()
+
     def get_preset(self, pid: str) -> Dict[str, Any]:
         p = prompts.get_preset(pid)
         return p if p else {"error": "预设不存在"}
@@ -43,14 +47,14 @@ class ConfigPresetMixin:
     def set_prompt_use_example(self, enabled: bool) -> Dict[str, Any]:
         """设置拼接提示词时是否附带示例段（默认关闭；模板中保存的示例内容不受影响）。"""
         config_store.update_config(
-            lambda cfg: cfg.update(prompt_use_example=bool(enabled)) or cfg)
+            lambda cfg: cfg.update(prompt_use_example=bool(enabled)))
         return {"ok": True, "use_example": bool(enabled)}
 
     def set_prompt_thumb_optimize(self, enabled: bool) -> Dict[str, Any]:
         """设置是否启用缩略图优化（注入 thumb_time 字段并据其重生成封面）。"""
         config_store.update_config(
             lambda cfg: cfg.setdefault("video", {}).update(
-                frame_time_tags=2 if enabled else 0) or cfg)
+                frame_time_tags=2 if enabled else 0))
         return {"ok": True, "thumb_optimize": bool(enabled)}
 
     def preview_prompt(self, fields: Dict[str, Any]) -> Dict[str, Any]:

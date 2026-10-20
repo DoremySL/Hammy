@@ -353,10 +353,8 @@ async function exportSrtTranslated(ids) {
   if (!videos.length) { toast('未选中有效视频', 'err'); return; }
   await ensureTranscribed(ids);
   if (state.llamaIntegration && !state.aiConnected) {
-    toast(state.llamaStarting
-      ? '本地推理服务启动中，请稍候再试'
-      : '本地推理服务未运行，请先在本地推理页启动服务', 'err');
-    return;
+    const ok = await ensureLlamaReady();
+    if (!ok) return;
   }
   if (state.gpuBusy) { toast('GPU 正忙，请等待当前操作完成', 'err'); return; }
   const items = videos.map(v => [v.id, v.path]);

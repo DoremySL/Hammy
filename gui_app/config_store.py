@@ -10,7 +10,7 @@ from .workspace_paths import (
     PIXAI_CONFIG_FILE,
     WHISPER_CONFIG_FILE,
 )
-from .workspace_store import NO_WRITE, read_json, read_json_cached, update_json
+from .workspace_store import NO_WRITE, read_json_cached, update_json
 
 
 # ── 默认配置 ──
@@ -96,9 +96,9 @@ def save_config(data: Dict[str, Any]) -> Dict[str, Any]:
         pixai = {_PIXAI_KEY_MAP_REV[k]: v for k, v in exp.items() if k in _PIXAI_KEY_MAP_REV}
         whisper = {_WHISPER_KEY_MAP_REV[k]: v for k, v in exp.items() if k in _WHISPER_KEY_MAP_REV}
         if pixai:
-            update_pixai_config(lambda c: c.update(pixai) or c)
+            update_pixai_config(lambda c: c.update(pixai))
         if whisper:
-            update_whisper_config(lambda c: c.update(whisper) or c)
+            update_whisper_config(lambda c: c.update(whisper))
         # 剩余非模块键（如有）仍走 config.json
         rest = {k: v for k, v in exp.items()
                 if k not in _PIXAI_KEY_MAP_REV and k not in _WHISPER_KEY_MAP_REV
@@ -123,12 +123,13 @@ def save_config(data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def update_config(mutator: Callable[[Dict[str, Any]], Dict[str, Any]]) -> Dict[str, Any]:
-    """原子读-改-写 config.json。"""
+    """原子读-改-写 config.json（mutator 可原地修改后返回 None）。"""
     def _wrapped(current):
         if not isinstance(current, dict):
             current = _default_config()
         _fill_defaults(current)
-        return mutator(current)
+        result = mutator(current)
+        return current if result is None else result
 
     return update_json(CONFIG_FILE, _wrapped)
 
@@ -168,8 +169,8 @@ _LLAMA_KEYS = frozenset({"llama_enabled", "llama_integrate"})
 
 def _pixai_defaults() -> Dict[str, Any]:
     """pixai 模块配置默认值（文件缺失/损坏时的兜底）。"""
-    return {"enabled": False, "classify": True, "frames": 15, "threshold": 0.66,
-            "output_zh": True, "variant": "448-ft",
+    return {"enabled": False, "classify": True, "frames": 15, "threshold": 0.75,
+            "output_zh": True, "variant": "448-Hammy", "precision": "",
             "prompt_scope": "char", "recall_scope": "char"}
 
 
@@ -183,10 +184,9 @@ def _whisper_defaults() -> Dict[str, Any]:
 def load_pixai_config() -> Dict[str, Any]:
     """读取 pixai-tagger 模块配置。文件不存在/损坏时返回默认值（enabled=False）。
     只保留当前 schema 内的键（丢弃旧版本的遗留键，如 precision）。"""
-    data = read_json(PIXAI_CONFIG_FILE, {})
+    data = read_json_cached(PIXAI_CONFIG_FILE)
     merged = dict(_pixai_defaults())
-    if isinstance(data, dict):
-        merged.update({k: v for k, v in data.items() if k in merged})
+    merged.update({k: v for k, v in data.items() if k in merged})
     return merged
 
 
@@ -195,35 +195,36 @@ def update_pixai_config(
 ) -> Dict[str, Any]:
     """原子读-改-写 pixai 模块配置（与 config.json 同一 RLock 互斥）。
 
-    mutator 接收已补全默认值的配置 dict，就地修改后返回。
+    mutator 接收已补全默认值的配置 dict，就地修改后返回（或返回 None 表示原地修改）。
     """
     def _wrapped(current):
         current = current if isinstance(current, dict) else {}
         merged = dict(_pixai_defaults())
         merged.update(current)
-        return mutator(merged)
+        result = mutator(merged)
+        return merged if result is None else result
 
     return update_json(PIXAI_CONFIG_FILE, _wrapped, default_factory=dict)
 
 
 def load_whisper_config() -> Dict[str, Any]:
     """读取 faster-whisper 模块配置。文件不存在/损坏时返回默认值（enabled=False）。"""
-    data = read_json(WHISPER_CONFIG_FILE, {})
+    data = read_json_cached(WHISPER_CONFIG_FILE)
     merged = dict(_whisper_defaults())
-    if isinstance(data, dict):
-        merged.update(data)
+    merged.update(data)
     return merged
 
 
 def update_whisper_config(
     mutator: Callable[[Dict[str, Any]], Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """原子读-改-写 whisper 模块配置。"""
+    """原子读-改-写 whisper 模块配置（mutator 可原地修改后返回 None）。"""
     def _wrapped(current):
         current = current if isinstance(current, dict) else {}
         merged = dict(_whisper_defaults())
         merged.update(current)
-        return mutator(merged)
+        result = mutator(merged)
+        return merged if result is None else result
 
     return update_json(WHISPER_CONFIG_FILE, _wrapped, default_factory=dict)
 
@@ -236,8 +237,12 @@ def load_llama_config() -> Dict[str, Any]:
 def update_llama_config(
     mutator: Callable[[Dict[str, Any]], Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """原子读-改-写 llama 全局配置（与 config.json 同一 RLock 互斥）。"""
-    return update_json(LLAMA_CONFIG_FILE, mutator, default_factory=dict)
+    """原子读-改-写 llama 全局配置（与 config.json 同一 RLock 互斥；mutator 可原地修改后返回 None）。"""
+    def _wrapped(current):
+        result = mutator(current)
+        return current if result is None else result
+
+    return update_json(LLAMA_CONFIG_FILE, _wrapped, default_factory=dict)
 
 
 def load_llama_model_configs() -> Dict[str, Any]:
@@ -248,19 +253,26 @@ def load_llama_model_configs() -> Dict[str, Any]:
 def update_llama_model_configs(
     mutator: Callable[[Dict[str, Any]], Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """原子读-改-写 per-model 配置（与 config.json 同一 RLock 互斥）。"""
+    """原子读-改-写 per-model 配置（与 config.json 同一 RLock 互斥；mutator 可原地修改后返回 None）。"""
+    def _wrapped(current):
+        result = mutator(current)
+        return current if result is None else result
+
     return update_json(
-        LLAMA_MODEL_CONFIGS_FILE, mutator, default_factory=dict
+        LLAMA_MODEL_CONFIGS_FILE, _wrapped, default_factory=dict
     )
 
 
 def _assemble_experimental(cfg: Dict[str, Any]) -> None:
-    """把三个模块文件夹的配置合成 experimental 段（前端读取结构不变）。"""
+    """把三个模块文件夹的配置合成 experimental 段（前端读取结构不变）；
+    未映射键（如 precision 内部状态）不进设置段。"""
     exp = cfg.setdefault("experimental", {})
     for k, v in load_pixai_config().items():
-        exp[_PIXAI_KEY_MAP.get(k, k)] = v
+        if k in _PIXAI_KEY_MAP:
+            exp[_PIXAI_KEY_MAP[k]] = v
     for k, v in load_whisper_config().items():
-        exp[_WHISPER_KEY_MAP.get(k, k)] = v
+        if k in _WHISPER_KEY_MAP:
+            exp[_WHISPER_KEY_MAP[k]] = v
     llama = load_llama_config()
     exp["llama_enabled"] = bool(llama.get("enabled", False))
     exp["llama_integrate"] = bool(llama.get("integrate", False))

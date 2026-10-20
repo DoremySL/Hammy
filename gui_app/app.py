@@ -128,7 +128,7 @@ def _save_window_geometry(geo: dict) -> None:
     """保存窗口几何到 _workspace/config.json（原子读-改-写，不与设置保存互覆盖）。"""
     try:
         from gui_app import config_store
-        config_store.update_config(lambda cfg: cfg.update(window_geometry=geo) or cfg)
+        config_store.update_config(lambda cfg: cfg.update(window_geometry=geo))
     except Exception as e:
         sys.stderr.write(f"[app] 窗口几何保存失败: {e}\n")
 

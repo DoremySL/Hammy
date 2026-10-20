@@ -244,7 +244,7 @@ def install_dependencies(pypi_mirror: str = DEFAULT_PYPI_MIRROR,
         return {"ok": False, "error": f"模型下载失败: {dl.get('error') or '未知错误'}"}
     try:
         from .config_store import update_whisper_config
-        update_whisper_config(lambda c: c.update(model=model_key) or c)
+        update_whisper_config(lambda c: c.update(model=model_key))
         _log(f"当前模型已设为: {WHISPER_MODELS[model_key]['title']}", log_fn)
     except Exception as e:
         _log(f"设置当前模型失败（忽略）: {e}", log_fn)

@@ -40,14 +40,12 @@ MODEL_DIR = PIXAI_TAGGER_DIR / "models"  # 模型根目录（hf 布局）
 MAIN_REPO = "DoremySL/pixai-tagger-v1.0-onnx-1008-672-336-ft"
 CLS_REPO = "deepghs/anime_real_cls"  # 二次元/真实二分类预筛模型
 
-TAG_THRESHOLD = 0.66
-CHAR_FREQ_WEIGHT = 0.1  # 角色得分频次权重
+TAG_THRESHOLD = 0.75
 ANIME_CLS_THRESHOLD = 0.72  # 预筛二次元阈值（按帧分数中位数）
-REAL_CLS_THRESHOLD = 0.50  # 预筛真实阈值
 
-# 模型版本（仓库子目录）：A = 448-ft，B = 448-Hammy
-VARIANTS = ("448-ft", "448-Hammy")
-DEFAULT_VARIANT = "448-ft"
+# 模型版本（仓库子目录）
+VARIANTS = ("448-Hammy",)
+DEFAULT_VARIANT = "448-Hammy"
 INPUT_SIZE = 448  # 模型输入边长
 
 # 仓库内路径规则：<variant>/onnx/fp16.onnx 或 fp32.onnx(+.data)
@@ -79,20 +77,14 @@ def normalize_variant(value: Any) -> str:
 
 
 def get_mirrors_info() -> Dict[str, Any]:
-    """返回 pixai 安装弹窗数据（版本/站点/GPU 检测）。"""
+    """返回 pixai 安装弹窗数据（站点/GPU 检测）。"""
     gpu = installer.detect_gpu()
     return {
-        "versions": [
-            {"id": "448-ft", "name": "A · 448-ft", "desc": "角色/IP 校准的微调模型", "size_label": "约 1 GB"},
-            {"id": "448-Hammy", "name": "B · 448-Hammy", "desc": "Hammy 微调版", "size_label": "约 1 GB"},
-        ],
-        "sites": [{"id": k, "name": v["name"], "desc": v["desc"]}
+        "sites": [{"id": k, "name": v["name"], "desc": installer.mirror_host(v["pypi"])}
                   for k, v in installer.TRT_SITES.items()],
         "default_site": installer.DEFAULT_TRT_SITE,
         "gpu": gpu,
         "gpu_issue": installer.trt_gpu_issue(gpu),
-        "pypi": [{"id": k, "name": v["name"], "url": v["url"]} for k, v in installer.PYPI_MIRRORS.items()],
-        "default_pypi": installer.DEFAULT_PYPI_MIRROR,
     }
 
 
@@ -147,49 +139,43 @@ def resolve_precision(setting: str = "auto", gpu: Optional[Dict[str, Any]] = Non
     return "fp32"
 
 
-_zh_cache: Dict[str, Any] = {}
+_zh_cache: Dict[str, Any] = {"mtime": None, "map": {}}
 
 
 def load_tag_zh() -> Dict[str, str]:
     """标签中文翻译表（danbooru 标签 → 中文名）。"""
+    global _zh_cache
     path = MODEL_DIR / MAIN_REPO / TAG_ZH_FILE
     try:
         mtime = path.stat().st_mtime
     except OSError:
-        _zh_cache.clear()
+        _zh_cache = {"mtime": None, "map": {}}
         return {}
-    if _zh_cache.get("mtime") != mtime:
+    if _zh_cache["mtime"] != mtime:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             m = data.get("map") if isinstance(data, dict) else None
             zh = {str(k): str(v) for k, v in m.items() if v} if isinstance(m, dict) else {}
         except Exception:
             zh = {}
-        _zh_cache.clear()
-        _zh_cache["mtime"] = mtime
-        _zh_cache["map"] = zh
+        _zh_cache = {"mtime": mtime, "map": zh}
     return _zh_cache["map"]
 
 
 def get_status() -> Dict[str, Any]:
-    """获取 pixai-tagger 安装状态。"""
+    """获取 pixai-tagger 安装状态（精度读安装时写入的配置值）。"""
     from .config_store import load_pixai_config
     venv_python = venv_python_path(VENV_DIR)
     venv_ok = VENV_DIR.is_dir() and venv_python.exists()
-    variant = normalize_variant(load_pixai_config().get("variant"))
-    precision = installed_precision(variant)
-    d = _tagger_dir(variant)
-    model_exists = precision is not None and all((d / n).is_file() for n in _onnx_files(precision))
-    engine_ok = model_exists and _tagger_engine_path(variant, precision).is_file()
+    cfg = load_pixai_config()
+    variant = normalize_variant(cfg.get("variant"))
+    precision = cfg.get("precision") or None
+    model_exists = precision is not None and all(
+        (_tagger_dir(variant) / n).is_file() for n in _onnx_files(precision))
     return {
         "dir_exists": PIXAI_TAGGER_DIR.is_dir(),
-        "venv_exists": venv_ok,
-        "model_exists": model_exists,
-        "engine_exists": engine_ok,
-        "variant": variant,
         "precision": precision or "",
         "ready": venv_ok and model_exists,
-        "dir_path": str(PIXAI_TAGGER_DIR),
     }
 
 
@@ -232,7 +218,7 @@ def install_dependencies(
         return r
     if not uv:
         return {"ok": False, "error": "UV 安装失败"}
-    if not VENV_DIR.is_dir():
+    if not venv_python_path(VENV_DIR).exists():
         rc, out = _run_subprocess_streaming(
             [uv, "venv", str(VENV_DIR), "--python", PYTHON_EXE],
             UV_TIMEOUT_SEC, log_fn, stop_event,
@@ -279,16 +265,13 @@ def install_dependencies(
     try:
         last_pct = {"v": -1}
 
-        def _dl_log(msg: str):
-            _log(msg, log_fn)
-
         def _model_progress(ev: Dict[str, Any]):
             if ev.get("type") == "progress" and ev.get("total") and ev.get("pct") is not None:
                 pct5 = int(ev["pct"] * 100 // 5)
                 if pct5 > last_pct["v"]:
                     last_pct["v"] = pct5
-                _log(f"  {Path(ev['file']).name} {int(ev['pct'] * 100)}%"
-                     f"（{fmt_size(ev['done'])}/{fmt_size(ev['total'])}）", log_fn)
+                    _log(f"  {Path(ev['file']).name} {int(ev['pct'] * 100)}%"
+                         f"（{fmt_size(ev['done'])}/{fmt_size(ev['total'])}）", log_fn)
                 steps.push(4, ((ev.get("idx", 1) - 1) + ev["pct"]) / max(1, ev.get("count", 1)))
             elif ev.get("type") in ("file_done", "file_skip"):
                 steps.push(4, ev.get("idx", 0) / max(1, ev.get("count", 1)))
@@ -303,7 +286,7 @@ def install_dependencies(
         _log(f"━━ 步骤 4/6：从魔搭下载 PixAI Tagger ONNX 模型（{variant} · {precision.upper()}）━━", log_fn)
         dl = models_downloader.download_files(
             "ms", MAIN_REPO, [*tagger_model_files(variant, precision), TAG_ZH_FILE],
-            str(MODEL_DIR), log_fn=_dl_log, progress_cb=_model_progress,
+            str(MODEL_DIR), log_fn=lambda m: _log(m, log_fn), progress_cb=_model_progress,
             cancel_event=stop_event, cleanup_on_cancel=True)
         if dl.get("cancelled"):
             return {"ok": False, "cancelled": True, "error": "模型下载已取消"}
@@ -318,7 +301,7 @@ def install_dependencies(
         _log("━━ 步骤 5/6：下载二次元预筛模型（anime_real_cls，约 17MB）━━", log_fn)
         cls_dl = models_downloader.download_files(
             "ms", CLS_REPO, [f"{_CLS_MODEL_SUBDIR}/{_CLS_ONNX_FILE}"],
-            str(MODEL_DIR), log_fn=_dl_log, progress_cb=_cls_progress,
+            str(MODEL_DIR), log_fn=lambda m: _log(m, log_fn), progress_cb=_cls_progress,
             cancel_event=stop_event, cleanup_on_cancel=True)
         if cls_dl.get("cancelled"):
             return {"ok": False, "cancelled": True, "error": "安装已取消"}
@@ -339,7 +322,7 @@ def install_dependencies(
         return {"ok": False, "error": err}
 
     from .config_store import update_pixai_config
-    update_pixai_config(lambda c: c.update(variant=variant) or c)
+    update_pixai_config(lambda c: c.update(variant=variant, precision=precision))
     _log("━━ 全部完成 ━━", log_fn)
     return {"ok": True, "error": None}
 
@@ -414,17 +397,14 @@ def _build_engines(variant: str, precision: str, *, gpu_name: str = "",
         if isinstance(obj, dict) and obj.get("log"):
             _log(str(obj["log"]), log_fn)
 
-    from .llama_cpp import pause_for_task, resume_after_task
+    from .llama_cpp import pause_for_task
     pause_for_task(log_fn=log_fn)  # 让出显存
-    try:
-        rc, _last, err_tail = _run_venv_script(
-            VENV_DIR, _TRT_BUILD_SCRIPT,
-            {"jobs": jobs, "gpu_name": gpu_name, "variant": variant,
-             "precision": precision, "cls_shape": list(_CLS_SHAPE_RANGE),
-             "meta_file": str(MODEL_DIR / MAIN_REPO / _ENGINE_META_FILE)},
-            timeout=_BUILD_TIMEOUT_SEC, stop_event=stop_event, on_line=_on_line)
-    finally:
-        resume_after_task(log_fn=log_fn)
+    rc, _last, err_tail = _run_venv_script(
+        VENV_DIR, _TRT_BUILD_SCRIPT,
+        {"jobs": jobs, "gpu_name": gpu_name, "variant": variant,
+         "precision": precision, "cls_shape": list(_CLS_SHAPE_RANGE),
+         "meta_file": str(MODEL_DIR / MAIN_REPO / _ENGINE_META_FILE)},
+        timeout=_BUILD_TIMEOUT_SEC, stop_event=stop_event, on_line=_on_line)
     if stop_event is not None and stop_event.is_set():
         return "安装已取消"
     if rc != 0:
@@ -452,8 +432,8 @@ def _add_nvidia_dll_dirs():
 
 _add_nvidia_dll_dirs()
 
-def plog(msg):
-    print(json.dumps({'log': str(msg)}, ensure_ascii=False), flush=True)
+def plog(msg, **extra):
+    print(json.dumps({'log': str(msg), **extra}, ensure_ascii=False), flush=True)
 
 def _stage_ascii(onnx_path):
     """把 ONNX 与外部权重拷到 ASCII 临时目录。"""
@@ -598,12 +578,9 @@ class AnalyzeStream:
 
     def __init__(self, params: Dict[str, Any], video_count: int,
                  stop_event=None,
-                 on_log: Optional[Callable[[str], None]] = None,
-                 on_video_result: Optional[Callable[[Dict[str, Any]], None]] = None):
+                 on_log: Optional[Callable[[str], None]] = None):
         self.stop_event = stop_event
         self.on_log = on_log
-        self.on_video_result = on_video_result
-        self.per_video: List[Dict[str, Any]] = []
         self.broken = False  # 子进程异常/停止/超时后置位
         self._deadline = time.time() + _inference_timeout(video_count)
         self._result_q: "queue.Queue[Optional[Dict[str, Any]]]" = queue.Queue()
@@ -650,6 +627,8 @@ class AnalyzeStream:
                         continue
                     if not isinstance(obj, dict):
                         continue
+                    if obj.get("engine_rebuild"):  # 现场重建引擎 → 顺延推理期限
+                        self._deadline += _BUILD_TIMEOUT_SEC
                     if obj.get("log"):
                         if self.on_log is not None:
                             try:
@@ -657,14 +636,7 @@ class AnalyzeStream:
                             except Exception:
                                 pass
                     elif "video_result" in obj and isinstance(obj["video_result"], dict):
-                        vr = obj["video_result"]
-                        self.per_video.append(vr)
-                        if self.on_video_result is not None:
-                            try:
-                                self.on_video_result(vr)
-                            except Exception:
-                                pass
-                        self._result_q.put(vr)
+                        self._result_q.put(obj["video_result"])
                     elif obj.get("error"):
                         self._error = str(obj["error"])
             except Exception:
@@ -685,8 +657,12 @@ class AnalyzeStream:
         self._err_thread.start()
 
     def send(self, item: Dict[str, Any]) -> bool:
-        """发送一个视频请求，子进程已退出时返回 False。"""
+        """发送一个视频请求，子进程已退出或推理超时返回 False。"""
         if self.broken or self.p.poll() is not None:
+            return False
+        if time.time() > self._deadline:  # 超时后不再发送，防管道阻塞无限等
+            self.broken = True
+            self._error = "推理超时"
             return False
         try:
             assert self.p.stdin is not None
@@ -711,10 +687,7 @@ class AnalyzeStream:
             try:
                 vr = self._result_q.get(timeout=0.25)
             except queue.Empty:
-                if self.p.poll() is not None:
-                    self.broken = True
-                    return None
-                continue
+                continue  # 只信 EOF 哨兵，避免 poll 竞态丢尾部结果
             if vr is None:  # stdout EOF
                 self.broken = True
                 return None
@@ -734,26 +707,18 @@ class AnalyzeStream:
         return vr
 
     def close(self) -> Dict[str, Any]:
-        """关闭子进程并回收。
-
-        Returns: {"ok": bool, "per_video": [...], "error": str|None}
-        """
+        """关闭子进程并回收。Returns: {"ok": bool, "error": str|None}。"""
         stopped = self.stop_event is not None and self.stop_event.is_set()
-        if stopped:
+        if stopped or self.broken:
             try:
                 _terminate_proc(self.p, wait_sec=1.0)
             except Exception:
                 pass
-        elif not self.broken:
+        else:
             try:
                 if self.p.stdin is not None:
                     self.p.stdin.close()
             except (OSError, ValueError):
-                pass
-        else:
-            try:
-                _terminate_proc(self.p)
-            except Exception:
                 pass
         if stopped:
             wait_sec = 2.0
@@ -767,6 +732,7 @@ class AnalyzeStream:
             _terminate_proc(self.p)
         try:
             self._out_thread.join(timeout=join_sec)
+            self._err_thread.join(timeout=join_sec)
         except Exception:
             pass
         unregister_subprocess(self.p)
@@ -777,28 +743,25 @@ class AnalyzeStream:
 
         rc = self.p.returncode if self.p.returncode is not None else -1
         if self.stop_event is not None and self.stop_event.is_set():
-            return {"ok": False, "per_video": self.per_video, "error": "已停止"}
-        if time.time() > self._deadline:
-            return {"ok": False, "per_video": self.per_video, "error": "推理超时"}
+            return {"ok": False, "error": "已停止"}
         if rc != 0:
-            tail = self._error or "\n".join(list(self._err_tail)[-20:])
-            return {"ok": False, "per_video": self.per_video,
+            if self._error:
+                return {"ok": False, "error": self._error}
+            tail = "\n".join(list(self._err_tail)[-20:])
+            return {"ok": False,
                     "error": f"推理失败: {tail[-500:] if tail else '子进程异常退出'}"}
-        return {"ok": True, "per_video": self.per_video, "error": None}
+        return {"ok": True, "error": None}
 
 
 def start_analyze_stream(
     video_count: int,
     skip_real: bool = True,
     anime_threshold: float = ANIME_CLS_THRESHOLD,
-    real_threshold: float = REAL_CLS_THRESHOLD,
     tag_threshold: float = TAG_THRESHOLD,
     ip_threshold: float = TAG_THRESHOLD,
-    char_freq_weight: float = CHAR_FREQ_WEIGHT,
     variant: str = DEFAULT_VARIANT,
     stop_event=None,
     on_log: Optional[Callable[[str], None]] = None,
-    on_video_result: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Optional[AnalyzeStream]:
     """启动交互式分析子进程。"""
     status = get_status()
@@ -815,24 +778,23 @@ def start_analyze_stream(
     if cls_onnx is None:
         return None  # 预筛模型缺失
     params = {
-        "repo_dir": str(MODEL_DIR / MAIN_REPO),
         "tagger_dir": str(tagger_dir),
         "variant": variant,
         "cls_model_path": str(cls_onnx),
+        "cls_engine_path": str(MODEL_DIR / MAIN_REPO / _CLS_ENGINE_NAME),
+        "meta_file": str(MODEL_DIR / MAIN_REPO / _ENGINE_META_FILE),
         "cls_shape": list(_CLS_SHAPE_RANGE),
         "size": INPUT_SIZE,
         "precision": prec,
         "skip_real": skip_real,
         "anime_threshold": anime_threshold,
-        "real_threshold": real_threshold,
         "tag_threshold": tag_threshold,
         "ip_threshold": ip_threshold,
-        "char_freq_weight": char_freq_weight,
+        "workspace_gb": _TRT_WORKSPACE_GB,
     }
     try:
         return AnalyzeStream(params, video_count,
-                             stop_event=stop_event, on_log=on_log,
-                             on_video_result=on_video_result)
+                             stop_event=stop_event, on_log=on_log)
     except Exception:
         return None
 
@@ -860,19 +822,17 @@ def _cerr(res):
 with open(sys.argv[1], 'r', encoding='utf-8') as f:
     params = json.load(f)
 
-model_dir = Path(params['repo_dir'])
 tagger_dir = Path(params['tagger_dir'])
 cls_onnx = Path(params.get('cls_model_path') or '')
-cls_engine_path = model_dir / 'cls_384.trt'
-meta_file = model_dir / 'engine_meta.json'
+cls_engine_path = Path(params['cls_engine_path'])
+meta_file = Path(params['meta_file'])
 skip_real = bool(params.get('skip_real', True))
 cls_threshold = float(params.get('anime_threshold', 0.72))
-real_threshold = float(params.get('real_threshold', 0.50))
-char_threshold = float(params.get('tag_threshold', 0.66))
-ip_threshold = float(params.get('ip_threshold', 0.66))
-char_freq_w = float(params.get('char_freq_weight', 0.1))
-char_prefilter = char_threshold * 0.3  # 低阈值预筛，加权规则再按正式阈值过滤
-ip_prefilter = ip_threshold * 0.3
+real_threshold = 0.50  # cls 灰区下限：med 低于此直接判真实
+char_threshold = float(params.get('tag_threshold', 0.75))
+ip_threshold = float(params.get('ip_threshold', 0.75))
+char_freq_w = 0.1  # 频次加权系数
+char_prefilter = char_threshold * 0.4  # 角色初筛：低阈值预筛，加权规则再按正式阈值过滤
 size = int(params.get('size') or 448)
 precision = str(params.get('precision') or 'fp16')
 workspace_gb = float(params.get('workspace_gb') or 4)
@@ -932,7 +892,7 @@ if not (_base_fresh and _tag.get('variant') == params.get('variant')
     if not onnx_file.is_file():
         _fatal(f'缺少 {onnx_file.name}，请重新安装 pixai-tagger')
     tagger_engine.unlink(missing_ok=True)  # 删除过期引擎
-    plog('TRT 引擎缺失或与当前 GPU/TRT 版本不符，正在构建…')
+    plog('TRT 引擎缺失或与当前 GPU/TRT 版本不符，正在构建…', engine_rebuild=True)
     try:
         trt_build(onnx_file, tagger_engine, workspace_gb)
         _write_engine_meta()
@@ -1034,6 +994,7 @@ if not (_base_fresh and list(((_meta.get('cls') or {}).get('shape') or [])) == l
     cls_engine_path.unlink(missing_ok=True)  # 删除过期引擎
     if not cls_onnx.is_file():
         _fatal('预筛模型缺失，请重新安装 pixai-tagger')
+    plog('预筛引擎缺失或指纹过期，正在构建…', engine_rebuild=True)
     try:
         trt_build(cls_onnx, cls_engine_path, workspace_gb, shape_range=cls_shape)
         _write_engine_meta()
@@ -1164,20 +1125,22 @@ def _apply_freq_rules(stats, threshold):
 _EXCLUDED_IP = frozenset(('original', 'real_life'))
 
 def _apply_ip_rules(ip_stats):
-    '''IP 标签：与角色同规则过滤后，只留最高分（同分并列输出，不计次数）。'''
+    '''IP 标签：入池需单帧过正式阈值，加权分仅用于排名，只留加权分最高者（同分并列输出）。'''
     cand = {t: (cnt, mx) for t, (cnt, mx) in ip_stats.items()
-            if t not in _EXCLUDED_IP
-            and mx + (cnt - 1) * char_freq_w > ip_threshold}
+            if t not in _EXCLUDED_IP}
     if not cand:
         return {}
-    top = max(mx for _, mx in cand.values())
-    return {t: mx for t, (_, mx) in cand.items() if mx == top}
+    top = max(mx + (cnt - 1) * char_freq_w for cnt, mx in cand.values())
+    return {t: mx for t, (cnt, mx) in cand.items()
+            if mx + (cnt - 1) * char_freq_w == top}
 
 def _char_fallback(char_scores, ip_scores, char_stats):
-    '''IP 命中且角色全空时，补输出最高置信度角色。'''
+    '''IP 命中且角色全空时，预筛池最高分角色加 0.1，仍需过阈值。'''
     if ip_scores and not char_scores and char_stats:
         best = min(char_stats.items(), key=lambda kv: (-kv[1][1], kv[0]))
-        return {best[0]: best[1][1]}
+        score = best[1][1] + char_freq_w
+        if score > char_threshold:
+            return {best[0]: score}
     return char_scores
 
 def _tag_stats(tag_xs):
@@ -1187,7 +1150,7 @@ def _tag_stats(tag_xs):
         logits = tagger_runner.run(x)[0]
         probs = 1.0 / (1.0 + np.exp(-logits.astype(np.float32)))
         _accum_stats(char_stats, probs, *_seg_off['character'], char_prefilter)
-        _accum_stats(ip_stats, probs, *_seg_off['copyright'], ip_prefilter)
+        _accum_stats(ip_stats, probs, *_seg_off['copyright'], ip_threshold)  # IP 不过预筛，直接正式阈值
     return char_stats, ip_stats
 
 def _tag_list(scores):
@@ -1199,8 +1162,6 @@ def _tag_list(scores):
 _PREFETCH_WORKERS = 2 if skip_real else 1
 _raw_q = queue.Queue(maxsize=2)
 _prefetch_q = queue.Queue(maxsize=2)
-_pending = 0
-_pending_cond = threading.Condition()
 
 def _prep_request(req):
     '''单视频解码/去边/预处理 → 队列项或错误上报。'''
@@ -1235,7 +1196,6 @@ def _prep_request(req):
     return item
 
 def _stdin_reader():
-    global _pending
     for _line in sys.stdin:
         _line = _line.strip()
         if not _line:
@@ -1253,22 +1213,15 @@ def _stdin_reader():
                                         'name': req.get('name') or f'视频{vi + 1}',
                                         'error': '无帧数据'}})
             continue
-        with _pending_cond:
-            _pending += 1
         _raw_q.put(req)
-    with _pending_cond:  # stdin EOF：等全部请求出结果后再发哨兵
-        while _pending > 0:
-            _pending_cond.wait(timeout=0.1)
+    _raw_q.join()  # stdin EOF：等全部请求出结果后再发哨兵
     _prefetch_q.put(None)
 
 def _prefetch_worker():
-    global _pending
     while True:
         out = _prep_request(_raw_q.get())
         _prefetch_q.put(out)
-        with _pending_cond:
-            _pending -= 1
-            _pending_cond.notify_all()
+        _raw_q.task_done()
 
 threading.Thread(target=_stdin_reader, name='stdin-reader', daemon=True).start()
 for _i in range(_PREFETCH_WORKERS):

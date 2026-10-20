@@ -1,6 +1,8 @@
 """工具函数：文件 I/O、终端显示。"""
 import os
 import platform
+import shutil
+import stat
 from pathlib import Path
 from typing import Tuple, Union
 
@@ -36,6 +38,14 @@ def rename_file(src: str, dst: str) -> Tuple[bool, str]:
     except OSError as e:
         logger.error(f"系统重命名失败: {e}")
         return False, str(e)
+
+
+def force_rmtree(path: Union[str, Path]) -> None:
+    """rmtree，Windows 只读文件先去只读位再删。"""
+    def _onexc(func, p, _exc):
+        os.chmod(p, stat.S_IWRITE)
+        func(p)
+    shutil.rmtree(path, onexc=_onexc)
 
 
 # ═══ 安全类型转换 ═════════════════════════════════════════════

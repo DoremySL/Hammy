@@ -23,6 +23,7 @@ from .installer import detect_gpu, pick_cuda_version, start_cancel_watcher, Inst
 from .js_push import js_pusher
 from batch_rename.env import SUBPROCESS_KWARGS
 from batch_rename.subprocess_registry import register_subprocess, unregister_subprocess
+from batch_rename.utils import force_rmtree
 
 # ── 路径 ──
 LLAMA_DIR = APP_ROOT / "llama.cpp"
@@ -31,19 +32,22 @@ MODELS_DIR = LLAMA_DIR.parent / "models"
 EXE_NAME = "llama-server.exe"
 
 
+def _abs_dir(d: str) -> str:
+    """目录配置归一为绝对路径；空值 = 默认 models/（与 llama.cpp 同级）。"""
+    d = str(d or "").strip()
+    if not d:
+        return str(MODELS_DIR)
+    p = Path(d)
+    return str(p if p.is_absolute() else APP_ROOT / p)
+
+
 def get_models_dir() -> Path:
     """返回模型文件夹路径。"""
     try:
         from .config_store import load_llama_config
-        custom = load_llama_config().get("models_dir", "")
-        if custom and str(custom).strip():
-            p = Path(str(custom).strip())
-            if not p.is_absolute():
-                p = APP_ROOT / p
-            return p
+        return Path(_abs_dir(load_llama_config().get("models_dir", "")))
     except Exception:
-        pass
-    return MODELS_DIR
+        return MODELS_DIR
 
 
 # 只需第一个含 win 构建的 release，per_page 过大会多传数倍 JSON
@@ -88,7 +92,6 @@ _cached_release: Optional[Dict[str, Any]] = None
 _llama_proc: Optional[subprocess.Popen] = None
 _llama_state: Dict[str, Any] = {
     "running": False, "pid": None, "port": None, "model": None,
-    "launch_params": None,
     "starting": False,
     "launch_failed": None,
     "port_conflict": None,
@@ -96,8 +99,6 @@ _llama_state: Dict[str, Any] = {
 _state_lock = threading.Lock()
 
 _launch_lock = threading.Lock()
-
-_paused_launch: Optional[Dict[str, Any]] = None
 
 
 def _stderr_log(m: str) -> None:
@@ -121,7 +122,6 @@ _FETCH_BASE_DELAY = 1.0
 def _fetch_json(url: str, timeout: float = 20.0,
                 cancel_event: Optional[threading.Event] = None) -> Any:
     """抓取并解析 JSON；网络抖动时退避重试。"""
-    last_err: Optional[Exception] = None
     for attempt in range(1, _FETCH_RETRIES + 1):
         if cancel_event is not None and cancel_event.is_set():
             raise InstallCancelled()
@@ -148,20 +148,17 @@ def _fetch_json(url: str, timeout: float = 20.0,
         except InstallCancelled:
             raise
         except urllib.error.HTTPError as e:
-            if e.code < 500 or attempt >= _FETCH_RETRIES:
+            if (e.code < 500 and e.code != 429) or attempt >= _FETCH_RETRIES:
                 raise
-            last_err = e
         except Exception as e:
             if cancel_event is not None and cancel_event.is_set():
                 raise InstallCancelled()
-            last_err = e
             if attempt >= _FETCH_RETRIES:
                 raise
         if attempt < _FETCH_RETRIES:
             if cancel_event is not None and cancel_event.is_set():
                 raise InstallCancelled()
             time.sleep(_FETCH_BASE_DELAY * attempt)
-    raise last_err if last_err is not None else RuntimeError(f"抓取失败: {url}")
 
 
 def _norm_proxy(proxy: str) -> str:
@@ -272,16 +269,16 @@ def get_latest_release_assets(force: bool = False,
                               stop_event: Optional[threading.Event] = None) -> Dict[str, Any]:
     """拉取最新可用 release 并解析 win 构建资源（预编译 + cudart）。"""
     global _cached_release, _cached_release_at, _release_fetching
-    now = time.time()
     with _cache_lock:
-        if not force and _cached_release is not None and (now - _cached_release_at) < _CACHE_TTL:
+        if not force and _cached_release is not None and (time.time() - _cached_release_at) < _CACHE_TTL:
             return _cached_release
 
         while _release_fetching:
             if stop_event is not None and stop_event.is_set():
                 raise InstallCancelled()
             _cache_lock.wait(0.25)
-            if _cached_release is not None:
+            # 只复用未过期缓存：抓取失败时等待者自行重试，而不是拿陈旧数据当结果
+            if _cached_release is not None and (time.time() - _cached_release_at) < _CACHE_TTL:
                 return _cached_release
         _release_fetching = True
 
@@ -315,7 +312,7 @@ def get_latest_release_assets(force: bool = False,
         }
         with _cache_lock:
             _cached_release = result
-            _cached_release_at = now
+            _cached_release_at = time.time()  # 抓取完成时刻起算 TTL
         return result
     finally:
         with _cache_lock:
@@ -376,14 +373,14 @@ def _read_gguf_meta(path: Path, max_bytes: int = 8 << 20) -> Dict[str, Any]:
         return {}
     if len(head) < 28 or head[:4] != b"GGUF":
         return {}
-    # GGUF 规范版本 1/2/3 为小端；其余（极少见）按大端处理
-    endian = "<"
+    # GGUF 规范为小端；版本号 1/2/3 之外的文件按无效处理
     try:
         ver, = struct.unpack_from("<I", head, 4)
     except struct.error:
         return {}
     if ver not in (1, 2, 3):
-        endian = ">"
+        return {}
+    endian = "<"
     out: Dict[str, Any] = {}
     try:
         pos = 8  # magic(4) + version(4) 之后：tensor_count + metadata_kv_count
@@ -535,7 +532,7 @@ def _scan_full(base: Path) -> List[Dict[str, Any]]:
 
 
 def scan_models(models_dir: Optional[Path] = None,
-                force: bool = False) -> List[Dict[str, str]]:
+                force: bool = False) -> List[Dict[str, Any]]:
     """扫描模型文件夹下的 .gguf 模型（排除 mmproj 与分片模型的非首片）。"""
     base = models_dir or get_models_dir()
     if not base.is_dir():
@@ -564,13 +561,13 @@ _GLOBAL_ONLY_KEYS = frozenset({
 
 
 def model_config_updates(params: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
-    """从提交的完整参数中拆分 per-model 更新。"""
+    """从提交的完整参数中拆分 per-model 更新（剔除全局键）。"""
     model = str(params.get("model") or "")
     if not model:
         return "", {}
     updates: Dict[str, Any] = {}
     for k, v in params.items():
-        if k == "model":
+        if k in _GLOBAL_ONLY_KEYS:
             continue
         if k == "n_cpu_moe":
             try:
@@ -619,7 +616,7 @@ def ensure_model_configs(models: List[Dict[str, Any]]) -> Dict[str, Any]:
             for p in missing:
                 entry = {k: v for k, v in llama.items()
                          if k not in _GLOBAL_ONLY_KEYS}
-                entry["ctx"] = 8192  # 上下文窗口初始默认
+                entry["ctx"] = DEFAULTS["ctx"]  # 上下文窗口初始默认（与全局默认同源）
                 entry.pop("n_cpu_moe", None)
                 inner[p] = entry
             return inner
@@ -636,15 +633,6 @@ def _path_in_dir(p: str, d: str) -> bool:
     p = str(p).replace("\\", "/")
     d = str(d).replace("\\", "/").rstrip("/")
     return p == d or p.startswith(d + "/")
-
-
-def _abs_dir(d: str) -> str:
-    """目录配置归一为绝对路径；空值 = 默认 models/（与 llama.cpp 同级）。"""
-    d = str(d or "").strip()
-    if not d:
-        return str(MODELS_DIR)
-    p = Path(d)
-    return str(p if p.is_absolute() else APP_ROOT / p)
 
 
 def purge_stale_after_dir_change(old_dir: str, new_dir: str) -> bool:
@@ -790,7 +778,7 @@ def install(build_sel: str, log_fn=None, proxy: str = "",
 
     def _auto_enable() -> None:
         from .config_store import update_llama_config
-        update_llama_config(lambda c: c.update(enabled=True, integrate=True) or c)
+        update_llama_config(lambda c: c.update(enabled=True, integrate=True))
 
     if not build_sel:
         return {"ok": False, "error": "未指定构建（manual / cuda-<ver>）"}
@@ -812,8 +800,11 @@ def install(build_sel: str, log_fn=None, proxy: str = "",
         }
 
     # 仍在运行时拒绝覆盖（避免占用中的 exe 触发 PermissionError）
-    if _llama_proc is not None and _llama_proc.poll() is None:
-        return {"ok": False, "error": f"llama-server 正在运行（PID {_llama_proc.pid}），请先停止服务再安装/更新"}
+    with _state_lock:
+        busy = _llama_proc is not None and _llama_proc.poll() is None
+        pid = _llama_proc.pid if _llama_proc is not None else None
+    if busy:
+        return {"ok": False, "error": f"llama-server 正在运行（PID {pid}），请先停止服务再安装/更新"}
 
     steps = InstallSteps(3)
     steps.push(1)
@@ -934,7 +925,7 @@ def remove(log_fn=None) -> Dict[str, Any]:
         last_err: Optional[Exception] = None
         for _attempt in range(3):
             try:
-                shutil.rmtree(LLAMA_DIR)
+                force_rmtree(LLAMA_DIR)
                 last_err = None
                 break
             except Exception as e:  # noqa: BLE001
@@ -949,7 +940,7 @@ def remove(log_fn=None) -> Dict[str, Any]:
     log_fn("已卸载 llama.cpp。")
     try:
         from .config_store import update_llama_config
-        update_llama_config(lambda c: c.update(enabled=False, integrate=False) or c)
+        update_llama_config(lambda c: c.update(enabled=False, integrate=False))
     except Exception as e:
         log_fn(f"关闭 llama 开关时出错: {e}")
     return {"ok": True, "message": "已卸载 llama.cpp"}
@@ -988,7 +979,7 @@ def _to_int(v: Any, default: int) -> int:
         return default
 
 
-def _build_args(model_path: Path, p: Dict[str, Any]) -> List[str]:
+def _build_args(model_path: Path, p: Dict[str, Any], layers: int = 0) -> List[str]:
     def num(key, default):
         return _to_int(p.get(key, default), default)
 
@@ -996,10 +987,8 @@ def _build_args(model_path: Path, p: Dict[str, Any]) -> List[str]:
     # llama.cpp 的卸载单位是「N 个块 + 输出层」共 N+1 个、从后往前分（i_gpu_start = N+1-ngl），
     # ngl = 层数时恰好把块 0 留在 CPU；tensor 并行下该 CPU 块每步串行执行，吞吐显著下降
     ngl = num("ngl", DEFAULTS["ngl"])
-    if ngl > 0:
-        layers = _model_layers(model_path)
-        if layers > 0 and ngl == layers:
-            ngl = 999
+    if ngl > 0 and layers > 0 and ngl == layers:
+        ngl = 999
 
     args: List[str] = [
         "-m", str(model_path),
@@ -1089,7 +1078,9 @@ _OUT_TAIL_MAX = 30
 
 
 def _reader_thread(proc: subprocess.Popen, log_fn,
-                   out_tail: Optional[List[str]] = None) -> None:
+                   out_tail: Optional[List[str]] = None,
+                   tail_lock: Optional[threading.Lock] = None) -> None:
+    tail_lock = tail_lock or threading.Lock()
     try:
         assert proc.stdout is not None
         for line in proc.stdout:
@@ -1097,8 +1088,9 @@ def _reader_thread(proc: subprocess.Popen, log_fn,
             if not s:
                 continue
             if out_tail is not None:
-                out_tail.append(s)
-                del out_tail[:-_OUT_TAIL_MAX]
+                with tail_lock:
+                    out_tail.append(s)
+                    del out_tail[:-_OUT_TAIL_MAX]
             log_fn(s)
     except Exception:
         pass
@@ -1118,9 +1110,11 @@ def _reader_thread(proc: subprocess.Popen, log_fn,
             pass
 
 
-def _tail_snippet(out_tail: List[str]) -> str:
+def _tail_snippet(out_tail: List[str], tail_lock: Optional[threading.Lock] = None) -> str:
     """启动失败提示引用的 llama-server 输出尾部摘要。"""
-    return "；".join(ln[:150] for ln in out_tail[-3:])
+    with (tail_lock or threading.Lock()):
+        tail = out_tail[-3:]
+    return "；".join(ln[:150] for ln in tail)
 
 
 def _terminate_process(proc: subprocess.Popen, wait: float = 5.0) -> None:
@@ -1171,7 +1165,21 @@ def launch(model_path: str, params: Dict[str, Any], log_fn=None,
     global _llama_proc
     with _launch_lock:
         if _llama_proc is not None and _llama_proc.poll() is None:
-            return {"ok": False, "error": f"llama-server 已在运行（PID {_llama_proc.pid}），请先停止再启动"}
+            with _state_lock:
+                orphaned = not _llama_state["running"] and not _llama_state["starting"]
+            if not orphaned:
+                return {"ok": False, "error": f"llama-server 已在运行（PID {_llama_proc.pid}），请先停止再启动"}
+            # 上次启动失败的卡死残留：回收后正常启动
+            log_fn("发现上次启动失败残留的进程，正在回收…")
+            try:
+                _terminate_process(_llama_proc, wait=3.0)
+            except Exception:
+                return {"ok": False, "error": f"残留进程（PID {_llama_proc.pid}）停止失败，请重试"}
+            try:
+                unregister_subprocess(_llama_proc)
+            except Exception:
+                pass
+            _llama_proc = None
 
         chosen = model_path or ""
         if not chosen:
@@ -1195,11 +1203,14 @@ def launch(model_path: str, params: Dict[str, Any], log_fn=None,
             if auto:
                 merged["mmproj"] = auto
 
-        args = _build_args(mp, merged)
+        # ngl=999 改写需要层数：优先 scan 缓存，未命中再读 GGUF 头
+        layers = next((m["layers"] for m in scan_models() if m["path"] == str(mp)), 0) \
+            or _model_layers(mp)
+        args = _build_args(mp, merged, layers)
         cmd = [str(exe)] + args
 
         # 端口占用预检：被占立即报错，避免启动后健康检查白等超时、误判模型加载失败
-        chk_port = _to_int(merged.get("port", DEFAULTS["port"]), _to_int(DEFAULTS["port"], 0))
+        chk_port = _to_int(merged.get("port"), 8080)
         if not 0 < chk_port < 65536:
             return {"ok": False, "error": f"端口 {chk_port} 无效，请填写 1-65535 之间的端口"}
         if _port_in_use(_local_host(str(merged.get("host", DEFAULTS["host"]))), chk_port):
@@ -1233,50 +1244,59 @@ def launch(model_path: str, params: Dict[str, Any], log_fn=None,
             _llama_state["starting"] = True   # 进程已拉起，健康检查通过前保持「正在启动」
             _llama_state["launch_failed"] = None
             _llama_state["pid"] = proc.pid
-            _llama_state["port"] = merged.get("port", DEFAULTS["port"])
+            _llama_state["port"] = chk_port
             _llama_state["model"] = str(mp)
-            _llama_state["launch_params"] = merged  # 供 pause_for_task 让出后恢复
         _notify_state_change()
 
     log_fn(f"正在加载模型: {mp.name}…")
     out_tail: List[str] = []  # 失败提示引用的输出尾部
+    out_tail_lock = threading.Lock()
     threading.Thread(target=_reader_thread,
-                     args=(proc, server_log_fn, out_tail),
+                     args=(proc, server_log_fn, out_tail, out_tail_lock),
                      daemon=True).start()
 
     host = merged.get("host", DEFAULTS["host"])
-    port = merged.get("port", DEFAULTS["port"])
+    port = chk_port
     if not _wait_for_health(_local_host(host), port, timeout=_HEALTH_TIMEOUT_SEC, log_fn=log_fn, proc=proc):
         alive = proc.poll() is None
         if alive:
-            # 超时但进程仍存活：必须回收并清状态，否则残留进程与「启动失败」矛盾、无法重启动
+            # 超时但进程仍存活：回收并清状态，否则残留进程与「启动失败」矛盾、无法重启动
             log_fn("健康检查超时，正在停止未就绪的 llama-server…")
+            fail_head = (f"服务启动后未在 {int(_HEALTH_TIMEOUT_SEC)} 秒内就绪"
+                         "（模型加载可能过慢或显存不足）")
             try:
                 _terminate_process(proc)
             except Exception as e:
-                log_fn(f"停止未就绪进程失败: {e}")
-            finally:
-                try:
-                    unregister_subprocess(proc)
-                except Exception:
-                    pass
-                fail_msg = (f"服务启动后未在 {int(_HEALTH_TIMEOUT_SEC)} 秒内就绪"
-                            "（模型加载可能过慢或显存不足），已自动停止该进程")
-                tail = _tail_snippet(out_tail)
-                if tail:
-                    fail_msg += f"，最后输出：{tail}"
-                with _state_lock:
-                    # 仅当自己仍是当前进程时才清状态/句柄，避免误清并发启动的新进程
-                    if _llama_proc is proc:
-                        _llama_state["running"] = False
-                        _llama_state["starting"] = False
-                        _llama_state["launch_failed"] = fail_msg
-                        _llama_proc = None
+                if proc.poll() is None:
+                    # 强杀后仍存活：保留句柄与注册，报「启动失败」，再次启动/停止时可回收重试
+                    fail_msg = f"{fail_head}，自动停止失败（PID {proc.pid}）：{e}"
+                    with _state_lock:
+                        if _llama_proc is proc:
+                            _llama_state["running"] = False
+                            _llama_state["starting"] = False
+                            _llama_state["launch_failed"] = fail_msg
+                    _notify_state_change()
+                    return {"ok": False, "error": fail_msg}
+            try:
+                unregister_subprocess(proc)
+            except Exception:
+                pass
+            fail_msg = f"{fail_head}，已自动停止该进程"
+            tail = _tail_snippet(out_tail, out_tail_lock)
+            if tail:
+                fail_msg += f"，最后输出：{tail}"
+            with _state_lock:
+                # 仅当自己仍是当前进程时才清状态/句柄，避免误清并发启动的新进程
+                if _llama_proc is proc:
+                    _llama_state["running"] = False
+                    _llama_state["starting"] = False
+                    _llama_state["launch_failed"] = fail_msg
+                    _llama_proc = None
             _notify_state_change()
             return {"ok": False, "error": fail_msg}
         manual_stop = False
         fail_msg = "llama-server 进程已退出"
-        tail = _tail_snippet(out_tail)
+        tail = _tail_snippet(out_tail, out_tail_lock)
         fail_msg += f"，最后输出：{tail}" if tail else "，请查看日志"
         with _state_lock:
             # 启动窗口内退出：_reader_thread 可能已清理，这里兜底补记失败原因
@@ -1295,7 +1315,7 @@ def launch(model_path: str, params: Dict[str, Any], log_fn=None,
     try:
         from .config_store import update_llama_config
         update_llama_config(
-            lambda c: c.update(parallel=_to_int(merged.get("parallel"), DEFAULTS["parallel"])) or c)
+            lambda c: c.update(parallel=_to_int(merged.get("parallel"), DEFAULTS["parallel"])))
     except Exception:
         pass
     with _state_lock:
@@ -1304,79 +1324,51 @@ def launch(model_path: str, params: Dict[str, Any], log_fn=None,
     return {"ok": True, "pid": proc.pid, "port": port, "model": str(mp)}
 
 
+def _reset_run_state() -> None:
+    """清空运行状态与进程句柄（stop 收尾共用）。"""
+    global _llama_proc
+    with _state_lock:
+        _llama_state["running"] = False
+        _llama_state["starting"] = False
+        _llama_state["launch_failed"] = None
+        _llama_state["port_conflict"] = None
+        _llama_proc = None
+
+
 def stop(log_fn=None, grace: float = 5.0) -> Dict[str, Any]:
     """停止运行中的 llama-server（grace 秒内未退出则强杀）。"""
-    global _llama_proc
     log_fn = log_fn or _stderr_log
     proc = _llama_proc
     if proc is None or proc.poll() is not None:
-        with _state_lock:
-            _llama_state["running"] = False
-            _llama_state["starting"] = False
-            _llama_state["launch_failed"] = None
-            _llama_state["port_conflict"] = None
-            _llama_proc = None
+        _reset_run_state()
         _notify_state_change()
         return {"ok": True, "message": "没有运行中的服务"}
     try:
         _terminate_process(proc, wait=grace)
     except Exception as e:
-        return {"ok": False, "error": f"停止失败: {e}"}
-    finally:
-        try:
-            unregister_subprocess(proc)
-        except Exception:
-            pass
-        with _state_lock:
-            _llama_state["running"] = False
-            _llama_state["starting"] = False
-            _llama_state["launch_failed"] = None
-            _llama_state["port_conflict"] = None
-            _llama_proc = None
+        if proc.poll() is None:
+            # 强杀后仍存活：保留句柄与注册，状态如实保持「运行中」，可再次停止
+            return {"ok": False, "error": f"停止失败: {e}"}
+    try:
+        unregister_subprocess(proc)
+    except Exception:
+        pass
+    _reset_run_state()
     _notify_state_change()
     log_fn("本地推理服务已停止。")
     return {"ok": True, "message": "已停止本地推理服务"}
 
 
 def pause_for_task(log_fn=None) -> Dict[str, Any]:
-    """让出显存：其他高显存任务（PixAI Tagger / Whisper 推理）开始前调用。"""
-    global _paused_launch
+    """让出显存：其他高显存任务（PixAI Tagger / Whisper 推理）开始前停止 llama-server。"""
     log_fn = log_fn or _stderr_log
     with _state_lock:
         proc = _llama_proc
         running = proc is not None and proc.poll() is None
-        if running:
-            _paused_launch = {
-                "model": str(_llama_state.get("model") or ""),
-                "params": dict(_llama_state.get("launch_params") or {}),
-            }
     if not running:
         return {"ok": True, "was_running": False}
     log_fn("检测到本地推理服务在运行，为高显存任务让出显存，正在停止…")
     r = stop(log_fn=log_fn)
     if not r.get("ok"):
-        # 停止失败：不留下待恢复状态，避免任务结束后误重启
-        with _state_lock:
-            _paused_launch = None
         return {"ok": False, "was_running": True, "error": r.get("error")}
     return {"ok": True, "was_running": True}
-
-
-def resume_after_task(log_fn=None, server_log_fn=None) -> Dict[str, Any]:
-    """高显存任务完成后调用：若此前让出过显存则按暂存参数重启；期间被手动启动时跳过。"""
-    global _paused_launch
-    log_fn = log_fn or _stderr_log
-    with _state_lock:
-        saved = _paused_launch
-        _paused_launch = None
-    if not saved:
-        return {"ok": True, "restarted": False}
-    if _llama_proc is not None and _llama_proc.poll() is None:
-        log_fn("本地推理服务已在运行，跳过恢复。")
-        return {"ok": True, "restarted": False}
-    log_fn("任务处理完成，正在重新加载本地推理服务…")
-    r = launch(saved.get("model") or "", saved.get("params") or {},
-               log_fn=log_fn, server_log_fn=server_log_fn)
-    if r.get("ok"):
-        r["restarted"] = True
-    return r

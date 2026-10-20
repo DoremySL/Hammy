@@ -45,14 +45,12 @@ function renderSources() {
   actions.className = 'src-actions';
   const dd = document.createElement('button');
   dd.className = 'src-action';
-  dd.id = 'btn-dedup';
   dd.innerHTML = '清理重复';
   dd.dataset.tip = '扫描并移除重复视频';
   dd.onclick = findDuplicates;
   actions.appendChild(dd);
   const fx = document.createElement('button');
   fx.className = 'src-action';
-  fx.id = 'btn-format-fix';
   fx.innerHTML = '格式修复';
   fx.dataset.tip = '补全无后缀视频，待处理流式封装视频转 MP4';
   fx.onclick = openFormatFix;

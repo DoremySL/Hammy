@@ -16,6 +16,10 @@ const CW_RECORDS = [
     desc: '重置后已处理视频重新进入待处理', warn: '影响处理状态' },
 ];
 
+// clear_workspace 六布尔位（同 system.py 签名序）
+const CW_CLEAR_KEYS = ['history', 'thumb', 'nfo', 'manifest', 'probe', 'similar'];
+const cwClearArgs = (...keys) => CW_CLEAR_KEYS.map(k => keys.includes(k));
+
 function cwFmtSize(bytes) {
   if (!bytes || bytes <= 0) return '0 MB';
   const mb = bytes / 1048576;
@@ -92,19 +96,19 @@ function renderWorkspaceTab(stats) {
   const clearHandler = {
     missing: () => workspaceAction('prune_history', [], null,
       r => `已清理 ${r.removed} 条失效记录、${r.thumbs || 0} 个缩略图、${r.nfos || 0} 个 NFO`),
-    history: () => workspaceAction('clear_workspace', [true, false, false, false, false, false],
+    history: () => workspaceAction('clear_workspace', cwClearArgs('history'),
       `确定重置全部重命名记录吗？\n\n${historyCount} 条重命名记录将被移除，对应视频重新进入待处理列表。\n不会删除视频文件与任何缓存。`,
       '已重置重命名记录'),
-    thumb: () => workspaceAction('clear_workspace', [false, true, false, false, false, false],
-      `确定清理 ${cwFmtCount(caches[0].count)} 个缩略图缓存吗？\n\n下次查看对应视频时会重新生成缩略图。`,
+    thumb: () => workspaceAction('clear_workspace', cwClearArgs('thumb'),
+      `确定清理 ${cwFmtCount(caches.find(c => c.key === 'thumb').count)} 个缩略图缓存吗？\n\n下次查看对应视频时会重新生成缩略图。`,
       r => `已清理 ${r.cleared.thumbs} 个缩略图`),
-    nfo: () => workspaceAction('clear_workspace', [false, false, true, false, false, false],
-      `确定清理 ${cwFmtCount(caches[1].count)} 个 NFO 缓存吗？\n\n「自动输出 NFO 至目录」关闭时，详情页依赖此缓存。`,
+    nfo: () => workspaceAction('clear_workspace', cwClearArgs('nfo'),
+      `确定清理 ${cwFmtCount(caches.find(c => c.key === 'nfo').count)} 个 NFO 缓存吗？\n\n「自动输出 NFO 至目录」关闭时，详情页依赖此缓存。`,
       r => `已清理 ${r.cleared.nfo} 个 NFO`),
-    probe: () => workspaceAction('clear_workspace', [false, false, false, false, true, false],
+    probe: () => workspaceAction('clear_workspace', cwClearArgs('probe'),
       '确定清理探针缓存吗？\n\n视频的时长 / 分辨率 / 编码等信息下次使用时会自动重新探测。',
       '已清理探针缓存'),
-    similar: () => workspaceAction('clear_workspace', [false, false, false, false, false, true],
+    similar: () => workspaceAction('clear_workspace', cwClearArgs('similar'),
       '确定清理去重指纹缓存吗？\n\n下次使用「移除重复视频」时会自动重建指纹。',
       '已清理去重指纹缓存'),
   };
@@ -112,7 +116,8 @@ function renderWorkspaceTab(stats) {
     btn.onclick = () => (clearHandler[btn.dataset.key] || (() => {}))();
   });
 
-  $('#btn-clear-all').onclick = () => workspaceAction('clear_workspace', [true, true, true, false, true, true],
+  $('#btn-clear-all').onclick = () => workspaceAction('clear_workspace',
+    cwClearArgs('history', 'thumb', 'nfo', 'probe', 'similar'),
     '确定清除全部缓存吗？\n\n将删除：\n• 所有重命名记录（已处理视频会重新进入待处理）\n• 所有缩略图缓存\n• 所有 NFO 缓存\n• 视频探针缓存与去重指纹缓存（下次使用时自动重建）\n\n不会删除任何视频文件，也不会清空已添加的源。',
     r => `已清除：${r.cleared.history ? '重命名记录、' : ''}${r.cleared.thumbs} 个缩略图、${r.cleared.nfo} 个 NFO${r.cleared.probe ? '、探针缓存' : ''}${r.cleared.similar ? '、去重缓存' : ''}`,
     '清除失败',

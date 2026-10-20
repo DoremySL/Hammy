@@ -5,7 +5,7 @@ import shutil
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..config_store import (load_config, load_llama_config, load_llama_model_configs,
                             load_pixai_config, load_whisper_config,
@@ -119,19 +119,21 @@ class ExperimentalMixin:
 
     def get_experimental_status(self) -> Dict[str, Any]:
         """扩展功能页一次拉齐全部状态与配置。"""
+        cfg = self.get_config()
         return {
-            "cfg": self.get_config(),
+            "cfg": cfg,
             "uv": self.get_uv_status(),
             "llama": self.get_llama_status(),
             "pixai": self.get_pixai_tagger_status(),
             "whisper": self.get_whisper_status(),
-            "ragvec": self.get_rag_vec_status(),
+            "ragvec": self.get_rag_vec_status(cfg.get("experimental") or {}),
         }
 
-    def get_rag_vec_status(self) -> Dict[str, Any]:
-        """向量检索模块安装状态与启用状态。"""
+    def get_rag_vec_status(self, exp: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """向量检索模块安装状态与启用状态（exp 缺省时自读配置）。"""
         from ..ort_embedding import get_status
-        exp = self.get_config().get("experimental") or {}
+        if exp is None:
+            exp = self.get_config().get("experimental") or {}
         status = get_status()
         status["enabled"] = bool(exp.get("rag_vec_enabled", False))
         try:
@@ -220,7 +222,7 @@ class ExperimentalMixin:
         from ..pixai_tagger import PIXAI_TAGGER_DIR
         if not PIXAI_TAGGER_DIR.is_dir():
             return {"ok": True, "enabled": enabled}
-        update_pixai_config(lambda c: c.update(enabled=enabled) or c)
+        update_pixai_config(lambda c: c.update(enabled=enabled))
         return {"ok": True, "enabled": enabled}
 
     def get_pixai_mirrors(self) -> Dict[str, Any]:
@@ -228,7 +230,7 @@ class ExperimentalMixin:
         from ..pixai_tagger import get_mirrors_info
         return get_mirrors_info()
 
-    def install_pixai_tagger(self, variant: str = "448-ft",
+    def install_pixai_tagger(self, variant: str = "448-Hammy",
                              site: str = DEFAULT_TRT_SITE) -> Dict[str, Any]:
         """安装 pixai-tagger 依赖（uv + venv + tensorrt + 模型下载 + TRT 引擎构建）。"""
         from ..pixai_tagger import install_dependencies
@@ -321,7 +323,6 @@ class ExperimentalMixin:
                 variant=variant,
                 stop_event=_gpu_stop_event,
                 on_log=_push_log,
-                on_video_result=None,
             )
             if stream is None:
                 return self._pixai_engine_unavailable(
@@ -490,9 +491,6 @@ class ExperimentalMixin:
             return {"ok": False, "results": results, "ok_count": ok_count,
                     "total": total, "real_count": 0, "error": str(e)}
         finally:
-            # 恢复本地推理服务
-            from ..llama_cpp import resume_after_task
-            resume_after_task(log_fn=_push_log, server_log_fn=_push_llama_log)
             _gpu_task_lock.release()
 
     def _pixai_engine_unavailable(self, vid_list: List, video_paths: List,
@@ -608,7 +606,7 @@ class ExperimentalMixin:
         from ..faster_whisper import WHISPER_DIR
         if not WHISPER_DIR.is_dir():
             return {"ok": True, "enabled": enabled}
-        update_whisper_config(lambda c: c.update(enabled=enabled) or c)
+        update_whisper_config(lambda c: c.update(enabled=enabled))
         return {"ok": True, "enabled": enabled}
 
     def get_whisper_mirrors(self) -> Dict[str, Any]:
@@ -773,9 +771,6 @@ class ExperimentalMixin:
             return {"ok": False, "results": results, "ok_count": ok_count,
                     "total": total, "error": str(e)}
         finally:
-            # 恢复本地推理服务
-            from ..llama_cpp import resume_after_task
-            resume_after_task(log_fn=_push_log, server_log_fn=_push_llama_log)
             _gpu_task_lock.release()
 
     def get_whisper_transcript(self, video_id: str) -> Dict[str, Any]:
@@ -1112,7 +1107,7 @@ class ExperimentalMixin:
 
         update_llama_config(_mutate)
         if integrate is not None:
-            update_llama_config(lambda c: c.update(integrate=bool(integrate)) or c)
+            update_llama_config(lambda c: c.update(integrate=bool(integrate)))
         # 模型目录变更：清理旧目录的 per-model 配置与 last_model
         if old_dir is not None and old_dir != new_dir:
             purge_stale_after_dir_change(old_dir, new_dir)
@@ -1134,5 +1129,5 @@ class ExperimentalMixin:
             r = _stop(log_fn=_push_log, grace=2.0)
             if not r.get("ok"):
                 return {"ok": False, "error": f"停止本地推理服务失败: {r.get('error', '未知错误')}"}
-        update_llama_config(lambda c: c.update(enabled=enabled) or c)
+        update_llama_config(lambda c: c.update(enabled=enabled))
         return {"ok": True, "enabled": enabled}

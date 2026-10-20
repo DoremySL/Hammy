@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from .workspace_paths import PRIORITY_TAGS_FILE, PROMPTS_FILE
-from .workspace_store import NO_WRITE, read_json, update_json, write_json
+from .workspace_store import NO_WRITE, read_json, read_json_cached, update_json, write_json
 
 
 # ── 结构层（只读，永远不变） ──
@@ -76,17 +76,20 @@ def _builtin_presets() -> List[Dict[str, Any]]:
 
 
 def _load_presets_file() -> Dict[str, Any]:
-    """读取 prompts.json；不存在/损坏时在 update_json 临界区内原子初始化。"""
-    def _ensure(current):
-        if not isinstance(current, dict):
-            # 首次初始化/损坏回退：写入内置模板
-            return {
-                "presets": _builtin_presets(),
-                "custom_counter": 0,
-            }
-        return NO_WRITE
+    """读取 prompts.json（mtime 缓存）；缺失/损坏时走 update_json 原子初始化。"""
+    data = read_json_cached(PROMPTS_FILE)
+    if not data:
+        def _ensure(current):
+            if not isinstance(current, dict):
+                # 首次初始化/损坏回退：写入内置模板
+                return {
+                    "presets": _builtin_presets(),
+                    "custom_counter": 0,
+                }
+            return NO_WRITE
 
-    return update_json(PROMPTS_FILE, _ensure)
+        return update_json(PROMPTS_FILE, _ensure)
+    return data
 
 
 def list_presets() -> List[Dict[str, Any]]:
@@ -156,19 +159,17 @@ def set_active(pid: str) -> Dict[str, Any]:
     if not any(p.get("id") == pid for p in list_presets()):
         return {"ok": False, "error": "模板不存在"}
     from .config_store import update_config
-    update_config(lambda cfg: cfg.update(active_prompt_id=pid) or cfg)
+    update_config(lambda cfg: cfg.update(active_prompt_id=pid))
     return {"ok": True}
 
 
-def get_active(with_thumb_time: bool = False) -> Dict[str, Any]:
-    """返回当前激活的模板与拼好的 prompt（不含标签段落，注入由 TagRecall 负责）。"""
-    from .config_store import load_config
-    cfg = load_config()
+def _active_from(presets: List[Dict[str, Any]], cfg: Dict[str, Any],
+                 with_thumb_time: bool = False) -> Dict[str, Any]:
+    """从模板列表 + 配置拼出激活模板信息（回退：激活 id 不存在取列表第一个，
+    列表为空（prompts.json 被外部清空）用内置默认）。"""
     pid = cfg.get("active_prompt_id", "default")
-    preset = get_preset(pid)
+    preset = next((p for p in presets if p.get("id") == pid), None)
     if preset is None:
-        # 回退：激活 id 不存在时取列表第一个；列表为空（prompts.json 被外部清空）用内置默认
-        presets = list_presets()
         preset = presets[0] if presets else _builtin_presets()[0]
     use_example = bool(cfg.get("prompt_use_example", False))
     return {
@@ -177,6 +178,21 @@ def get_active(with_thumb_time: bool = False) -> Dict[str, Any]:
         "system_prompt": preset.get("system_prompt", ""),
         "use_example": use_example,
     }
+
+
+def get_active(with_thumb_time: bool = False) -> Dict[str, Any]:
+    """返回当前激活的模板与拼好的 prompt（不含标签段落，注入由 TagRecall 负责）。"""
+    from .config_store import load_config
+    cfg = load_config()
+    return _active_from(list_presets(), cfg, with_thumb_time)
+
+
+def get_prompts_page() -> Dict[str, Any]:
+    """提示词页聚合数据：presets 与 active 共用一次读盘。"""
+    from .config_store import load_config
+    cfg = load_config()
+    presets = list_presets()
+    return {"presets": presets, "active": _active_from(presets, cfg)}
 
 
 # ── 拼装：内容层 + 结构层 → 完整 prompt 字符串 ──

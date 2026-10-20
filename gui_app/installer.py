@@ -44,11 +44,11 @@ _CUDA_TIERS = {
 
 # ── TensorRT 站点（pixai-tagger）──
 TRT_SITES = {
-    "sjtu": {"name": "上海交通大学", "desc": "国内高速（NVIDIA 中国源）",
+    "sjtu": {"name": "上海交通大学",
              "pypi": PYPI_MIRRORS["sjtu"]["url"], "nvidia": NVIDIA_PYPI_URL},
-    "nju": {"name": "南京大学", "desc": "交大不通时的备用站点",
+    "nju": {"name": "南京大学",
             "pypi": PYPI_MIRRORS["nju"]["url"], "nvidia": NVIDIA_PYPI_URL},
-    "official": {"name": "NVIDIA 官方", "desc": "pypi.nvidia.com，国内较慢",
+    "official": {"name": "NVIDIA 官方",
                  "pypi": "https://pypi.org/simple", "nvidia": "https://pypi.nvidia.com"},
 }
 DEFAULT_TRT_SITE = "sjtu"
@@ -208,11 +208,18 @@ def trt_gpu_issue(gpu: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def mirror_host(url: str) -> str:
+    """镜像显示用网址（scheme+host，去长路径）。"""
+    m = re.match(r"(https?://[^/]+)", (url or "").strip())
+    return m.group(1) if m else (url or "")
+
+
 def get_mirror_groups(groups: List[str]) -> Dict[str, Any]:
     """返回指定镜像分组（供前端渲染选择弹窗）。"""
     result: Dict[str, Any] = {}
     if "pypi" in groups:
-        result["pypi"] = [{"id": k, "name": v["name"], "url": v["url"]} for k, v in PYPI_MIRRORS.items()]
+        result["pypi"] = [{"id": k, "name": v["name"], "url": v["url"],
+                           "desc": mirror_host(v["url"])} for k, v in PYPI_MIRRORS.items()]
         result["default_pypi"] = DEFAULT_PYPI_MIRROR
     return result
 
@@ -481,13 +488,27 @@ class InstallSteps:
 
 # ── UV 管理 ──
 
+_uv_which_result: Optional[str] = None  # which("uv") 结果缓存（PATH 扫描较重）
+_uv_which_cached = False
+
+
+def invalidate_uv_which() -> None:
+    """uv 卸载后失效 PATH 查找缓存。"""
+    global _uv_which_cached
+    _uv_which_cached = False
+
+
 def find_uv() -> Optional[str]:
     """查找 UV 可执行文件：UV-Tool/ → 系统 PATH。"""
     ext = ".exe" if sys.platform == "win32" else ""
     uv_shared = UV_RUNTIME_DIR / f"uv{ext}"
     if uv_shared.exists():
         return str(uv_shared)
-    return shutil.which("uv")
+    global _uv_which_result, _uv_which_cached
+    if not _uv_which_cached:
+        _uv_which_result = shutil.which("uv")
+        _uv_which_cached = True
+    return _uv_which_result
 
 
 def ensure_uv(pypi_url: str, log_fn: Optional[Callable[[str], None]] = None,
@@ -550,6 +571,7 @@ def uninstall_uv(log_fn: Optional[Callable[[str], None]] = None) -> Dict[str, An
         return {"ok": True, "message": "UV-Tool 不存在，无需卸载"}
     try:
         shutil.rmtree(UV_RUNTIME_DIR)
+        invalidate_uv_which()
         log("已卸载 UV（UV-Tool 已删除）", log_fn)
         return {"ok": True, "message": "已卸载 UV 并清理缓存"}
     except Exception as e:

@@ -153,9 +153,9 @@ function renderExperimentalPage(cfg, uvStatus, llamaStatus, pStatus, wStatus, rv
 
   _bindManageButtons(uvStatus, llamaStatus, pStatus, wStatus, rvStatus);
   _bindLlamaEvents(llamaStatus);
-  _bindPixaiEvents(pStatus);
-  _bindWhisperEvents(wStatus);
-  _bindRagVecEvents(rvStatus);
+  _bindPixaiEvents();
+  _bindWhisperEvents();
+  _bindRagVecEvents();
 }
 
 function _statusBadge(st, suffix) {
@@ -224,7 +224,7 @@ function _bindManageButtons(uvStatus, llamaStatus, pStatus, wStatus, rvStatus) {
   const pInstallBtn = $('#btn-pixai-install');
   if (pInstallBtn && !pStatus.ready) pInstallBtn.addEventListener('click', async () => {
     const sel = await showPixaiInstallDialog();
-    if (sel) startPixaiInstall(sel.version || '448-ft', sel.site || 'sjtu');
+    if (sel) startPixaiInstall(sel.site || 'sjtu');
   });
 
   const pRemoveBtn = $('#btn-pixai-remove');
@@ -393,7 +393,7 @@ async function showMirrorSelectDialog(opts) {
   if (Array.isArray(mirrors.pypi) && mirrors.pypi.length) {
     sections.push(mirrorSection({
       title: '通用 PyPI 镜像', hint: '常规依赖包索引', name: 'pypi-mirror', badge: '默认',
-      items: mirrors.pypi.map(m => ({ value: m.id, name: m.name, desc: m.url || '', recommended: m.id === mirrors.default_pypi })),
+      items: mirrors.pypi.map(m => ({ value: m.id, name: m.name, desc: m.desc || m.url || '', recommended: m.id === mirrors.default_pypi })),
     }));
   }
 
@@ -429,7 +429,6 @@ async function showPixaiInstallDialog() {
 
   const gpu = mirrors.gpu || null;
   const issue = mirrors.gpu_issue || '';
-  const versions = Array.isArray(mirrors.versions) ? mirrors.versions : [];
   const sites = Array.isArray(mirrors.sites) ? mirrors.sites : [];
   const defaultSite = mirrors.default_site || 'sjtu';
 
@@ -439,17 +438,13 @@ async function showPixaiInstallDialog() {
       </div>`
     : gpuBannerHtml(gpu, '安装时按显卡自动构建对应精度的 TensorRT 引擎');
 
-  const versionSection = mirrorSection({
-    title: '模型版本', hint: '安装时下载所选版本模型并构建引擎，更换需重新安装', name: 'pixai-version',
-    items: versions.map((m, i) => ({ value: m.id, name: m.name, desc: m.desc || '', recommended: i === 0 })),
-  });
   const siteSection = mirrorSection({
     title: '下载站点', name: 'pixai-site',
     items: sites.map(s => ({ value: s.id, name: s.name, desc: s.desc || '', recommended: s.id === defaultSite })),
   });
 
   const dlg = openMirrorDialog(`
-    <div class="mirror-body">${gpuBanner}${versionSection}${siteSection}</div>
+    <div class="mirror-body">${gpuBanner}${siteSection}</div>
     <div class="confirm-foot">
       <button class="btn" id="mirrorCancel">取消</button>
       <button class="btn primary" id="mirrorOk" ${issue ? 'disabled' : ''}>开始安装</button>
@@ -459,10 +454,9 @@ async function showPixaiInstallDialog() {
   return new Promise(resolve => {
     $('#mirrorCancel').addEventListener('click', () => { dlg.close(); resolve(null); });
     $('#mirrorOk').addEventListener('click', () => {
-      const version = dlg.box.querySelector('input[name="pixai-version"]:checked');
       const site = dlg.box.querySelector('input[name="pixai-site"]:checked');
       dlg.close();
-      resolve({ version: version ? version.value : '448-ft', site: site ? site.value : 'sjtu' });
+      resolve({ site: site ? site.value : 'sjtu' });
     });
   });
 }
@@ -474,7 +468,6 @@ function _renderLlamaSection(llamaStatus) {
   const enabled = !!llamaStatus.enabled;
   const cfg = (llamaStatus.config && typeof llamaStatus.config === 'object') ? llamaStatus.config : {};
   const curDir = llamaStatus.models_dir || '';
-  const defDir = llamaStatus.default_models_dir || '';
   const badge = llamaStatus.running
     ? `<span class="exp-badge ok">${icon('check')} 运行中 · 端口 ${esc(String(llamaStatus.port || ''))}</span>`
     : (llamaStatus.ready ? `<span class="exp-badge ok">${icon('check')} 已安装就绪</span>`
@@ -581,8 +574,8 @@ function _bindLlamaEvents(llamaStatus) {
 function _renderPixaiSection(exp, pStatus) {
   const enabled = !!state.pixaiTaggerEnabled;
   const ready = !!(pStatus && pStatus.ready);
-  const specBadge = ready && pStatus.variant
-    ? `${pStatus.variant} · ${String(pStatus.precision || '').toUpperCase()}` : '';
+  const specBadge = ready && pStatus.precision
+    ? String(pStatus.precision).toUpperCase() : '';
   const zhOn = exp.pixai_output_zh !== false;
   const scopeNames = { char: '仅角色', all: '角色/IP', off: '不使用' };
   const scopeOf = v => scopeNames[v] ? v : 'char';
@@ -616,8 +609,8 @@ function _renderPixaiSection(exp, pStatus) {
             <input type="number" id="pixai-frames" min="1" value="${exp.pixai_frames || 15}"/>
           </div>
           <div class="field">
-            <label data-tip="角色按出现次数加权、IP 取最高置信度，超过该值才输出">角色/IP阈值</label>
-            <input type="number" id="pixai-threshold" min="0.1" max="1" step="0.01" value="${exp.pixai_threshold || 0.66}"/>
+            <label data-tip="角色与 IP 均按出现次数加权，超过该值才输出；IP 仅输出加权得分最高者">角色/IP阈值</label>
+            <input type="number" id="pixai-threshold" min="0.1" max="1" step="0.01" value="${exp.pixai_threshold || 0.75}"/>
           </div>
           <div class="field">
             <label data-tip="显示与注入提示词时使用预先翻译的文本，可能存在错误翻译">显示中文</label>
@@ -654,7 +647,7 @@ function _renderPixaiSection(exp, pStatus) {
     </div>`;
 }
 
-function _bindPixaiEvents(pStatus) {
+function _bindPixaiEvents() {
   const toggle = $('#pixai-enable-toggle');
   if (toggle) toggle.addEventListener('change', () => {
     state.pixaiTaggerEnabled = toggle.checked;
@@ -736,9 +729,9 @@ async function runInstallTask(run, onOk) {
   }
 }
 
-async function startPixaiInstall(variant, site) {
+async function startPixaiInstall(site) {
   await runInstallTask(
-    () => apiCall('install_pixai_tagger', variant, site),
+    () => apiCall('install_pixai_tagger', '448-Hammy', site),
     async () => {
       await apiCall('set_pixai_tagger_enabled', true);
       state.pixaiTaggerEnabled = true;
@@ -872,7 +865,7 @@ function _crDd(cur) {
     </div>`;
 }
 
-function _bindWhisperEvents(wStatus) {
+function _bindWhisperEvents() {
   const toggle = $('#whisper-enable-toggle');
   if (toggle) toggle.addEventListener('change', () => {
     state.whisperEnabled = toggle.checked;
@@ -1270,7 +1263,7 @@ function _hfRenderSearch(box) {
       </div>
     </div>
     <div class="hf-search-row">
-      <div class="search-widget hf-search-widget" id="hfSearchWidget">
+      <div class="search-widget hf-search-widget">
         <div class="dd search-mode" id="hfSortSel">
           <button class="dd-btn" type="button"><span class="dd-label">热门</span>${ddArrow()}</button>
           <div class="dd-panel">
@@ -2642,7 +2635,7 @@ function _renderRagVecSection(exp, rvStatus) {
     </div>`;
 }
 
-function _bindRagVecEvents(rvStatus) {
+function _bindRagVecEvents() {
   const toggle = $('#ragvec-enable-toggle');
   if (toggle) toggle.addEventListener('change', async () => {
     state.ragVecEnabled = toggle.checked;
