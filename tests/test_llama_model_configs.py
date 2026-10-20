@@ -99,6 +99,14 @@ class TestModelConfigUpdates(unittest.TestCase):
         # n_cpu_moe 为 0 → None 标记删除（不记忆）
         self.assertIsNone(updates["n_cpu_moe"])
 
+    def test_global_keys_filtered(self):
+        _, u = llama_cpp.model_config_updates({
+            "model": "m", "host": "x", "ctx": 4096,
+            "auto_run": True, "show_logs": False, "models_dir": "d",
+            "last_model": "m", "enabled": True, "integrate": True,
+        })
+        self.assertEqual(u, {"host": "x", "ctx": 4096})
+
     def test_n_cpu_moe_positive_saved(self):
         _, u = llama_cpp.model_config_updates({"model": "m", "n_cpu_moe": 16})
         self.assertEqual(u["n_cpu_moe"], 16)
@@ -190,7 +198,7 @@ class TestEnsureModelConfigs(unittest.TestCase):
         self.assertEqual(set(mcfgs), {"C:/a.gguf", "C:/b.gguf"})
         for p in ("C:/a.gguf", "C:/b.gguf"):
             e = mcfgs[p]
-            self.assertEqual(e["ctx"], 8192)     # 上下文窗口固定 8192
+            self.assertEqual(e["ctx"], llama_cpp.DEFAULTS["ctx"])  # 上下文窗口初始默认（与全局默认同源）
             self.assertEqual(e["ngl"], 100)      # 其余继承当前全局参数
             self.assertEqual(e["host"], "0.0.0.0")
             self.assertNotIn("n_cpu_moe", e)     # 非 MoE 不写 --n-cpu-moe

@@ -187,16 +187,18 @@ class TestInstallSyncsModel(unittest.TestCase):
     def test_install_writes_selected_model(self):
         r, uwc = self._run_install(model="large-v3")
         self.assertTrue(r["ok"])
-        # update_whisper_config 的 mutator 应写入所选模型
+        # update_whisper_config 的 mutator 应写入所选模型（原地修改，返回 None）
         mutator = uwc.call_args.args[0]
-        cfg = mutator({})
+        cfg = {}
+        self.assertIsNone(mutator(cfg))
         self.assertEqual(cfg, {"model": "large-v3"})
 
     def test_install_default_model_idempotent(self):
         r, uwc = self._run_install(model="v3-turbo")
         self.assertTrue(r["ok"])
         mutator = uwc.call_args.args[0]
-        cfg = mutator({"model": "v3-turbo", "enabled": True})
+        cfg = {"model": "v3-turbo", "enabled": True}
+        mutator(cfg)
         self.assertEqual(cfg["model"], "v3-turbo")
         self.assertEqual(cfg["enabled"], True)  # 其他键不被破坏
 

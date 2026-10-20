@@ -1,6 +1,6 @@
-"""llama-server 显存让出/恢复（pause_for_task / resume_after_task）与启动状态测试。
+"""llama-server 显存让出（pause_for_task）与启动状态测试。
 
-覆盖：pause/resume 的暂存-恢复语义、GPU 任务（标签获取/转录）前后挂钩、
+覆盖：GPU 任务（标签获取/转录）前的让出挂钩（仅停止、不恢复）、
 launch 的输出固定接管与 server_log_fn 分流、启动 4 态（starting/launch_failed）流转。
 """
 import sys
@@ -18,36 +18,30 @@ from gui_app.config_store import _default_config, _pixai_defaults
 
 def _reset_runtime_state():
     """恢复 llama_cpp 模块级运行时状态（测试可能污染）。"""
-    llama_cpp._paused_launch = None
     llama_cpp._llama_proc = None
     llama_cpp._llama_state.update({
         "running": False, "pid": None, "port": None, "model": None,
-        "launch_params": None,
         "starting": False, "launch_failed": None,
     })
 
 
 class TestPauseForTask(unittest.TestCase):
-    """pause_for_task：其他高显存任务开始前让出 llama-server。"""
+    """pause_for_task：其他高显存任务开始前停止 llama-server（不恢复）。"""
 
     def setUp(self):
         _reset_runtime_state()
 
-    def test_running_saves_params_and_stops(self):
+    def test_running_stops(self):
         proc = mock.MagicMock()
         proc.poll.return_value = None  # 运行中
-        state = {"model": "C:/m.gguf", "launch_params": {"ctx": 8192, "port": 8080}}
         with mock.patch("gui_app.llama_cpp._llama_proc", proc), \
-             mock.patch("gui_app.llama_cpp._llama_state", state), \
+             mock.patch("gui_app.llama_cpp._llama_state", {}), \
              mock.patch("gui_app.llama_cpp.stop",
                         return_value={"ok": True}) as stop_mock:
             r = llama_cpp.pause_for_task()
         self.assertTrue(r["ok"])
         self.assertTrue(r["was_running"])
         stop_mock.assert_called_once()
-        # 启动参数已暂存，供任务完成后恢复
-        self.assertEqual(llama_cpp._paused_launch, {
-            "model": "C:/m.gguf", "params": {"ctx": 8192, "port": 8080}})
 
     def test_not_running_noop(self):
         proc = mock.MagicMock()
@@ -59,7 +53,6 @@ class TestPauseForTask(unittest.TestCase):
         self.assertTrue(r["ok"])
         self.assertFalse(r["was_running"])
         stop_mock.assert_not_called()
-        self.assertIsNone(llama_cpp._paused_launch)
 
     def test_no_proc_noop(self):
         with mock.patch("gui_app.llama_cpp._llama_proc", None), \
@@ -68,129 +61,22 @@ class TestPauseForTask(unittest.TestCase):
         self.assertFalse(r["was_running"])
         stop_mock.assert_not_called()
 
-    def test_stop_failure_clears_saved(self):
+    def test_stop_failure_reported(self):
         proc = mock.MagicMock()
         proc.poll.return_value = None
         with mock.patch("gui_app.llama_cpp._llama_proc", proc), \
-             mock.patch("gui_app.llama_cpp._llama_state",
-                        {"model": "C:/m.gguf", "launch_params": {}}), \
+             mock.patch("gui_app.llama_cpp._llama_state", {}), \
              mock.patch("gui_app.llama_cpp.stop",
                         return_value={"ok": False, "error": "x"}) as stop_mock:
             r = llama_cpp.pause_for_task()
         self.assertFalse(r["ok"])
         self.assertTrue(r["was_running"])
+        self.assertEqual(r["error"], "x")
         stop_mock.assert_called_once()
-        # 停止失败：不留下待恢复状态，避免任务结束后误重启
-        self.assertIsNone(llama_cpp._paused_launch)
-
-
-class TestResumeAfterTask(unittest.TestCase):
-    """resume_after_task：高显存任务完成后恢复 llama-server。"""
-
-    def setUp(self):
-        _reset_runtime_state()
-
-    def test_no_saved_noop(self):
-        with mock.patch("gui_app.llama_cpp.launch") as launch_mock:
-            r = llama_cpp.resume_after_task()
-        self.assertTrue(r["ok"])
-        self.assertFalse(r["restarted"])
-        launch_mock.assert_not_called()
-
-    def test_saved_relaunches_with_saved_params(self):
-        llama_cpp._paused_launch = {
-            "model": "C:/m.gguf", "params": {"port": 9999, "ctx": 8192}}
-        with mock.patch("gui_app.llama_cpp.launch",
-                        return_value={"ok": True, "model": "C:/m.gguf"}) as launch_mock:
-            r = llama_cpp.resume_after_task()
-        self.assertTrue(r["ok"])
-        self.assertTrue(r["restarted"])
-        launch_mock.assert_called_once_with(
-            "C:/m.gguf", {"port": 9999, "ctx": 8192}, log_fn=mock.ANY,
-            server_log_fn=mock.ANY)
-        self.assertIsNone(llama_cpp._paused_launch)  # 暂存被消费
-
-    def test_saved_but_already_running_skips(self):
-        # 任务期间用户手动启动了服务 → 不重复启动
-        llama_cpp._paused_launch = {"model": "C:/m.gguf", "params": {}}
-        proc = mock.MagicMock()
-        proc.poll.return_value = None
-        with mock.patch("gui_app.llama_cpp._llama_proc", proc), \
-             mock.patch("gui_app.llama_cpp.launch") as launch_mock:
-            r = llama_cpp.resume_after_task()
-        self.assertTrue(r["ok"])
-        self.assertFalse(r["restarted"])
-        launch_mock.assert_not_called()
-
-    def test_relaunch_failure_reported(self):
-        llama_cpp._paused_launch = {"model": "C:/m.gguf", "params": {}}
-        with mock.patch("gui_app.llama_cpp.launch",
-                        return_value={"ok": False, "error": "启动失败"}) as launch_mock:
-            r = llama_cpp.resume_after_task()
-        self.assertFalse(r["ok"])
-        self.assertNotIn("restarted", r)
-        launch_mock.assert_called_once()
-
-
-class TestLaunchSavesParams(unittest.TestCase):
-    """launch 成功启动后保存完整参数，供 pause_for_task 让出后恢复。"""
-
-    def setUp(self):
-        _reset_runtime_state()
-
-    def test_launch_params_recorded(self):
-        proc = mock.MagicMock()
-        proc.pid = 1234
-        proc.poll.return_value = None
-        with mock.patch("pathlib.Path.is_file", return_value=True), \
-             mock.patch("gui_app.llama_cpp.scan_models"), \
-             mock.patch("gui_app.llama_cpp.scan_mmprojs", return_value=[]), \
-             mock.patch("gui_app.llama_cpp._pick_mmproj", return_value=""), \
-             mock.patch("gui_app.llama_cpp._build_args", return_value=[]), \
-             mock.patch("gui_app.llama_cpp.subprocess.Popen", return_value=proc), \
-             mock.patch("gui_app.llama_cpp.register_subprocess"), \
-             mock.patch("gui_app.llama_cpp._reader_thread"), \
-             mock.patch("gui_app.llama_cpp._wait_for_health", return_value=True), \
-             mock.patch("gui_app.llama_cpp._port_in_use", return_value=False), \
-             mock.patch("gui_app.config_store.update_llama_config"):
-            r = llama_cpp.launch("C:/m.gguf", {"ctx": 8192, "port": 9090})
-        self.assertTrue(r["ok"])
-        saved = llama_cpp._llama_state["launch_params"]
-        self.assertEqual(saved["ctx"], 8192)
-        self.assertEqual(saved["port"], 9090)
-        self.assertEqual(llama_cpp._llama_state["model"],
-                         str(Path("C:/m.gguf")))  # launch 记录解析后的实际路径
-
-
-class _FakeStream:
-    """假分析流：捕获 send、永不返回结果、close 报告成功。
-
-    测试环境防真实启动推理子进程/加载模型（mock start_analyze_stream 的返回）。
-    当前两个用例抽帧均无帧（无 send），走「全部抽帧失败」路径即可。
-    """
-
-    def __init__(self):
-        self.sent: list = []
-        self.closed = False
-        self.broken = False  # send-ahead 主循环会检查的引擎状态位
-
-    def send(self, item: dict) -> bool:
-        self.sent.append(item)
-        return True
-
-    def next_result(self):
-        return None
-
-    def try_next_result(self):
-        return None  # 机会性排空：无就绪结果
-
-    def close(self):
-        self.closed = True
-        return {"ok": True, "per_video": [], "error": None}
 
 
 class TestTaskHooks(unittest.TestCase):
-    """detect_ip_tags / detect_speech：任务开始让出、结束恢复本地推理服务。"""
+    """detect_ip_tags / detect_speech：任务开始前让出（停止）本地推理服务。"""
 
     def _api(self):
         from gui_app.api_mixins.experimental import ExperimentalMixin
@@ -218,24 +104,20 @@ class TestTaskHooks(unittest.TestCase):
                        return_value=_FakeStream()),
         ]
 
-    def test_detect_ip_tags_pauses_and_resumes(self):
+    def test_detect_ip_tags_pauses(self):
         api = self._api()
         with mock.patch("gui_app.llama_cpp.pause_for_task") as pause_mock, \
-             mock.patch("gui_app.llama_cpp.resume_after_task") as resume_mock, \
              ExitStack() as stack:
             for p in self._pixai_patches({"return_value": []}):
                 stack.enter_context(p)
             r = api.detect_ip_tags([["vid1", "C:/v.mp4"]])
         self.assertTrue(r["ok"])
         pause_mock.assert_called_once()   # 开始前让出显存
-        resume_mock.assert_called_once()  # 结束（含失败路径）后恢复
 
     def test_detect_ip_tags_degrades_on_extract_error(self):
-        # 抽帧异常按视频降级（该视频记 error，不整体失败）：
-        # 异常路径同样要恢复本地推理服务
+        # 抽帧异常按视频降级（该视频记 error，不整体失败）：异常路径同样先让出
         api = self._api()
         with mock.patch("gui_app.llama_cpp.pause_for_task") as pause_mock, \
-             mock.patch("gui_app.llama_cpp.resume_after_task") as resume_mock, \
              ExitStack() as stack:
             for p in self._pixai_patches({"side_effect": RuntimeError("boom")}):
                 stack.enter_context(p)
@@ -243,9 +125,8 @@ class TestTaskHooks(unittest.TestCase):
         self.assertTrue(r["ok"])                          # 单视频异常不影响整体
         self.assertEqual(r["results"]["vid1"]["error"], "抽帧失败")
         pause_mock.assert_called_once()   # 开始前让出显存
-        resume_mock.assert_called_once()  # 结束（含失败路径）后恢复
 
-    def test_detect_speech_pauses_and_resumes(self):
+    def test_detect_speech_pauses(self):
         api = self._api()
         with mock.patch("gui_app.faster_whisper.get_status",
                         return_value={"ready": True}), \
@@ -254,12 +135,37 @@ class TestTaskHooks(unittest.TestCase):
              mock.patch("gui_app.faster_whisper.run_transcription_batch",
                         return_value={"ok": False, "per_video": [],
                                       "error": "x"}), \
-             mock.patch("gui_app.llama_cpp.pause_for_task") as pause_mock, \
-             mock.patch("gui_app.llama_cpp.resume_after_task") as resume_mock:
+             mock.patch("gui_app.llama_cpp.pause_for_task") as pause_mock:
             r = api.detect_speech([["v1", "C:/v.mp4"]])
         self.assertFalse(r["ok"])  # 转录失败路径
         pause_mock.assert_called_once()
-        resume_mock.assert_called_once()
+
+
+class _FakeStream:
+    """假分析流：捕获 send、永不返回结果、close 报告成功。
+
+    测试环境防真实启动推理子进程/加载模型（mock start_analyze_stream 的返回）。
+    当前两个用例抽帧均无帧（无 send），走「全部抽帧失败」路径即可。
+    """
+
+    def __init__(self):
+        self.sent: list = []
+        self.closed = False
+        self.broken = False  # send-ahead 主循环会检查的引擎状态位
+
+    def send(self, item: dict) -> bool:
+        self.sent.append(item)
+        return True
+
+    def next_result(self):
+        return None
+
+    def try_next_result(self):
+        return None  # 机会性排空：无就绪结果
+
+    def close(self):
+        self.closed = True
+        return {"ok": True, "error": None}
 
 
 class TestLaunchTerminal(unittest.TestCase):
@@ -300,7 +206,7 @@ class TestLaunchTerminal(unittest.TestCase):
         thread_cls.assert_called_once()
         self.assertEqual(thread_cls.call_args.kwargs["target"], reader_mock)
         self.assertEqual(thread_cls.call_args.kwargs["args"],
-                         (proc, mock.ANY, mock.ANY))
+                         (proc, mock.ANY, mock.ANY, mock.ANY))
 
     def test_launch_success_clears_starting(self):
         # 健康检查通过后：starting 收起、无失败残留 → 胶囊「运行中」
@@ -399,6 +305,63 @@ class TestLaunchState(unittest.TestCase):
         self.assertFalse(st["starting"])
         self.assertIn("秒", st["launch_failed"])
 
+    def test_health_timeout_terminate_failure_keeps_handle(self):
+        # 健康检查超时 + 强杀失败：报「启动失败」，句柄与注册保留（可再次启动/停止回收）
+        proc = self._mk_proc(None)
+        with ExitStack() as stack:
+            for p in self._launch_patches():
+                stack.enter_context(p)
+            stack.enter_context(mock.patch("gui_app.llama_cpp.subprocess.Popen",
+                                           return_value=proc))
+            unreg = stack.enter_context(mock.patch("gui_app.llama_cpp.unregister_subprocess"))
+            stack.enter_context(mock.patch("gui_app.llama_cpp._wait_for_health",
+                                           return_value=False))
+            stack.enter_context(mock.patch("gui_app.llama_cpp._terminate_process",
+                                           side_effect=TimeoutError("进程在强制终止后仍未退出")))
+            r = llama_cpp.launch("C:/m.gguf", {}, log_fn=lambda m: None)
+            self.assertFalse(r["ok"])
+            self.assertIn("自动停止失败", r["error"])
+            st = llama_cpp._llama_state
+            self.assertIn("自动停止失败", st["launch_failed"])
+            self.assertFalse(st["running"])
+            self.assertFalse(st["starting"])
+            self.assertIs(llama_cpp._llama_proc, proc)  # 句柄保留
+            unreg.assert_not_called()
+
+    def test_launch_reaps_orphaned_stale_proc(self):
+        # 启动失败残留（标志全假 + 进程仍存活）：先回收再正常启动，不报「已在运行」
+        orphan = self._mk_proc(None)
+        with ExitStack() as stack:
+            for p in self._launch_patches():
+                stack.enter_context(p)
+            stack.enter_context(mock.patch("gui_app.llama_cpp._llama_proc", orphan))
+            stack.enter_context(mock.patch("gui_app.llama_cpp.subprocess.Popen",
+                                           return_value=self._mk_proc(None)))
+            stack.enter_context(mock.patch("gui_app.llama_cpp.unregister_subprocess"))
+            stack.enter_context(mock.patch("gui_app.llama_cpp._wait_for_health",
+                                           return_value=False))
+            r = llama_cpp.launch("C:/m.gguf", {}, log_fn=lambda m: None)
+            self.assertFalse(r["ok"])  # 新实例健康检查失败（本测试无关）
+            self.assertNotIn("已在运行", r["error"])
+            orphan.terminate.assert_called_once()  # 残留被回收
+
+    def test_launch_running_proc_still_guarded(self):
+        # 运行中/启动中的进程照常拒绝重复启动
+        for flag in ("running", "starting"):
+            proc = self._mk_proc(None)
+            with ExitStack() as stack:
+                for p in self._launch_patches():
+                    stack.enter_context(p)
+                stack.enter_context(mock.patch("gui_app.llama_cpp._llama_proc", proc))
+                stack.enter_context(mock.patch("gui_app.llama_cpp._llama_state",
+                                               {"running": flag == "running",
+                                                "starting": flag == "starting",
+                                                "launch_failed": None}))
+                r = llama_cpp.launch("C:/m.gguf", {}, log_fn=lambda m: None)
+            self.assertFalse(r["ok"])
+            self.assertIn("已在运行", r["error"])
+            proc.terminate.assert_not_called()
+
     def test_proc_exited_during_start_records_failed(self):
         # 启动过程中进程异常退出（模型加载失败/显存不足）：胶囊「启动失败」
         proc = self._mk_proc(0)
@@ -431,6 +394,29 @@ class TestLaunchState(unittest.TestCase):
         self.assertFalse(st["starting"])
         self.assertIsNone(st["launch_failed"])
 
+    def test_stop_terminate_failure_keeps_handle(self):
+        # 强杀后仍不退出：句柄与注册保留（可再次停止）；进程随后退出则照常收尾
+        proc = self._mk_proc(None)
+        with mock.patch("gui_app.llama_cpp._llama_proc", proc), \
+             mock.patch("gui_app.llama_cpp.unregister_subprocess") as unreg, \
+             mock.patch("gui_app.llama_cpp._terminate_process",
+                        side_effect=TimeoutError("进程在强制终止后仍未退出")), \
+             mock.patch("gui_app.llama_cpp._llama_state",
+                        {"running": True, "starting": False, "launch_failed": None}):
+            r = llama_cpp.stop()
+            self.assertFalse(r["ok"])
+            self.assertIn("停止失败", r["error"])
+            self.assertIs(llama_cpp._llama_proc, proc)  # 句柄保留
+            unreg.assert_not_called()
+
+        proc.poll.return_value = 0  # 随后自行退出 → 可正常停止
+        with mock.patch("gui_app.llama_cpp._llama_proc", proc), \
+             mock.patch("gui_app.llama_cpp.unregister_subprocess"), \
+             mock.patch("gui_app.llama_cpp._llama_state",
+                        {"running": True, "starting": False, "launch_failed": None}):
+            r2 = llama_cpp.stop()
+        self.assertTrue(r2["ok"])
+
     def test_stop_no_proc_clears_starting_and_launch_failed(self):
         # 无进程（含上次启动失败后）：停止入口同样清掉失败残留
         with mock.patch("gui_app.llama_cpp._llama_proc", None), \
@@ -448,8 +434,7 @@ class TestLaunchState(unittest.TestCase):
              mock.patch("gui_app.llama_cpp._llama_state",
                         {"running": True, "starting": True,
                          "launch_failed": "加载超时", "pid": 1, "port": 8080,
-                         "model": "C:/m.gguf",
-                         "launch_params": {}}), \
+                         "model": "C:/m.gguf"}), \
              mock.patch("gui_app.llama_cpp.scan_models", return_value=[]):
             st = llama_cpp.get_status()
         self.assertTrue(st["starting"])

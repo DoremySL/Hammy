@@ -1,7 +1,7 @@
-"""GGUF 头部模型信息提取（架构前缀键 / MoE>1 / 大端 / 分片过滤）。
+"""GGUF 头部模型信息提取（架构前缀键 / MoE>1 / 分片过滤）。
 
 覆盖：_extract_model_info（架构前缀优先、回退 llama.*、MoE 判定专家数 > 1）、
-_read_gguf_meta（读全部 KV 与大端支持）、scan_models 分片过滤。
+_read_gguf_meta（读全部 KV、非法版本号拒绝）、scan_models 分片过滤。
 """
 import struct
 import sys
@@ -15,41 +15,36 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from gui_app import llama_cpp
 
 
-# ── 最小 GGUF 文件构造（小端 / 大端）──
+# ── 最小 GGUF 文件构造（小端）──
 
-def _str(v: str, e: str = "<") -> bytes:
+def _str(v: str) -> bytes:
     b = v.encode("utf-8")
-    return struct.pack(e + "Q", len(b)) + b
+    return struct.pack("<Q", len(b)) + b
 
 
-def _u32(v: int, e: str = "<") -> bytes:
-    return struct.pack(e + "I", v)
+def _u32(v: int) -> bytes:
+    return struct.pack("<I", v)
 
 
-def _u64(v: int, e: str = "<") -> bytes:
-    return struct.pack(e + "Q", v)
+def _u64(v: int) -> bytes:
+    return struct.pack("<Q", v)
 
 
-def _gguf_bytes(pairs, version: int = 3, e: str = "<") -> bytes:
+def _gguf_bytes(pairs, version: int = 3) -> bytes:
     """构造最小 GGUF 文件字节。
 
     pairs: [(key, value_type_id, payload_bytes)]，按顺序写入 KV 区。
     """
     out = bytearray(b"GGUF")
-    out += struct.pack(e + "I", version)
-    out += struct.pack(e + "Q", 0)            # tensor_count
-    out += struct.pack(e + "Q", len(pairs))   # metadata_kv_count
+    out += struct.pack("<I", version)
+    out += struct.pack("<Q", 0)            # tensor_count
+    out += struct.pack("<Q", len(pairs))   # metadata_kv_count
     for key, vt, payload in pairs:
         kb = key.encode("utf-8")
-        out += struct.pack(e + "Q", len(kb)) + kb
-        out += struct.pack(e + "I", vt)
+        out += struct.pack("<Q", len(kb)) + kb
+        out += struct.pack("<I", vt)
         out += payload
     return bytes(out)
-
-
-def _gguf_bytes_be(pairs) -> bytes:
-    """大端 GGUF（规范版本 1/2/3 之外，极少见）。"""
-    return _gguf_bytes(pairs, version=5, e=">")
 
 
 class TestExtractModelInfo(unittest.TestCase):
@@ -137,30 +132,24 @@ class TestReadGgufMetaFullKv(unittest.TestCase):
         self.assertEqual(meta["llama.block_count"], 64)
         self.assertEqual(meta["llama.expert_count"], 8)
 
-    def test_big_endian_file(self):
-        # 规范版本 1/2/3 之外（极少见）按大端解析，同样读全部 KV
-        data = _gguf_bytes_be([
-            ("general.architecture", 8, _str("qwen2", ">")),
-            ("qwen2.context_length", 4, _u32(131072, ">")),
-            ("qwen2.block_count", 4, _u32(80, ">")),
-            ("qwen2.expert_count", 4, _u32(64, ">")),
-        ])
+    def test_bad_version_rejected(self):
+        # GGUF 规范只有小端：版本号 1/2/3 之外的文件按无效处理
+        data = _gguf_bytes([
+            ("general.architecture", 8, _str("qwen2")),
+            ("qwen2.context_length", 4, _u32(131072)),
+        ], version=5)
         with tempfile.TemporaryDirectory() as td:
-            p = Path(td) / "moe-be.gguf"
+            p = Path(td) / "bad-ver.gguf"
             p.write_bytes(data)
-            meta = llama_cpp._read_gguf_meta(p)
-        self.assertEqual(meta["general.architecture"], "qwen2")
-        self.assertEqual(meta["qwen2.context_length"], 131072)
-        self.assertEqual(meta["qwen2.block_count"], 80)
-        self.assertEqual(meta["qwen2.expert_count"], 64)
+            self.assertEqual(llama_cpp._read_gguf_meta(p), {})
 
-    def test_big_endian_uint64_expert(self):
-        data = _gguf_bytes_be([
-            ("llama.expert_count", 10, _u64(8, ">")),
-            ("llama.context_length", 4, _u32(32768, ">")),
+    def test_uint64_expert(self):
+        data = _gguf_bytes([
+            ("llama.expert_count", 10, _u64(8)),
+            ("llama.context_length", 4, _u32(32768)),
         ])
         with tempfile.TemporaryDirectory() as td:
-            p = Path(td) / "moe-be64.gguf"
+            p = Path(td) / "u64.gguf"
             p.write_bytes(data)
             meta = llama_cpp._read_gguf_meta(p)
         self.assertEqual(meta["llama.expert_count"], 8)

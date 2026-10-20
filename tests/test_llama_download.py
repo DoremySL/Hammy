@@ -281,5 +281,88 @@ class TestInstallPartialKeep(unittest.TestCase):
         upd.assert_not_called()
 
 
+def _fake_release(tag="b123"):
+    return {"tag_name": tag,
+            "assets": [{"name": "llama-b123-bin-win-cpu-x64.zip",
+                        "browser_download_url": "http://x/cpu.zip", "size": 1}]}
+
+
+class TestReleaseCache(unittest.TestCase):
+    """get_latest_release_assets 的缓存 TTL 与并发等待语义。"""
+
+    def setUp(self):
+        llama_cpp._cached_release = None
+        llama_cpp._cached_release_at = 0.0
+        llama_cpp._release_fetching = False
+        self.addCleanup(setattr, llama_cpp, "_cached_release", None)
+        self.addCleanup(setattr, llama_cpp, "_cached_release_at", 0.0)
+        self.addCleanup(setattr, llama_cpp, "_release_fetching", False)
+
+    def _gpu(self):
+        return mock.patch.object(llama_cpp, "detect_gpu",
+                                 return_value={"cuda_max": "", "gpu_name": "x"})
+
+    def test_waiter_rejects_stale_cache_and_refetches(self):
+        # 抓取在途时等待者不得返回过期缓存；抓取失败后等待者自行重试（也失败则报错）
+        llama_cpp._cached_release = {"ok": True, "stale": True}
+        llama_cpp._cached_release_at = time.time() - 10 * llama_cpp._CACHE_TTL
+        calls = []
+
+        def fetch(*a, **k):
+            calls.append(1)
+            time.sleep(0.4)
+            raise RuntimeError("network down")
+
+        with mock.patch.object(llama_cpp, "_fetch_json", side_effect=fetch), self._gpu():
+            def _run_a():
+                try:
+                    llama_cpp.get_latest_release_assets()
+                except RuntimeError:
+                    pass
+            ta = threading.Thread(target=_run_a)
+            ta.start()
+            time.sleep(0.1)  # A 已进入抓取
+            with self.assertRaises(RuntimeError):
+                llama_cpp.get_latest_release_assets()  # B：等待者
+            ta.join()
+        self.assertEqual(len(calls), 2)  # A 失败后 B 自己重抓了一次
+
+    def test_waiter_gets_fresh_cache_after_success(self):
+        # 首个线程抓取成功后，等待者直接复用同一结果（不重复抓取）
+        result = {}
+        calls = []
+
+        def fetch(*a, **k):
+            calls.append(1)
+            time.sleep(0.3)
+            return [_fake_release()]
+
+        with mock.patch.object(llama_cpp, "_fetch_json", side_effect=fetch), self._gpu():
+            ta = threading.Thread(target=lambda: result.update(
+                r=llama_cpp.get_latest_release_assets()))
+            ta.start()
+            time.sleep(0.1)
+            rb = llama_cpp.get_latest_release_assets()
+            ta.join()
+        self.assertIs(result["r"], rb)
+        self.assertEqual(len(calls), 1)
+
+    def test_cache_timestamp_set_after_fetch(self):
+        # TTL 从抓取完成时刻起算：抓取耗时超过 TTL 后缓存仍有效
+        calls = []
+
+        def slow_fetch(*a, **k):
+            calls.append(1)
+            time.sleep(0.35)
+            return [_fake_release()]
+
+        with mock.patch.object(llama_cpp, "_CACHE_TTL", 0.2), \
+             mock.patch.object(llama_cpp, "_fetch_json", side_effect=slow_fetch), self._gpu():
+            r1 = llama_cpp.get_latest_release_assets()
+            r2 = llama_cpp.get_latest_release_assets()
+        self.assertIs(r2, r1)  # 若时间戳写于抓取前，age 0.35s > TTL 0.2s 会 miss 重抓
+        self.assertEqual(len(calls), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

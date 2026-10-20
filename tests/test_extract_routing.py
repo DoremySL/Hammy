@@ -24,7 +24,8 @@ _META_TS = {"duration": 100.0, "start_time": 1.442, "format_name": "mpegts",
 class _RouterHarness:
     """mock probe/抽帧底座，记录路由命中。"""
 
-    def __init__(self, meta, key_ts, timestamps, concat_frames=None, per_frames=None):
+    def __init__(self, meta, key_ts, timestamps, concat_frames=None, per_frames=None,
+                 ts_pass_frames=None):
         self.meta = meta
         self.key_ts = key_ts
         self.timestamp_list = timestamps
@@ -33,6 +34,7 @@ class _RouterHarness:
         self.ts_pass_calls = 0
         self.concat_frames = concat_frames
         self.per_frames = per_frames or []
+        self.ts_pass_frames = ts_pass_frames
 
     def _probe(self, path, stop, points, per_point):
         return dict(self.meta), list(self.key_ts)
@@ -50,7 +52,7 @@ class _RouterHarness:
 
     def _ts_pass(self, path, targets, config, stop, frame_rate, frame_vf=None):
         self.ts_pass_calls += 1
-        return [None] * len(targets)
+        return list(self.ts_pass_frames) if self.ts_pass_frames is not None else None
 
     def run(self, cfg):
         with mock.patch.object(video_mod, "probe_video", self._probe), \
@@ -101,10 +103,18 @@ class TestExtractRouting(unittest.TestCase):
         self.assertEqual([st for _, st in h.per_frame_calls], [1.442, 1.442])
 
     def test_legacy_ts_uses_single_pass(self):
-        h = _RouterHarness(_META_TS, [0.0, 50.0], [0.0, 50.0])
-        h.run(_make_cfg("legacy"))
+        h = _RouterHarness(_META_TS, [0.0, 50.0], [0.0, 50.0], ts_pass_frames=["F0", "F1"])
+        _, frames = h.run(_make_cfg("legacy"))
         self.assertEqual(h.ts_pass_calls, 1)
         self.assertEqual(h.per_frame_calls, [])
+        self.assertEqual(frames, ["F0", "F1"])
+
+    def test_legacy_ts_mismatch_falls_back_to_per_frame(self):
+        h = _RouterHarness(_META_TS, [0.0, 50.0], [0.0, 50.0])  # ts_pass 返回 None
+        _, frames = h.run(_make_cfg("legacy"))
+        self.assertEqual(h.ts_pass_calls, 1)
+        self.assertEqual([ts for ts, _ in h.per_frame_calls], [0.0, 50.0])
+        self.assertEqual(frames, [])
 
     def test_legacy_mp4_no_concat(self):
         h = _RouterHarness(_META_MP4, [0.0, 50.0], [0.0, 50.0])

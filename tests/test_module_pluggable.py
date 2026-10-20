@@ -102,8 +102,9 @@ class _WorkspaceTestCase(unittest.TestCase):
 
 def _PIXAI_KEYMAP_DEFAULTS():
     from gui_app import config_store
+    # 只取映射过的键：未映射键（precision 内部状态）不进 experimental 段
     return {config_store._PIXAI_KEY_MAP[k]: v
-            for k, v in _pixai_defaults().items()}
+            for k, v in _pixai_defaults().items() if k in config_store._PIXAI_KEY_MAP}
 
 
 def _WHISPER_KEYMAP_DEFAULTS():
@@ -124,8 +125,8 @@ class TestAssemble(_WorkspaceTestCase):
             **_PIXAI_KEYMAP_DEFAULTS(), **_WHISPER_KEYMAP_DEFAULTS(),
             "llama_enabled": False, "llama_integrate": False,
         })
-        # 「跳过非二次元作品」默认开启
-        self.assertIs(exp["pixai_classify"], True)
+        # 内部状态键（precision）不进设置段
+        self.assertNotIn("precision", exp)
 
     def test_assemble_reflects_module_files(self):
         from gui_app import config_store
@@ -284,8 +285,7 @@ class TestSetEnabled(unittest.TestCase):
         self.assertEqual(r, {"ok": True, "enabled": True})
         up.assert_called_once()
         cfg = {"enabled": False, "frames": 5}
-        out = up.call_args[0][0](cfg)
-        self.assertIs(out, cfg)          # 就地修改
+        self.assertIsNone(up.call_args[0][0](cfg))  # 原地修改，返回 None
         self.assertIs(cfg["enabled"], True)
 
     def test_pixai_enabled_noop_when_not_installed(self):
@@ -319,8 +319,7 @@ class TestSetEnabled(unittest.TestCase):
         self.assertEqual(r, {"ok": True, "enabled": True})
         uw.assert_called_once()
         cfg = {"enabled": False, "vad": True}
-        out = uw.call_args[0][0](cfg)
-        self.assertIs(out, cfg)
+        self.assertIsNone(uw.call_args[0][0](cfg))  # 原地修改，返回 None
         self.assertIs(cfg["enabled"], True)
 
     def test_whisper_enabled_noop_when_not_installed(self):
@@ -351,8 +350,7 @@ class TestSetEnabled(unittest.TestCase):
         self.assertEqual(r, {"ok": True, "enabled": True})
         ul.assert_called_once()
         cfg = {"enabled": False, "host": "0.0.0.0"}
-        out = ul.call_args[0][0](cfg)
-        self.assertIs(out, cfg)
+        self.assertIsNone(ul.call_args[0][0](cfg))  # 原地修改，返回 None
         self.assertIs(cfg["enabled"], True)
 
     def test_llama_enabled_noop_when_not_installed(self):

@@ -83,7 +83,6 @@ class TestAnalyzeStreamCloseFastPath(unittest.TestCase):
         stream.p.returncode = 0
         stream._deadline = time.time() + 100
         stream._out_thread = MagicMock()
-        stream.per_video = []
         stream._error = None
         stream._err_tail = []
         stream._params_path = "/tmp/nonexistent_params.json"
@@ -115,11 +114,10 @@ class TestStopGrace(unittest.TestCase):
 
     def setUp(self):
         from gui_app import llama_cpp
-        llama_cpp._paused_launch = None
         llama_cpp._llama_proc = None
         llama_cpp._llama_state.update({
             "running": False, "pid": None, "port": None, "model": None,
-            "launch_params": None, "starting": False, "launch_failed": None,
+            "starting": False, "launch_failed": None,
         })
 
     def _patch_stop_env(self, proc):
