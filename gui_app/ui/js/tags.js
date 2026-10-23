@@ -48,11 +48,11 @@ function renderTagsTab(pt) {
         <div class="tag-left">
           <div class="tag-left-top">
             <span id="pt-mode-seg" class="mode-switch">
-              <button type="button" class="pill clickable${state.ptMode === 'off' ? ' active' : ''}" data-mode="off" data-tip="关闭：标签库不参与分析">关闭</button>
+              <button type="button" class="pill clickable${state.ptMode === 'off' ? ' active' : ''}" data-mode="off" data-tip="标签库不参与分析">关闭</button>
               <span class="pill-sep"></span>
-              <button type="button" class="pill clickable${state.ptMode === 'on' ? ' active' : ''}" data-mode="on" data-tip="开启：启用的标签一次性写入提示词，一次分析完成">开启</button>
+              <button type="button" class="pill clickable${state.ptMode === 'on' ? ' active' : ''}" data-mode="on" data-tip="启用的标签一次性写入提示词，适合少量标签">开启</button>
               <span class="pill-sep"></span>
-              <button type="button" class="pill clickable${state.ptMode === 'enhanced' ? ' active' : ''}" data-mode="enhanced" data-tip="增强：首轮不带标签，根据首轮输出内容检索出候选标签让AI做第二轮修订">增强</button>
+              <button type="button" class="pill clickable${state.ptMode === 'enhanced' ? ' active' : ''}" data-mode="enhanced" data-tip="首轮不带标签，根据首轮输出内容检索出候选标签让AI做第二轮修订">增强</button>
             </span>
             <div class="tag-seg">
               <button type="button" id="btn-pt-import">导入</button>
@@ -107,7 +107,7 @@ function ptGroupDdOptions() {
   return ['<div class="dd-opt' + (state.ptGroupFilter === '' ? ' active' : '') + '" data-value="">全部标签</div>',
     ptGroupDdRow('__default__', '默认分组', ''),
     ...ptAllGroups(state.ptItems).map(g => ptGroupDdRow(g, g, g)),
-    '<div class="dd-hint">右键分组行：启用 / 停用（停用组不参与检索）</div>'].join('');
+    '<div class="dd-hint">右键分组行启用/停用组控制是否参与检索</div>'].join('');
 }
 
 function ptRenderGroupDd() {

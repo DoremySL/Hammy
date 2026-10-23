@@ -1,7 +1,6 @@
 /* ════════════════════════════════════════════════════════════
    设置 Modal - 提示词模板页
    ════════════════════════════════════════════════════════════ */
-let _pvTimer = null, _pvSeq = 0;
 
 async function pvLeaveGuard() {
   if (!state.pvDirty) return true;
@@ -37,10 +36,9 @@ function renderPromptsTab(presets, activePreset) {
 
       <div class="group">
       <h3><span class="tip-text" data-tip="定义 AI 的角色与行为准则，作用于所有字段的生成。">系统提示词（System Prompt）</span></h3>
-      <div class="field"><textarea id="preset-system_prompt" data-field="system_prompt" rows="5">${esc(activePreset.system_prompt || '')}</textarea></div>
+      <div class="field"><textarea id="preset-system_prompt" data-field="system_prompt" rows="2" style="min-height:0">${esc(activePreset.system_prompt || '')}</textarea></div>
     </div>
     <div class="group">
-      <h3><span class="tip-text" data-tip="分别告诉 AI 如何生成 plot、title、tags 三个字段。">字段引导文案</span></h3>
       <div class="grid-2">
         <div class="field"><label>plot 描述要求</label><textarea data-field="plot_guidance">${esc(activePreset.fields.plot_guidance)}</textarea></div>
         <div class="field"><label>title 字数/格式要求</label><textarea data-field="title_guidance">${esc(activePreset.fields.title_guidance)}</textarea></div>
@@ -52,7 +50,6 @@ function renderPromptsTab(presets, activePreset) {
       </div>
     </div>
     <div class="group" id="pv-example-group" style="${state.pvUseExample ? '' : 'display:none'}">
-      <h3><span class="tip-text" data-tip="给 AI 一个高质量范例，输出格式与风格会更稳定。">示例值</span></h3>
       <div class="field"><label>plot 示例</label><textarea data-field="plot_example" style="min-height:100px">${esc(activePreset.fields.plot_example)}</textarea></div>
       <div class="field" style="margin-top:14px"><label>tags 示例</label><input type="text" data-field="tags_example" value="${esc(activePreset.fields.tags_example)}"/></div>
       <div class="field" style="margin-top:14px"><label>title 示例</label><input type="text" data-field="title_example" value="${esc(activePreset.fields.title_example)}"/></div>
@@ -61,47 +58,13 @@ function renderPromptsTab(presets, activePreset) {
         <input type="text" data-field="thumb_time_example" value="${esc(activePreset.fields.thumb_time_example || '')}"/>
       </div>
     </div>
-    <div class="group">
-      <button class="disclosure" id="prompt-preview-toggle"><svg class="ic" style="width:12px;height:12px"><use href="#ic-play"/></svg> 预览：AI 收到的引导内容</button>
-      <div class="prompt-preview" id="prompt-preview" style="display:none"><span class="readonly-tag">自动生成</span>...</div>
-    </div>
-    </div>
   `;
 
-  const pvToggle = $('#prompt-preview-toggle');
-  const pvContent = $('#prompt-preview');
-  pvToggle.onclick = () => {
-    const shown = pvContent.style.display !== 'none';
-    pvContent.style.display = shown ? 'none' : '';
-    pvToggle.classList.toggle('open', !shown);
-  };
-
-  function updatePreview() {
-    clearTimeout(_pvTimer);
-    const seq = ++_pvSeq;
-    _pvTimer = setTimeout(() => {
-      const fields = {};
-      body.querySelectorAll('[data-field]').forEach(el => {
-        if (el.dataset.field !== 'system_prompt') fields[el.dataset.field] = el.value;
-      });
-      apiCall('preview_prompt', fields).then(r => {
-        if (seq !== _pvSeq) return;
-        const pv = $('#prompt-preview');
-        if (!pv) return;
-        pv.innerHTML = '<span class="readonly-tag">自动生成</span>\n' + esc(r.prompt);
-      }).catch(() => {
-        const pv = $('#prompt-preview');
-        if (pv) pv.innerHTML = '<span class="readonly-tag">自动生成</span> 预览失败';
-      });
-    }, 250);
-  }
   body.querySelectorAll('[data-field]').forEach(el => el.addEventListener('input', () => {
     state.pvDirty = true;
     const b = $('#pv-dirty-badge');
     if (b) b.style.display = '';
-    updatePreview();
   }));
-  updatePreview();
 
   $('#pv-use-example').addEventListener('click', async () => {
     const btn = $('#pv-use-example');
@@ -119,7 +82,6 @@ function renderPromptsTab(presets, activePreset) {
       return;
     }
     state.pvUseExample = on;
-    updatePreview();
   });
 
   $('#pv-thumb-opt').addEventListener('click', async () => {
@@ -139,7 +101,6 @@ function renderPromptsTab(presets, activePreset) {
       return;
     }
     state.thumbOptimize = on;
-    updatePreview();
   });
 
   initDropdown($('#preset-select'), async (val) => {

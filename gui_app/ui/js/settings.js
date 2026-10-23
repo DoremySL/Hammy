@@ -134,10 +134,10 @@ const CFG_FIELDS_AI = [
   ]},
   { group: 'AI 生成参数', noTitle: true, cols: 3, fields: [
     { sec: 'ai', key: 'max_tokens', label: '最大生成长度', type: 'number', min: 1, help: '单次 AI 输出的 Token 上限，改动提示词或开启思考时可按需加大', default: 3000 },
-    { sec: 'ai', key: 'temperature', label: '温度', type: 'number', min: 0, max: 2, step: 0.1, help: '采样随机性，越高越有创意但可能偏离主题，越低越稳定', default: 0.6 },
+    { sec: 'ai', key: 'temperature', label: '温度', type: 'number', min: 0, max: 2, step: 0.1, help: '越高模型输出越有创意但可能偏离主题', default: 0.6 },
     { sec: 'ai', key: 'top_p', label: 'Top-p', type: 'number', min: 0, max: 1, step: 0.05, help: '核采样阈值，与温度共同控制输出多样性', default: 0.8 },
-    { sec: 'ai', key: 'retry_times', label: '重试次数', type: 'number', min: 0, help: '请求失败后的重试次数，重试之间会自动等待', default: 2 },
-    { sec: 'ai', key: 'ai_timeout', label: '超时(秒)', type: 'number', min: 1, help: '单次 AI 请求的超时时间（秒），超时按失败重试', default: 300 },
+    { sec: 'ai', key: 'retry_times', label: '重试次数', type: 'number', min: 0, help: '请求失败后的重试次数', default: 2 },
+    { sec: 'ai', key: 'ai_timeout', label: '超时(秒)', type: 'number', min: 1, help: '单次 AI 请求的超时时间', default: 300 },
     { sec: 'ai', key: 'enforce_json_mode', label: 'JSON 模式', type: 'select', options: [['1', '开启'], ['0', '关闭']], default: '1', help: '增加模型以预期结构输出的几率，部分模型不支持' },
   ]},
 ];
@@ -145,13 +145,13 @@ const CFG_FIELDS_PROCESSING = [
   { group: '视频抽帧', noTitle: true, cols: 3, fields: [
     { sec: 'video', key: 'sampling_points', label: '采样点位', type: 'number', min: 1, help: '均匀分布的关键帧取样位置数；采样点位*每点帧数=抽取的关键帧数量', default: 5 },
     { sec: 'video', key: 'frames_per_point', label: '每点帧数', type: 'number', min: 1, help: '每个点位取连续关键帧数，增大此项可给AI提供连续的画面信息', default: 3 },
-    { sec: 'video', key: 'frame_max_side', label: '长边像素', type: 'number', min: 64, help: '抽帧图片长边上限，仅缩小不放大', default: 640 },
+    { sec: 'video', key: 'frame_max_side', label: '长边像素', type: 'number', min: 64, help: '抽帧图片长边上限', default: 640 },
   ]},
   { group: '命名与输出', noTitle: true, cols: 3, fields: [
     { sec: 'naming', key: 'naming_mode', label: '日期与初始文件名', type: 'select',
-      options: [['date', '仅日期前缀'], ['original', '仅初始文件名后缀'], ['both', '添加两者'], ['none', '都不添加']], default: 'date',
-      help: '日期前缀：文件名前添加日期；初始文件名后缀：文件名末尾追加初始文件名；均降低重名几率' },
-    { sec: '__gui', key: 'nfo_auto_export', label: 'NFO输出', type: 'bool', onText: '自动导出至同目录', offText: '手动导出', help: '自动导出：自动重命名完成即写入视频同目录；手动导出：先存工作区，导出时再复制' },
+      options: [['date', '添加日期前缀'], ['original', '添加初始文件名后缀'], ['both', '添加两者'], ['none', '都不添加']], default: 'date',
+      help: '请至少添加一项，降低重名几率' },
+    { sec: '__gui', key: 'nfo_auto_export', label: 'NFO输出', type: 'bool', onText: '自动导出至同目录', offText: '手动导出', help: '自动导出：自动重命名完成即写入视频同目录' },
     { sec: '__gui', key: 'animation_enabled', label: '动画效果', type: 'bool', default: true, help: '关闭后停用界面动画与过渡效果' },
   ]},
 ];

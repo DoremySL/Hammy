@@ -142,12 +142,12 @@ function renderExperimentalPage(cfg, uvStatus, llamaStatus, pStatus, wStatus, rv
   const anyModuleInstalled = [llamaStatus, pStatus, wStatus, rvStatus].some(s => s && s.dir_exists);
   body.innerHTML = `
     <div class="exp-page">
-      ${anyModuleInstalled ? '' : '<div class="exp-intro">安装占用大量硬盘空间，运行时消耗较高的硬件资源，仅推荐显存≥6GB的N卡用户尝试；安装并启用后点击对应卡片展开功能设置</div>'}
       ${_renderLlamaSection(llamaStatus)}
       ${_renderPixaiSection(exp, pStatus)}
       ${_renderWhisperSection(exp, wStatus)}
       ${_renderRagVecSection(exp, rvStatus)}
       ${_renderUvCard(uvStatus)}
+      ${anyModuleInstalled ? '' : '<div class="exp-intro">安装占用大量硬盘空间，运行时消耗较高的硬件资源，仅推荐显存≥6GB的N卡用户尝试；安装并启用后点击对应卡片展开功能设置</div>'}
     </div>
   `;
 
@@ -234,6 +234,7 @@ function _bindManageButtons(uvStatus, llamaStatus, pStatus, wStatus, rvStatus) {
     const r = await apiCall('remove_pixai_tagger');
     if (r && r.ok) {
       state.pixaiTaggerEnabled = false; state.pixaiTaggedIds.clear(); state.pixaiRealIds.clear(); state.pixaiAnimeIds.clear(); state.pixaiUncertainIds.clear();
+      state.settingsOpen.delete('pixai-cfg');
       refreshGridData(); toast(r.message || '已删除', 'ok'); renderSettings();
     } else { toast('删除失败: ' + ((r && r.error) || ''), 'err'); pRemoveBtn.disabled = false; pRemoveBtn.textContent = '卸载'; }
   });
@@ -254,6 +255,7 @@ function _bindManageButtons(uvStatus, llamaStatus, pStatus, wStatus, rvStatus) {
     const r = await apiCall('remove_whisper');
     if (r && r.ok) {
       state.whisperEnabled = false; state.whisperTranscribedIds.clear();
+      state.settingsOpen.delete('whisper-cfg');
       refreshGridData(); toast(r.message || '已删除', 'ok'); renderSettings();
     } else { toast('删除失败: ' + ((r && r.error) || ''), 'err'); wRemoveBtn.disabled = false; wRemoveBtn.textContent = '卸载'; }
   });
@@ -277,6 +279,7 @@ function _bindManageButtons(uvStatus, llamaStatus, pStatus, wStatus, rvStatus) {
     const r = await apiCall('remove_rag_vec');
     if (r && r.ok) {
       state.ragVecEnabled = false;
+      state.settingsOpen.delete('ragvec-cfg');
       toast(r.message || '已删除', 'ok'); renderSettings();
     } else { toast('删除失败: ' + ((r && r.error) || ''), 'err'); rvRemoveBtn.disabled = false; rvRemoveBtn.textContent = '卸载'; }
   });
@@ -480,7 +483,7 @@ function _renderLlamaSection(llamaStatus) {
         </label>
         <div class="exp-head-main">
           <div class="exp-title-row"><strong>llama.cpp 本地推理</strong>${badge}</div>
-          <div class="exp-desc">本地运行 OpenAI 兼容推理服务，随主程序退出自动停止。</div>
+          <div class="exp-desc">本地运行推理服务，附带启动管理与模型下载功能，随主程序退出自动停止。</div>
         </div>
         <div class="exp-head-actions">
           ${llamaStatus.ready ? '<button class="ws-btn" id="btn-llama-upgrade">升级引擎</button>' : ''}
@@ -1659,6 +1662,7 @@ async function removeLlama() {
   if (r && r.ok) {
     toast(r.message || '已卸载', 'ok');
     state.llamaEnabled = false;
+    state.settingsOpen.delete('llama-cfg');
     updateLlamaTabVisibility();
   } else {
     toast('卸载失败: ' + ((r && r.error) || ''), 'err');

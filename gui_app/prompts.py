@@ -233,13 +233,6 @@ def build_prompt(preset: Dict[str, Any], include_header: bool = True,
     return "\n".join(parts)
 
 
-def preview_prompt(fields: Dict[str, Any], with_thumb_time: bool = False,
-                   use_example: bool = False) -> str:
-    """前端预览：用临时 fields 拼出 prompt（不保存）。"""
-    return build_prompt({"fields": fields}, with_thumb_time=with_thumb_time,
-                        use_example=use_example)
-
-
 # ── 标签检索（全局，独立存储于 _workspace/priority_tags.json） ──
 
 

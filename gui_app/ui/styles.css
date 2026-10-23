@@ -254,7 +254,7 @@
   .card{background:var(--panel);border:1px solid var(--border);border-radius:var(--r-xl);overflow:hidden;
     cursor:pointer;transition:.15s;display:flex;flex-direction:column;position:relative}
   .card:hover{box-shadow:0 8px 20px rgba(16,24,40,.09);border-color:var(--border-strong)}
-  .card.selected{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft),0 8px 20px rgba(235,114,75,.10)}
+  .card.selected{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}
   .thumb{aspect-ratio:16/9;background:var(--thumb-bg);position:relative;overflow:hidden}
   .thumb.loading::after{content:'';position:absolute;inset:0;
     background:linear-gradient(90deg,transparent,rgba(255,255,255,.25),transparent);
@@ -300,9 +300,9 @@
   .card.band,.card.band:hover{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}
   html.dark .card.band,html.dark .card.band:hover,
   html:not(.light) .card.band,html:not(.light) .card.band:hover{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}
-  .card.band.selected{box-shadow:0 0 0 2px var(--accent-soft),0 8px 20px rgba(235,114,75,.10)}
+  .card.band.selected{box-shadow:0 0 0 2px var(--accent-soft)}
   html.dark .card.band.selected,
-  html:not(.light) .card.band.selected{box-shadow:0 0 0 2px var(--accent-soft),0 6px 20px rgba(0,0,0,.4)}
+  html:not(.light) .card.band.selected{box-shadow:0 0 0 2px var(--accent-soft)}
 
   /* ── 搜索组件 ── */
   .search-widget{display:flex;align-items:center;gap:0;border:1px solid var(--border-strong);
@@ -425,7 +425,6 @@
     padding:8px 10px;border-radius:var(--r-md);
     background:var(--bg);border:1px solid var(--border);color:var(--log-text)}
   .detail .row{background:var(--panel-2);border:1px solid var(--border);border-radius:var(--r-lg);padding:12px 14px;margin-bottom:12px}
-  .detail .row:last-child{margin-bottom:0}
   .chips{display:flex;flex-wrap:wrap;gap:7px;margin-top:4px}
   .detail .row > .chips:first-child,.detail .row > .filemeta:first-child,.detail .row > .plot:first-child{margin-top:0}
   .chip{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:var(--r-sm);
@@ -485,6 +484,7 @@
   }
   #settings-tabs .pill-sep,#rename-tabs .pill-sep{margin-left:auto}
   .modal-body{overflow:auto;padding:20px 12px;flex:1}
+  .modal-body > :last-child,.preset-wrap > :last-child,.exp-page > :last-child,.llama-wrap > :last-child,.detail .row:last-child,.preset-wrap .group{margin-bottom:0}
   .modal-body.fade-in{animation:settingsFade .2s ease}
   @keyframes settingsFade{from{opacity:0;transform:translateY(6px)}}
   .modal-foot{display:flex;justify-content:flex-end;gap:10px;padding:14px 20px;
@@ -557,14 +557,6 @@
     border-color:transparent;box-shadow:0 4px 14px rgba(235,114,75,.25)}
   .ws-btn.primary:hover{color:#fff;filter:brightness(1.06)}
   .ws-btn:disabled{opacity:.45;cursor:not-allowed;transform:none;box-shadow:none;pointer-events:none}
-  .disclosure{display:flex;align-items:center;gap:7px;padding:8px 0;cursor:pointer;
-    font-size:13px;font-weight:600;color:var(--muted);border:none;background:none;
-    font-family:inherit;transition:color .15s}
-  .disclosure:hover{color:var(--text)}
-  .disclosure svg{transition:transform .2s}
-  .disclosure.open svg{transform:rotate(90deg)}
-  .disclosure:disabled{opacity:.45;cursor:not-allowed}
-  .disclosure:disabled:hover{color:var(--muted)}
   .field{display:flex;flex-direction:column;gap:5px}
   .field label{font-size:12.5px;font-weight:600;color:var(--text)}
   .field .help{font-size:11px;color:var(--faint)}
@@ -628,10 +620,10 @@
 
   /* ── 提示词编辑器 ── */
   .modal-body:has(> .preset-wrap){padding:0}
-  .preset-wrap{padding:20px 12px}
+  .preset-wrap{display:flex;flex-direction:column;gap:14px;padding:20px 12px}
   .preset-hero{position:sticky;top:0;z-index:10;display:flex;align-items:center;gap:10px;flex-wrap:wrap;
     padding:10px 14px;border-radius:var(--r-xl);border:1px solid var(--border);
-    background:linear-gradient(135deg,var(--panel-2),var(--panel));margin-bottom:14px;
+    background:linear-gradient(135deg,var(--panel-2),var(--panel));
     transition:border-color .25s,background .25s}
   .preset-hero::after{content:'';position:absolute;left:0;right:0;top:calc(100% + 1px);height:28px;
     background:linear-gradient(to bottom,var(--panel),transparent);pointer-events:none;
@@ -656,11 +648,6 @@
   .a-toggle.on{background:var(--accent-soft);border-color:color-mix(in srgb,var(--accent) 45%,var(--border-strong));
     color:var(--accent-text)}
   .a-toggle.on .dot{background:var(--accent)}
-  .prompt-preview{background:var(--bg);color:var(--log-text);padding:12px 14px;border-radius:var(--r-md);
-    font-family:var(--mono);font-size:11.5px;line-height:1.55;white-space:pre-wrap;
-    word-break:break-all;margin-top:10px;border:1px solid var(--border)}
-  .prompt-preview .readonly-tag{display:inline-block;background:var(--panel-2);color:var(--muted);
-    padding:1px 7px;border-radius:var(--r-xs);font-size:10px;margin-bottom:6px}
 
   /* ── 空态 ── */
   .empty-state{display:flex;flex:1;min-height:0;width:100%;align-items:center;
@@ -685,8 +672,7 @@
   .empty-state .icon:active .ic-hammy{filter:none}
   .empty-state .icon:active{transform:translateY(0) scale(.96)}
   .empty-state .icon:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-  .empty-state p{font-size:14px;margin:4px 0;line-height:1.6;color:var(--muted)}
-  .empty-state .hint{font-size:12px;margin-top:6px;color:var(--faint)}
+  .empty-state p{font-size:12px;font-weight:400;margin:4px 0;line-height:1.6;color:var(--faint)}
 
   /* ── contextmenu ── */
 
@@ -891,13 +877,13 @@
     box-shadow:0 1px 3px rgba(0,0,0,.3)}
   html.dark .card:hover{box-shadow:0 8px 24px rgba(0,0,0,.45);
     border-color:var(--border-strong)}
-  html.dark .card.selected{box-shadow:0 0 0 2px var(--accent-soft),0 6px 20px rgba(0,0,0,.4)}
+  html.dark .card.selected{box-shadow:0 0 0 2px var(--accent-soft)}
   @media (prefers-color-scheme:dark){
     html:not(.light) .card{border-color:var(--border);
       box-shadow:0 1px 3px rgba(0,0,0,.3)}
     html:not(.light) .card:hover{box-shadow:0 8px 24px rgba(0,0,0,.45);
       border-color:var(--border-strong)}
-    html:not(.light) .card.selected{box-shadow:0 0 0 2px var(--accent-soft),0 6px 20px rgba(0,0,0,.4)}
+    html:not(.light) .card.selected{box-shadow:0 0 0 2px var(--accent-soft)}
   }
   html.dark .modal-bg{background:rgba(0,0,0,.6)}
   html.dark .confirm-bg{background:rgba(0,0,0,.6)}

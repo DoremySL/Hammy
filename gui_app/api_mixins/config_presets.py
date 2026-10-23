@@ -57,16 +57,6 @@ class ConfigPresetMixin:
                 frame_time_tags=2 if enabled else 0))
         return {"ok": True, "thumb_optimize": bool(enabled)}
 
-    def preview_prompt(self, fields: Dict[str, Any]) -> Dict[str, Any]:
-        # 预览跟随当前设置：时间标签=添加并用于优化缩略图时，展示注入的 thumb_time 字段；
-        # 示例段是否拼接跟随「拼接示例」开关
-        cfg = config_store.load_config()
-        video = cfg.get("video") or {}
-        with_thumb = int(video.get("frame_time_tags") or 0) == 2
-        use_example = bool(cfg.get("prompt_use_example", False))
-        return {"prompt": prompts.preview_prompt(
-            fields, with_thumb_time=with_thumb, use_example=use_example)}
-
     # ── 标签检索 ──
 
     def get_priority_tags(self) -> Dict[str, Any]:
