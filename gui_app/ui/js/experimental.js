@@ -598,7 +598,7 @@ function _renderPixaiSection(exp, pStatus) {
         </label>
         <div class="exp-head-main">
           <div class="exp-title-row"><strong>PixAI Tagger 标签获取</strong>${_statusBadge(pStatus || {}, specBadge)}</div>
-          <div class="exp-desc">识别视频角色与作品/IP，辅助 AI 重命名；可预筛跳过非二次元作品。</div>
+          <div class="exp-desc">识别视频角色与作品/IP，用于整理MMD/COS视频，下版本会大改。</div>
         </div>
         <div class="exp-head-actions">
           ${enabled ? '<button class="ws-btn" id="btn-pixai-clear-tags">清除标签</button>' : ''}
