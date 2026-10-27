@@ -56,7 +56,11 @@ pip install openai pywebview pystray
 
 ### 方式二：双击启动GUI
 
-安装好依赖后直接双击 `Hammy\GUI Launcher.bat`
+安装好依赖后直接双击 `Hammy\GUI Launcher.bat`启动界面
+点击左上或右下按钮进入设置页
+配置好模型api或在扩展功能界面安装llama.cpp并下载模型后在主界面添加视频
+点击右下角按钮进行AI重命名
+单选或按住CTRL多选视频卡片后右键查看更多功能
 
 - 压缩包解压前建议右键查看属性，在解除锁定的选项处打勾应用后再解压
 
@@ -80,9 +84,5 @@ Hammy 源码**不包含**下列项目的源码，而是在需要时引导用户�
   https://ffmpeg.org/
 - **llama.cpp** —— 本地视觉模型推理
   https://github.com/ggml-org/llama.cpp
-- **pixai-tagger** —— 角色 / IP 标签识别模型
-  https://huggingface.co/pixai-labs/pixai-tagger-v0.9
-- **anime_real_cls** —— 真实系 / 二次元分类模型，辅助标签判定
-  https://huggingface.co/deepghs/anime_real_cls
 - **faster-whisper** —— 本地语音转录
   https://github.com/SYSTRAN/faster-whisper
