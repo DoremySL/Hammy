@@ -254,9 +254,9 @@ async function withGpuBusy(apiFn) {
 }
 
 /* ════════════════════════════════════════════════════════════
-   PixAI Tagger
+   Hammy Tagger
    ════════════════════════════════════════════════════════════ */
-async function detectIpTags(ids) {
+async function detectTags(ids) {
   if (state.gpuBusy) { toast('GPU 正忙，请等待当前操作完成', 'err'); return; }
   const videos = ids.map(id => findVideoById(id)).filter(v => v && v.status === 'pending');
   if (!videos.length) { toast('未选中待处理视频', 'err'); return; }
@@ -266,26 +266,19 @@ async function detectIpTags(ids) {
   if (r.results) {
     for (const [vid, d] of Object.entries(r.results)) {
       if (d.error) continue;
-      state.pixaiAnimeIds.delete(vid);
-      state.pixaiRealIds.delete(vid);
-      state.pixaiUncertainIds.delete(vid);
-      state.pixaiTaggedIds.delete(vid);
-      if (d.is_anime === true) state.pixaiAnimeIds.add(vid);
-      else if (d.is_anime === false) state.pixaiRealIds.add(vid);
-      else if (d.is_anime === null) state.pixaiUncertainIds.add(vid);
+      if (d.category) state.taggerCategories[vid] = d.category;
+      else delete state.taggerCategories[vid];
       if ((d.character_tags && d.character_tags.length) || (d.ip_tags && d.ip_tags.length)) {
-        state.pixaiTaggedIds.add(vid);
+        state.taggerTaggedIds.add(vid);
       }
     }
   }
   const stopped = r.error === '已停止';
   if (r.ok || stopped) {
     const okN = r.ok_count || 0;
-    const realN = r.real_count || 0;
     $('#prog-bar').style.width = '100%';
     $('#prog-bar').className = 'done';
-    let msg = stopped ? `IP分析已停止: 成功 ${okN}/${r.total}` : `IP分析完成: 成功 ${okN}/${r.total}`;
-    if (realN > 0) msg += `（其中 ${realN} 个非二次元作品）`;
+    const msg = stopped ? `IP分析已停止: 成功 ${okN}/${r.total}` : `IP分析完成: 成功 ${okN}/${r.total}`;
     toast(msg, okN > 0 ? 'ok' : 'err', true);
     refreshGridData();
   } else {
@@ -415,17 +408,17 @@ function showContextMenu(e, v) {
   if (state.view === 'pending' && pendingIds.length) {
     gView.push({ label: `移入回收站（${pendingIds.length} 个）`, fn: () => recycleVideos(pendingIds), disabled: state.processing || state.gpuBusy });
   }
-  const gPixai = [];
-  if (state.view === 'pending' && state.pixaiTaggerEnabled) {
+  const gTagger = [];
+  if (state.view === 'pending' && state.taggerEnabled) {
     const pendingIds2 = selIds.filter(id => {
       const vv = findVideoById(id);
       return vv && vv.status === 'pending';
     });
     if (pendingIds2.length) {
-      gPixai.push({ label: `获取IP信息（${pendingIds2.length} 个）`, fn: () => detectIpTags(pendingIds2), disabled: state.gpuBusy });
+      gTagger.push({ label: `获取辅助分类标签（${pendingIds2.length} 个）`, fn: () => detectTags(pendingIds2), disabled: state.gpuBusy });
     }
   }
-  if (gPixai.length) groups.push(gPixai);
+  if (gTagger.length) groups.push(gTagger);
   const gWhisper = [];
   if (state.whisperEnabled && (state.view === 'pending' || state.view === 'processed')) {
     const viewStatus = state.view;

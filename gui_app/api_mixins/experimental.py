@@ -1,4 +1,4 @@
-"""ExperimentalMixin — 扩展功能 API（llama.cpp / faster-whisper / pixai-tagger）。"""
+"""ExperimentalMixin — 扩展功能 API（llama.cpp / faster-whisper / Hammy-tagger）。"""
 from __future__ import annotations
 
 import shutil
@@ -8,11 +8,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..config_store import (load_config, load_llama_config, load_llama_model_configs,
-                            load_pixai_config, load_whisper_config,
-                            update_llama_config, update_pixai_config, update_whisper_config)
+                            load_tagger_config, load_whisper_config,
+                            update_llama_config, update_tagger_config, update_whisper_config)
 from ..installer import DEFAULT_PYPI_MIRROR, DEFAULT_TRT_SITE
 from ..js_push import js_pusher
-from ..workspace_paths import (LLAMA_CONFIG_FILE, PIXAI_TAGS_FILE,
+from ..workspace_paths import (LLAMA_CONFIG_FILE, TAGGER_TAGS_FILE,
                                WHISPER_SRT_DIR, WHISPER_TRANSCRIPTS_FILE)
 from ..workspace_store import read_json, update_json, write_json
 from batch_rename.utils import safe_float, safe_int
@@ -35,9 +35,9 @@ def _push_llama_log(msg: str) -> None:
     js_pusher.push("appendLlamaLog", msg)
 
 
-def _load_pixai_tags() -> Dict[str, Any]:
-    """读取 pixai 标签存储（缺失/损坏按空 dict 处理）。"""
-    return read_json(PIXAI_TAGS_FILE, {})
+def _load_tags() -> Dict[str, Any]:
+    """读取 tagger 标签存储（缺失/损坏按空 dict 处理）。"""
+    return read_json(TAGGER_TAGS_FILE, {})
 
 
 def _record_last_model(path: str) -> None:
@@ -69,7 +69,7 @@ class ExperimentalMixin:
         return {"ok": True}
 
     def stop_install(self) -> Dict[str, Any]:
-        """停止当前正在进行的安装（llama.cpp / faster-whisper / pixai-tagger）。"""
+        """停止当前正在进行的安装（llama.cpp / faster-whisper / Hammy-tagger）。"""
         if not _install_lock.locked():
             return {"ok": False, "error": "当前没有正在进行的安装"}
         if _install_stop_event.is_set():
@@ -124,7 +124,7 @@ class ExperimentalMixin:
             "cfg": cfg,
             "uv": self.get_uv_status(),
             "llama": self.get_llama_status(),
-            "pixai": self.get_pixai_tagger_status(),
+            "tagger": self.get_tagger_status(),
             "whisper": self.get_whisper_status(),
             "ragvec": self.get_rag_vec_status(cfg.get("experimental") or {}),
         }
@@ -207,40 +207,39 @@ class ExperimentalMixin:
         stop_worker()
         return {"ok": True, "message": "已停止嵌入后台进程", "worker_running": get_status().get("worker_running")}
 
-    # ── PixAI Tagger 标签获取 ──
+    # ── Hammy Tagger 标签获取 ──
 
-    def get_pixai_tagger_status(self) -> Dict[str, Any]:
-        """获取 pixai-tagger 安装状态与启用状态。"""
-        from ..pixai_tagger import get_status
-        enabled = load_pixai_config().get("enabled", False)
+    def get_tagger_status(self) -> Dict[str, Any]:
+        """获取 Hammy-tagger 安装状态与启用状态。"""
+        from ..tagger import get_status
+        enabled = load_tagger_config().get("enabled", False)
         status = get_status()
         status["enabled"] = enabled
         return status
 
-    def set_pixai_tagger_enabled(self, enabled: bool) -> Dict[str, Any]:
-        """启用/禁用 pixai-tagger 功能。"""
-        from ..pixai_tagger import PIXAI_TAGGER_DIR
-        if not PIXAI_TAGGER_DIR.is_dir():
+    def set_tagger_enabled(self, enabled: bool) -> Dict[str, Any]:
+        """启用/禁用 Hammy-tagger 功能。"""
+        from ..tagger import TAGGER_DIR
+        if not TAGGER_DIR.is_dir():
             return {"ok": True, "enabled": enabled}
-        update_pixai_config(lambda c: c.update(enabled=enabled))
+        update_tagger_config(lambda c: c.update(enabled=enabled))
         return {"ok": True, "enabled": enabled}
 
-    def get_pixai_mirrors(self) -> Dict[str, Any]:
-        """获取 pixai-tagger 安装选项（版本/站点/GPU 检测）。"""
-        from ..pixai_tagger import get_mirrors_info
+    def get_tagger_mirrors(self) -> Dict[str, Any]:
+        """获取 Hammy-tagger 安装选项（版本/站点/GPU 检测）。"""
+        from ..tagger import get_mirrors_info
         return get_mirrors_info()
 
-    def install_pixai_tagger(self, variant: str = "448-Hammy",
+    def install_tagger(self,
                              site: str = DEFAULT_TRT_SITE) -> Dict[str, Any]:
-        """安装 pixai-tagger 依赖（uv + venv + tensorrt + 模型下载 + TRT 引擎构建）。"""
-        from ..pixai_tagger import install_dependencies
+        """安装 Hammy-tagger 依赖（uv + venv + tensorrt + 模型下载 + TRT 引擎构建）。"""
+        from ..tagger import install_dependencies
 
         if not _install_lock.acquire(blocking=False):
             return {"ok": False, "error": "已有模块正在安装，请等待完成后再试"}
         _install_stop_event.clear()
         try:
-            r = install_dependencies(variant=variant,
-                                     site=site, log_fn=_push_log,
+            r = install_dependencies(site=site, log_fn=_push_log,
                                      stop_event=_install_stop_event)
             if r.get("ok"):
                 self._auto_clean_uv_cache()
@@ -249,9 +248,9 @@ class ExperimentalMixin:
             _install_stop_event.clear()
             _install_lock.release()
 
-    def remove_pixai_tagger(self) -> Dict[str, Any]:
-        """删除 pixai-tagger 文件夹与模块数据。"""
-        from ..pixai_tagger import remove_pixai_tagger as _remove
+    def remove_tagger(self) -> Dict[str, Any]:
+        """删除 Tagger 文件夹与模块数据。"""
+        from ..tagger import remove_tagger as _remove
         if not _install_lock.acquire(blocking=False):
             return {"ok": False, "error": "已有模块正在安装，请等待完成后再卸载"}
         try:
@@ -260,24 +259,20 @@ class ExperimentalMixin:
             _install_lock.release()
 
     def detect_ip_tags(self, items: List) -> Dict[str, Any]:
-        """对选中视频执行 PixAI 标签获取（items: [[video_id, video_path], ...]）。"""
-        from ..pixai_tagger import (get_status, start_analyze_stream,
+        """对选中视频执行 IP 标签获取（items: [[video_id, video_path], ...]）。"""
+        from ..tagger import (get_status, start_analyze_stream,
                                     extract_frames_for_tagger, ensure_model_files,
-                                    installed_precision, normalize_variant,
-                                    ANIME_CLS_THRESHOLD, TAG_THRESHOLD)
+                                    TAG_THRESHOLD)
         from batch_rename.dependencies import ffmpeg_tools
         from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
         status = get_status()
         if not status["ready"]:
-            return {"ok": False, "results": {}, "error": "pixai-tagger 未安装或未就绪，请先在扩展功能页安装依赖"}
+            return {"ok": False, "results": {}, "error": "Hammy-tagger 未安装或未就绪，请先在扩展功能页安装依赖"}
 
-        pcfg = load_pixai_config()
+        pcfg = load_tagger_config()
         frames_n = max(1, safe_int(pcfg.get("frames"), 15))
         threshold = min(1, max(0.1, safe_float(pcfg.get("threshold"), TAG_THRESHOLD)))
-        skip_real = bool(pcfg.get("classify", False))
-        variant = normalize_variant(pcfg.get("variant"))
-        precision = installed_precision(variant)
 
         if not ffmpeg_tools.ffmpeg:
             try:
@@ -301,13 +296,12 @@ class ExperimentalMixin:
             _push_log(f"正在分析 {total} 个视频的IP信息…")
             t0 = time.time()
 
-            # ONNX 预检：缺失则补下载
-            files_err = ensure_model_files(variant, precision,
-                                           log_fn=_push_log, stop_event=_gpu_stop_event)
+            # 仓库文件预检：缺失则补下载
+            files_err = ensure_model_files(log_fn=_push_log, stop_event=_gpu_stop_event)
             if files_err:
                 _push_log(f"IP分析失败：{files_err}", "err")
                 return {"ok": False, "results": {}, "ok_count": 0, "total": total,
-                        "real_count": 0, "error": files_err}
+                        "error": files_err}
 
             # 让出显存
             from ..llama_cpp import pause_for_task
@@ -316,16 +310,13 @@ class ExperimentalMixin:
             # 启动推理子进程（与抽帧并行）
             stream = start_analyze_stream(
                 total,
-                skip_real=skip_real,
-                anime_threshold=ANIME_CLS_THRESHOLD,
                 tag_threshold=threshold,
                 ip_threshold=threshold,
-                variant=variant,
                 stop_event=_gpu_stop_event,
                 on_log=_push_log,
             )
             if stream is None:
-                return self._pixai_engine_unavailable(
+                return self._tagger_engine_unavailable(
                     vid_list, video_paths, results, frames_n, total)
 
             # 抽帧流水线（线程池 + 有界背压 + send-ahead）
@@ -351,18 +342,13 @@ class ExperimentalMixin:
                 else:
                     entry = {"character_tags": vr.get("character_tags", []),
                              "ip_tags": vr.get("ip_tags", []), "error": None}
-                    # 附带分类信息（前端角标用）
-                    if "anime_score" in vr:
-                        entry["anime_score"] = vr["anime_score"]
-                        entry["is_anime"] = vr.get("is_anime")  # None = 不确定
+                    if vr.get("category"):
+                        entry["category"] = str(vr["category"])
                     results[vid] = entry
-                    if entry.get("is_anime") is False and skip_real:
-                        _push_log(f"  [{done}/{total}] {name} — 非二次元作品"
-                                  f"（{entry['anime_score']:.0%}），跳过标签获取")
-                    else:
-                        chars = ", ".join(t["name"] for t in entry["character_tags"]) or "无"
-                        ips = ", ".join(t["name"] for t in entry["ip_tags"]) or "无"
-                        _push_log(f"  [{done}/{total}] {name} — 角色: {chars} | IP: {ips}")
+                    cat = entry.get("category") or "?"
+                    chars = ", ".join(t["name"] for t in entry["character_tags"]) or "无"
+                    ips = ", ".join(t["name"] for t in entry["ip_tags"]) or "无"
+                    _push_log(f"  [{done}/{total}] {name} — {cat.upper()} | 角色: {chars} | IP: {ips}")
                 js_pusher.push("setProgress", done, total)
 
             def _drain_ready() -> None:
@@ -413,7 +399,7 @@ class ExperimentalMixin:
                 return True
 
             ex = ThreadPoolExecutor(max_workers=frame_workers,
-                                    thread_name_prefix="pixai-frame")
+                                    thread_name_prefix="tagger-frame")
             try:
                 futures: Dict[Any, int] = {}
                 pipeline_ok = True
@@ -460,25 +446,22 @@ class ExperimentalMixin:
                 _push_log(f"  推理中断: {str(err_txt)[:200]}", "err")
 
             # 保存结果（取消/失败时保留已完成部分）
-            self._save_pixai_tags(results)
+            self._save_tags(results)
 
             ok_count = sum(1 for r in results.values() if not r.get("error"))
-            real_count = sum(1 for r in results.values() if r.get("is_anime") is False)
             if stopped:
                 _push_log(f"IP分析已停止（完成 {ok_count}/{total}，结果已保存）", "warn")
                 return {"ok": False, "results": results, "ok_count": ok_count,
-                        "total": total, "real_count": real_count, "error": "已停止"}
+                        "total": total, "error": "已停止"}
             if not close_result["ok"]:
                 err_txt = close_result.get("error") or "推理失败"
                 _push_log(f"IP分析中止：{str(err_txt)[:200]}", "err")
                 return {"ok": False, "results": results, "ok_count": ok_count,
-                        "total": total, "real_count": real_count, "error": err_txt}
+                        "total": total, "error": err_txt}
             _push_log(f"IP分析完成：成功 {ok_count}/{total}"
-                      + (f"，已跳过 {real_count} 个非二次元视频"
-                         if skip_real and real_count else "")
                       + f"（耗时 {time.time() - t0:.1f}s）")
             return {"ok": True, "results": results, "ok_count": ok_count,
-                    "total": total, "real_count": real_count, "error": None}
+                    "total": total, "error": None}
         except Exception as e:
             # 异常路径收尾：关闭推理子进程
             if "stream" in locals():
@@ -489,15 +472,15 @@ class ExperimentalMixin:
             ok_count = sum(1 for r in results.values() if not r.get("error"))
             _push_log(f"IP分析失败：{str(e)[:200]}", "err")
             return {"ok": False, "results": results, "ok_count": ok_count,
-                    "total": total, "real_count": 0, "error": str(e)}
+                    "total": total, "error": str(e)}
         finally:
             _gpu_task_lock.release()
 
-    def _pixai_engine_unavailable(self, vid_list: List, video_paths: List,
+    def _tagger_engine_unavailable(self, vid_list: List, video_paths: List,
                                   results: Dict[str, Any], frames_n: int,
                                   total: int) -> Dict[str, Any]:
         """引擎启动失败降级：仍尝试逐个抽帧并记录结果。"""
-        from ..pixai_tagger import extract_frames_for_tagger
+        from ..tagger import extract_frames_for_tagger
         _push_log("分析引擎启动失败，正在尝试抽帧…", "err")
         any_frames = False
         for i, vpath in enumerate(video_paths):
@@ -518,23 +501,23 @@ class ExperimentalMixin:
                 results[vid] = {"character_tags": [], "ip_tags": [], "error": "抽帧失败"}
                 _push_log(f"  [{i + 1}/{total}] {name} — 抽帧失败", "err")
             js_pusher.push("setProgress", i + 1, total)
-        self._save_pixai_tags(results)
+        self._save_tags(results)
         if not any_frames:
             _push_log("IP分析完成（无可分析的视频，均已抽帧失败）", "warn")
             return {"ok": True, "results": results, "ok_count": 0,
-                    "total": total, "real_count": 0, "error": None}
+                    "total": total, "error": None}
         _push_log("IP分析失败：分析引擎启动失败", "err")
         return {"ok": False, "results": results, "ok_count": 0,
-                "total": total, "real_count": 0, "error": "分析引擎启动失败"}
+                "total": total, "error": "分析引擎启动失败"}
 
-    def get_pixai_tags(self, video_id: str) -> Dict[str, Any]:
-        """获取指定视频的已保存 pixai 标签（附带 zh 中文翻译）。"""
-        entry = _load_pixai_tags().get(video_id)
+    def get_tagger_tags(self, video_id: str) -> Dict[str, Any]:
+        """获取指定视频的已保存 tagger 标签（附带 zh 中文翻译）。"""
+        entry = _load_tags().get(video_id)
         if not entry:
             return {"ok": False, "character_tags": [], "ip_tags": []}
         data = {"ok": True, **entry}
-        if load_pixai_config().get("output_zh", True):
-            from ..pixai_tagger import load_tag_zh
+        if load_tagger_config().get("output_zh", True):
+            from ..tagger import load_tag_zh
             zh = load_tag_zh()
             if zh:
                 for group in ("character_tags", "ip_tags"):
@@ -544,33 +527,23 @@ class ExperimentalMixin:
                             t["zh"] = z
         return data
 
-    def clear_pixai_tags(self) -> Dict[str, Any]:
-        """清除所有已保存的 pixai 标签。"""
-        write_json(PIXAI_TAGS_FILE, {})
+    def clear_tagger_tags(self) -> Dict[str, Any]:
+        """清除所有已保存的 tagger 标签。"""
+        write_json(TAGGER_TAGS_FILE, {})
         return {"ok": True, "message": "已清除所有IP标签数据"}
 
-    def get_pixai_tagged_ids(self) -> List[str]:
+    def get_tagger_tagged_ids(self) -> List[str]:
         """返回已有 IP 标签数据的视频 ID 列表（供前端 IP 角标显示）。"""
-        return [vid for vid, data in _load_pixai_tags().items()
+        return [vid for vid, data in _load_tags().items()
                 if data.get("character_tags") or data.get("ip_tags")]
 
-    def get_pixai_real_ids(self) -> List[str]:
-        """返回被预筛为非二次元的视频 ID 列表（供前端 REAL 角标显示）。"""
-        return [vid for vid, data in _load_pixai_tags().items()
-                if data.get("is_anime") is False]
+    def get_tagger_category_ids(self) -> Dict[str, str]:
+        """返回视频 ID → 分类（2d/3d/real/cos/unk，供前端角标显示）。"""
+        return {vid: str(data["category"]) for vid, data in _load_tags().items()
+                if data.get("category")}
 
-    def get_pixai_anime_ids(self) -> List[str]:
-        """返回被预筛为二次元的视频 ID 列表（供前端 ANIME 角标显示）。"""
-        return [vid for vid, data in _load_pixai_tags().items()
-                if data.get("is_anime") is True]
-
-    def get_pixai_uncertain_ids(self) -> List[str]:
-        """返回被预筛为不确定的视频 ID 列表（供前端 UNC 角标显示）。"""
-        return [vid for vid, data in _load_pixai_tags().items()
-                if "is_anime" in data and data["is_anime"] is None]
-
-    def _save_pixai_tags(self, results: Dict[str, Any]) -> None:
-        """将标签获取结果合并保存到 pixai/tags.json（失败条目不落盘）。"""
+    def _save_tags(self, results: Dict[str, Any]) -> None:
+        """将标签获取结果合并保存到 tagger/tags.json（失败条目不落盘）。"""
         def _mutate(current):
             if not isinstance(current, dict):
                 current = {}
@@ -581,15 +554,12 @@ class ExperimentalMixin:
                     "character_tags": data.get("character_tags", []),
                     "ip_tags": data.get("ip_tags", []),
                 }
-                # 保存分类信息（仅预筛过的视频携带）
-                if "anime_score" in data:
-                    entry["anime_score"] = data["anime_score"]
-                if "is_anime" in data:
-                    entry["is_anime"] = data["is_anime"]
+                if data.get("category"):
+                    entry["category"] = data["category"]
                 current[vid] = entry
             return current
 
-        update_json(PIXAI_TAGS_FILE, _mutate, default_factory=dict)
+        update_json(TAGGER_TAGS_FILE, _mutate, default_factory=dict)
 
     # ── Faster-Whisper 语音转录 ──
 

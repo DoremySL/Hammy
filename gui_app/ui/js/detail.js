@@ -4,7 +4,7 @@
 let _detailSeq = 0;
 
 function showDetail(v) {
-  if (v.status === 'pending' && (state.whisperEnabled || state.pixaiTaggerEnabled)) {
+  if (v.status === 'pending' && (state.whisperEnabled || state.taggerEnabled)) {
     showPendingDetail(v);
     return;
   }
@@ -42,22 +42,22 @@ async function showPendingDetail(v) {
   const d = $('#detail');
   d.innerHTML = '<div class="empty">加载中…</div>';
 
-  let pixai = null, whisper = null;
+  let tagger = null, whisper = null;
   const [p, w] = await Promise.all([
-    state.pixaiTaggerEnabled ? apiCall('get_pixai_tags', v.id).catch(() => null) : null,
+    state.taggerEnabled ? apiCall('get_tagger_tags', v.id).catch(() => null) : null,
     state.whisperEnabled ? apiCall('get_whisper_transcript', v.id).catch(() => null) : null,
   ]);
   if (seq !== _detailSeq) return;
-  pixai = p; whisper = w;
+  tagger = p; whisper = w;
 
-  const pixaiDone = !!(pixai && pixai.ok);
-  const showPixai = pixaiDone &&
-    ((pixai.character_tags && pixai.character_tags.length) || (pixai.ip_tags && pixai.ip_tags.length));
+  const taggerDone = !!(tagger && tagger.ok);
+  const showTagger = taggerDone &&
+    ((tagger.character_tags && tagger.character_tags.length) || (tagger.ip_tags && tagger.ip_tags.length));
   const hasWhisper = whisper && whisper.ok && whisper.text;
 
-  if (!showPixai && !hasWhisper) {
+  if (!showTagger && !hasWhisper) {
     const hints = [];
-    if (state.pixaiTaggerEnabled && !pixaiDone) hints.push('右键「获取IP信息」');
+    if (state.taggerEnabled && !taggerDone) hints.push('右键「获取辅助分类标签」');
     if (state.whisperEnabled) hints.push('右键「语音转录」');
     d.innerHTML = `<div class="empty">该视频暂无分析数据` +
       (hints.length ? `<br/><span style="font-size:11px;color:var(--faint)">${hints.join(' / ')}</span>` : '') +
@@ -66,13 +66,13 @@ async function showPendingDetail(v) {
   }
 
   let html = '';
-  if (showPixai) {
+  if (showTagger) {
     // 输出中文开启时后端附带 zh 字段：显示「英文 / 中文名」；点击搜索仍用英文 name
     const tagChip = t =>
       `<button class="chip" data-web-tag="${esc(t.name)}">${esc(t.zh ? `${t.name} / ${t.zh}` : t.name)} <small>${t.score != null ? (t.score * 100).toFixed(0) : '—'}%</small></button>`;
-    const charTags = (pixai.character_tags || []).map(tagChip).join('')
+    const charTags = (tagger.character_tags || []).map(tagChip).join('')
       || '<span class="filemeta">未识别到角色</span>';
-    const ipTags = (pixai.ip_tags || []).map(tagChip).join('')
+    const ipTags = (tagger.ip_tags || []).map(tagChip).join('')
       || '<span class="filemeta">未识别到IP</span>';
     html += `
     <div class="row">

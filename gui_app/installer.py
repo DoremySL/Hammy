@@ -42,7 +42,7 @@ _CUDA_TIERS = {
 }
 
 
-# ── TensorRT 站点（pixai-tagger）──
+# ── TensorRT 站点（Hammy-tagger）──
 TRT_SITES = {
     "sjtu": {"name": "上海交通大学",
              "pypi": PYPI_MIRRORS["sjtu"]["url"], "nvidia": NVIDIA_PYPI_URL},
@@ -65,7 +65,6 @@ def resolve_trt_site(site: str = "") -> Dict[str, Any]:
 UV_TIMEOUT_SEC = 120.0
 
 # run_venv_script 返回值约定
-RC_OK = 0
 RC_TIMEOUT = -1
 RC_CANCEL = -2
 
@@ -182,7 +181,7 @@ def _recommend_cuda(cuda_max: str) -> str:
     return pick_cuda_version(cuda_max, _CUDA_CANDIDATES) or "cpu"
 
 
-# ── TensorRT 显卡判定（pixai-tagger）──
+# ── TensorRT 显卡判定（Hammy-tagger）──
 
 # 无 Tensor Core 的消费卡
 _NO_TENSOR_CORE_PAT = re.compile(r"GTX\s*(9\d0|10\d0|16\d0)|MX\s*\d{3}", re.I)
@@ -198,7 +197,7 @@ def gpu_has_tensor_core(gpu_name: str) -> bool:
 def trt_gpu_issue(gpu: Dict[str, Any]) -> Optional[str]:
     """TensorRT 可用性预检：返回不可用原因，None = 可用。"""
     if not gpu.get("has_nvidia"):
-        return "未检测到 NVIDIA 显卡。pixai-tagger 使用 TensorRT 推理，需要 GTX 16xx / RTX 20xx 及以上的 NVIDIA GPU"
+        return "未检测到 NVIDIA 显卡。Hammy-tagger 使用 TensorRT 推理，需要 GTX 16xx / RTX 20xx 及以上的 NVIDIA GPU"
     name = gpu.get("gpu_name") or ""
     if _PRE_TURING_PAT.search(name):
         return f"显卡（{name}）低于 TensorRT 支持的最低架构（sm_75），需要 GTX 16xx / RTX 20xx 及以上"

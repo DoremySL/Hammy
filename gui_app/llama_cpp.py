@@ -1360,7 +1360,7 @@ def stop(log_fn=None, grace: float = 5.0) -> Dict[str, Any]:
 
 
 def pause_for_task(log_fn=None) -> Dict[str, Any]:
-    """让出显存：其他高显存任务（PixAI Tagger / Whisper 推理）开始前停止 llama-server。"""
+    """让出显存：其他高显存任务（Hammy Tagger / Whisper 推理）开始前停止 llama-server。"""
     log_fn = log_fn or _stderr_log
     with _state_lock:
         proc = _llama_proc

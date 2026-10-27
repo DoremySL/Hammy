@@ -20,13 +20,10 @@ _WINDOW_TIMEOUT = 60.0
 _FULL_TIMEOUT = 300.0
 
 # ── 判定 ──
-DUR_TOL = 15.0            # 时长预筛容差（秒）
 ASPECT_TOL = 0.02         # 宽高比预筛容差
 DHASH_MAX_DIST = 10       # 单帧汉明距离阈值（/64）
-WINDOW_MIN_MATCH = 8      # 单窗匹配帧下限
 MIN_MATCHED_WINDOWS = 3   # 匹配窗数下限
 SHORT_MIN_MATCH = 30      # 短视频单段匹配帧下限
-DELTA_RANGE = 15.0        # 平移试错范围（秒）
 PRE_FILTER_DIST = 20      # 阶段 1 预筛阈值
 
 

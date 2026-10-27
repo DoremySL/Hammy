@@ -283,10 +283,12 @@
     backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);
     box-shadow:0 1px 3px rgba(0,0,0,.3);opacity:.85;transition:opacity .18s}
   .card:hover .tag-badge{opacity:1}
-  .tag-badge.pixai{background:rgba(168,85,247,.75);color:#fff}
+  .tag-badge.tagger{background:rgba(168,85,247,.75);color:#fff}
   .tag-badge.whisper{background:rgba(13,148,136,.75);color:#fff}
   .tag-badge.real{background:rgba(244,63,94,.75);color:#fff}
   .tag-badge.anime{background:rgba(59,130,246,.75);color:#fff}
+  .tag-badge.d3{background:rgba(6,182,212,.75);color:#fff}
+  .tag-badge.cos{background:rgba(249,115,22,.75);color:#fff}
   .tag-badge.unc{background:rgba(107,114,128,.75);color:#fff}
   .tag-badge.failed{background:rgba(239,68,68,.75);color:#fff}
   .tag-badge.dup{background:rgba(234,179,8,.75);color:#fff}

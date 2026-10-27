@@ -7,7 +7,7 @@ from .workspace_paths import (
     CONFIG_FILE,
     LLAMA_CONFIG_FILE,
     LLAMA_MODEL_CONFIGS_FILE,
-    PIXAI_CONFIG_FILE,
+    TAGGER_CONFIG_FILE,
     WHISPER_CONFIG_FILE,
 )
 from .workspace_store import NO_WRITE, read_json_cached, update_json
@@ -93,15 +93,15 @@ def save_config(data: Dict[str, Any]) -> Dict[str, Any]:
     """保存 config.json（深度合并）。"""
     exp = data.get("experimental")
     if isinstance(exp, dict):
-        pixai = {_PIXAI_KEY_MAP_REV[k]: v for k, v in exp.items() if k in _PIXAI_KEY_MAP_REV}
+        tagger = {_TAGGER_KEY_MAP_REV[k]: v for k, v in exp.items() if k in _TAGGER_KEY_MAP_REV}
         whisper = {_WHISPER_KEY_MAP_REV[k]: v for k, v in exp.items() if k in _WHISPER_KEY_MAP_REV}
-        if pixai:
-            update_pixai_config(lambda c: c.update(pixai))
+        if tagger:
+            update_tagger_config(lambda c: c.update(tagger))
         if whisper:
             update_whisper_config(lambda c: c.update(whisper))
         # 剩余非模块键（如有）仍走 config.json
         rest = {k: v for k, v in exp.items()
-                if k not in _PIXAI_KEY_MAP_REV and k not in _WHISPER_KEY_MAP_REV
+                if k not in _TAGGER_KEY_MAP_REV and k not in _WHISPER_KEY_MAP_REV
                 and k not in _LLAMA_KEYS}
         if rest:
             data = {**data, "experimental": rest}
@@ -137,15 +137,14 @@ def update_config(mutator: Callable[[Dict[str, Any]], Dict[str, Any]]) -> Dict[s
 # ── 试验模块配置（独立文件 _workspace/<模块>/config.json） ──
 
 # 模块文件内键名 → experimental 段键名（load_config 组装用）
-_PIXAI_KEY_MAP = {
-    "enabled": "pixai_tagger_enabled",
-    "classify": "pixai_classify",
-    "frames": "pixai_frames",
-    "threshold": "pixai_threshold",
-    "output_zh": "pixai_output_zh",
-    "variant": "pixai_variant",
-    "prompt_scope": "pixai_prompt_scope",
-    "recall_scope": "pixai_recall_scope",
+_TAGGER_KEY_MAP = {
+    "enabled": "tagger_enabled",
+    "classify": "tagger_classify",
+    "frames": "tagger_frames",
+    "threshold": "tagger_threshold",
+    "output_zh": "tagger_output_zh",
+    "prompt_scope": "tagger_prompt_scope",
+    "recall_scope": "tagger_recall_scope",
 }
 _WHISPER_KEY_MAP = {
     "enabled": "whisper_enabled",
@@ -160,17 +159,17 @@ _WHISPER_KEY_MAP = {
     "compression_ratio": "whisper_compression_ratio",
 }
 # 反向映射：experimental 段键名 → 模块文件键名（save_config 拆键路由用）
-_PIXAI_KEY_MAP_REV = {v: k for k, v in _PIXAI_KEY_MAP.items()}
+_TAGGER_KEY_MAP_REV = {v: k for k, v in _TAGGER_KEY_MAP.items()}
 _WHISPER_KEY_MAP_REV = {v: k for k, v in _WHISPER_KEY_MAP.items()}
 # llama 开关在 experimental 段的键名：不经 save_config，只走
 # set_llama_enabled / set_llama_config，提交时直接丢弃
 _LLAMA_KEYS = frozenset({"llama_enabled", "llama_integrate"})
 
 
-def _pixai_defaults() -> Dict[str, Any]:
-    """pixai 模块配置默认值（文件缺失/损坏时的兜底）。"""
-    return {"enabled": False, "classify": True, "frames": 15, "threshold": 0.75,
-            "output_zh": True, "variant": "448-Hammy", "precision": "",
+def _tagger_defaults() -> Dict[str, Any]:
+    """tagger 模块配置默认值（文件缺失/损坏时的兜底）。classify = 2D/3D 分类角标开关。"""
+    return {"enabled": False, "classify": False, "frames": 15, "threshold": 0.75,
+            "output_zh": True, "precision": "",
             "prompt_scope": "char", "recall_scope": "char"}
 
 
@@ -181,30 +180,30 @@ def _whisper_defaults() -> Dict[str, Any]:
             "workers": 4, "beam_size": 5, "compression_ratio": 2.4}
 
 
-def load_pixai_config() -> Dict[str, Any]:
-    """读取 pixai-tagger 模块配置。文件不存在/损坏时返回默认值（enabled=False）。
+def load_tagger_config() -> Dict[str, Any]:
+    """读取 Hammy-tagger 模块配置。文件不存在/损坏时返回默认值（enabled=False）。
     只保留当前 schema 内的键（丢弃旧版本的遗留键，如 precision）。"""
-    data = read_json_cached(PIXAI_CONFIG_FILE)
-    merged = dict(_pixai_defaults())
+    data = read_json_cached(TAGGER_CONFIG_FILE)
+    merged = dict(_tagger_defaults())
     merged.update({k: v for k, v in data.items() if k in merged})
     return merged
 
 
-def update_pixai_config(
+def update_tagger_config(
     mutator: Callable[[Dict[str, Any]], Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """原子读-改-写 pixai 模块配置（与 config.json 同一 RLock 互斥）。
+    """原子读-改-写 tagger 模块配置（与 config.json 同一 RLock 互斥）。
 
     mutator 接收已补全默认值的配置 dict，就地修改后返回（或返回 None 表示原地修改）。
     """
     def _wrapped(current):
         current = current if isinstance(current, dict) else {}
-        merged = dict(_pixai_defaults())
+        merged = dict(_tagger_defaults())
         merged.update(current)
         result = mutator(merged)
         return merged if result is None else result
 
-    return update_json(PIXAI_CONFIG_FILE, _wrapped, default_factory=dict)
+    return update_json(TAGGER_CONFIG_FILE, _wrapped, default_factory=dict)
 
 
 def load_whisper_config() -> Dict[str, Any]:
@@ -267,9 +266,9 @@ def _assemble_experimental(cfg: Dict[str, Any]) -> None:
     """把三个模块文件夹的配置合成 experimental 段（前端读取结构不变）；
     未映射键（如 precision 内部状态）不进设置段。"""
     exp = cfg.setdefault("experimental", {})
-    for k, v in load_pixai_config().items():
-        if k in _PIXAI_KEY_MAP:
-            exp[_PIXAI_KEY_MAP[k]] = v
+    for k, v in load_tagger_config().items():
+        if k in _TAGGER_KEY_MAP:
+            exp[_TAGGER_KEY_MAP[k]] = v
     for k, v in load_whisper_config().items():
         if k in _WHISPER_KEY_MAP:
             exp[_WHISPER_KEY_MAP[k]] = v

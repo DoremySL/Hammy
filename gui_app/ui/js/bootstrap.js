@@ -47,13 +47,11 @@ pywebviewReady(30000).then(async () => {
     state.thumbOptimize = Number(((cfg || {}).video || {}).frame_time_tags) === 2;
     // 各 id 集合互相独立，并行拉取避免逐个串行等待
     const idFetches = [];
-    if (exp.pixai_tagger_enabled) {
-      state.pixaiTaggerEnabled = true;
+    if (exp.tagger_enabled) {
+      state.taggerEnabled = true;
       idFetches.push(
-        apiCall('get_pixai_tagged_ids').then(ids => { if (ids) state.pixaiTaggedIds = new Set(ids); }).catch(() => {}),
-        apiCall('get_pixai_real_ids').then(ids => { if (ids) state.pixaiRealIds = new Set(ids); }).catch(() => {}),
-        apiCall('get_pixai_anime_ids').then(ids => { if (ids) state.pixaiAnimeIds = new Set(ids); }).catch(() => {}),
-        apiCall('get_pixai_uncertain_ids').then(ids => { if (ids) state.pixaiUncertainIds = new Set(ids); }).catch(() => {}),
+        apiCall('get_tagger_tagged_ids').then(ids => { if (ids) state.taggerTaggedIds = new Set(ids); }).catch(() => {}),
+        apiCall('get_tagger_category_ids').then(m => { if (m) state.taggerCategories = m; }).catch(() => {}),
       );
     }
     if (exp.whisper_enabled) {

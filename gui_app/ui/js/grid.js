@@ -124,10 +124,10 @@ function _sortCmp(mode) {
 }
 
 function _typeRank(v, realFirst) {
-  if (state.pixaiRealIds.has(v.id)) return realFirst ? 0 : 2;
-  if (state.pixaiAnimeIds.has(v.id)) return realFirst ? 2 : 0;
-  if (state.pixaiUncertainIds.has(v.id)) return 1;
-  return 3;
+  const order = realFirst ? { real: 0, unk: 1, cos: 2, '3d': 3, '2d': 4 }
+                          : { '2d': 0, '3d': 1, cos: 2, unk: 3, real: 4 };
+  const c = state.taggerCategories[v.id];
+  return (c && order[c] !== undefined) ? order[c] : 5;  // 未分类垫底
 }
 
 function _applySort(list) {
@@ -195,7 +195,7 @@ function syncSortLabel() {
 function updateSortDropdown() {
   const dd = $('#sortSel');
   if (!dd) return;
-  const showType = !!state.pixaiTaggerEnabled && state.view === 'pending';
+  const showType = !!state.taggerEnabled && state.view === 'pending';
   const showProcessed = state.view === 'processed';
   dd.querySelectorAll('.dd-opt').forEach(o => {
     const v = o.dataset.value;
@@ -555,18 +555,21 @@ function makeCard(v) {
   v._ext = ext;
   const meta = _cardMeta(v);
   const durBadge = v.duration ? `<span class="dur-badge">${fmtDur(v.duration)}</span>` : '';
-  const isReal = state.pixaiRealIds.has(v.id);
-  const isAnime = state.pixaiAnimeIds.has(v.id);
-  const isUnc = state.pixaiUncertainIds.has(v.id);
-  let pixaiBadge = '';
-  if (isReal) pixaiBadge += '<span class="tag-badge real" data-tip="预筛分类为非二次元作品">REAL</span>';
-  if (isAnime) pixaiBadge += '<span class="tag-badge anime" data-tip="分类为二次元作品">ANIME</span>';
-  if (isUnc) pixaiBadge += '<span class="tag-badge unc" data-tip="分类不确定（二次元/非二次元无法判定）">UNC</span>';
-  if (state.pixaiTaggedIds.has(v.id)) pixaiBadge += '<span class="tag-badge pixai" data-tip="已获取角色/IP标签">IP</span>';
+  const cat = state.taggerCategories[v.id];
+  const split = state.taggerClassify;  // 2D/3D 分类开启时细分角标，否则合并 ACG
+  let taggerBadge = '';
+  if (cat === '2d') taggerBadge += split ? '<span class="tag-badge anime" data-tip="分类为 2D 动漫画面">2D</span>'
+                                        : '<span class="tag-badge anime" data-tip="分类为动漫/二次元画面">ACG</span>';
+  else if (cat === '3d') taggerBadge += split ? '<span class="tag-badge d3" data-tip="分类为 3D 动漫画面">3D</span>'
+                                             : '<span class="tag-badge anime" data-tip="分类为动漫/二次元画面">ACG</span>';
+  else if (cat === 'real') taggerBadge += '<span class="tag-badge real" data-tip="分类为真实拍摄画面">REAL</span>';
+  else if (cat === 'cos') taggerBadge += '<span class="tag-badge cos" data-tip="真实画面且识别到角色/IP（REAL+IP）">COS</span>';
+  else if (cat === 'unk') taggerBadge += '<span class="tag-badge unc" data-tip="画面类型无法判定">UNK</span>';
+  if (state.taggerTaggedIds.has(v.id)) taggerBadge += '<span class="tag-badge tagger" data-tip="已获取角色/IP标签">IP</span>';
   const whisperBadge = state.whisperTranscribedIds.has(v.id) ? '<span class="tag-badge whisper" data-tip="已获取语音转录">CC</span>' : '';
   const stBadge = v.status === 'failed' ? '<span class="tag-badge failed" data-tip="自动重命名失败，位于 _failed 目录">FAIL</span>'
     : v.status === 'duplicate' ? '<span class="tag-badge dup" data-tip="去重移除，位于 _duplicates 目录">DUP</span>' : '';
-  const badges = (pixaiBadge || whisperBadge || stBadge) ? `<div class="badges">${pixaiBadge}${whisperBadge}${stBadge}</div>` : '';
+  const badges = (taggerBadge || whisperBadge || stBadge) ? `<div class="badges">${taggerBadge}${whisperBadge}${stBadge}</div>` : '';
   card.innerHTML = `
     <div class="thumb"><div class="ph">${icon('clapper','26px')}</div>${badges}</div>
     <div class="meta">
@@ -628,7 +631,7 @@ function renderDetailForSelection(v) {
   } else if (state.selected.size === 1 && v.status === 'processed' && !collapsed) {
     showDetail(v);
   } else if (state.selected.size === 1 && v.status === 'pending'
-             && (state.pixaiTaggerEnabled || state.whisperEnabled) && !collapsed) {
+             && (state.taggerEnabled || state.whisperEnabled) && !collapsed) {
     showPendingDetail(v);
   } else if (v.status !== 'processed') {
     $('#detail').innerHTML = _EMPTY_DETAIL;

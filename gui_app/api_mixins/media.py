@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from .. import discovery, runner
 from batch_rename.dedup import DUPLICATES_DIR
 from ..workspace_paths import (
-    PIXAI_TAGS_FILE,
+    TAGGER_TAGS_FILE,
     THUMB_DIR,
     WHISPER_SRT_DIR,
     WHISPER_TRANSCRIPTS_FILE,
@@ -474,7 +474,7 @@ def _sync_after_manual_rename(vid: str, old_path: str, new_path: str) -> None:
             os.replace(srt, WHISPER_SRT_DIR / f"{new_vid}.srt")
         except OSError:
             pass
-    for fpath in (WHISPER_TRANSCRIPTS_FILE, PIXAI_TAGS_FILE):
+    for fpath in (WHISPER_TRANSCRIPTS_FILE, TAGGER_TAGS_FILE):
         data = read_json(fpath, {})
         if isinstance(data, dict) and old_vid in data:
             data[new_vid] = data.pop(old_vid)

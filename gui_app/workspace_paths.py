@@ -21,9 +21,9 @@ SIMILAR_CACHE_FILE = WORKSPACE_DIR / "similar_cache.json"
 LLAMA_CONFIG_FILE = WORKSPACE_DIR / "llama" / "config.json"
 LLAMA_MODEL_CONFIGS_FILE = WORKSPACE_DIR / "llama" / "model_configs.json"
 LLAMA_SCAN_CACHE_FILE = WORKSPACE_DIR / "llama" / "scan_cache.json"
-# pixai-tagger：配置与标签结果
-PIXAI_CONFIG_FILE = WORKSPACE_DIR / "pixai" / "config.json"
-PIXAI_TAGS_FILE = WORKSPACE_DIR / "pixai" / "tags.json"
+# Hammy-tagger：配置与标签结果
+TAGGER_CONFIG_FILE = WORKSPACE_DIR / "tagger" / "config.json"
+TAGGER_TAGS_FILE = WORKSPACE_DIR / "tagger" / "tags.json"
 # faster-whisper：配置、轻量转录索引与 SRT 字幕
 WHISPER_CONFIG_FILE = WORKSPACE_DIR / "whisper" / "config.json"
 WHISPER_TRANSCRIPTS_FILE = WORKSPACE_DIR / "whisper" / "transcripts.json"

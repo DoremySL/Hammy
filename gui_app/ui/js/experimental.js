@@ -8,10 +8,11 @@ async function renderExperimentalTabWrapper() {
     async () => {
       const st = await apiCall('get_experimental_status');
       syncLlamaState(st.llama);
-      state.pixaiTaggerEnabled = !!(st.pixai && st.pixai.enabled);
+      state.taggerEnabled = !!(st.tagger && st.tagger.enabled);
+      state.taggerClassify = !!(st.cfg && st.cfg.experimental && st.cfg.experimental.tagger_classify);
       state.whisperEnabled = !!(st.whisper && st.whisper.enabled);
       state.ragVecEnabled = !!(st.ragvec && st.ragvec.enabled);
-      return { cfg: st.cfg, uvStatus: st.uv, llamaStatus: st.llama, pStatus: st.pixai, wStatus: st.whisper, rvStatus: st.ragvec };
+      return { cfg: st.cfg, uvStatus: st.uv, llamaStatus: st.llama, pStatus: st.tagger, wStatus: st.whisper, rvStatus: st.ragvec };
     },
     (data) => renderExperimentalPage(data.cfg, data.uvStatus, data.llamaStatus, data.pStatus, data.wStatus, data.rvStatus),
     () => renderSettings()
@@ -58,19 +59,19 @@ function _collectExperimentalData() {
   let topN = num('#ragvec-topn');
   if (topN !== null) topN = Math.min(100, Math.max(1, topN));
   put('rag_vec_top_n', topN);
-  const clsDd = ddl('#pixai-classify-dd');
-  put('pixai_classify', clsDd === null ? null : clsDd === '1');
-  let frames = num('#pixai-frames');
+  const clsDd = ddl('#tagger-classify-dd');
+  put('tagger_classify', clsDd === null ? null : clsDd === '1');
+  let frames = num('#tagger-frames');
   if (frames !== null) frames = Math.max(1, frames);
-  put('pixai_frames', frames);
-  let thr = num('#pixai-threshold');
+  put('tagger_frames', frames);
+  let thr = num('#tagger-threshold');
   if (thr !== null) thr = Math.min(1, Math.max(0.1, thr));
-  put('pixai_threshold', thr);
-  const zhDd = ddl('#pixai-output-zh-dd');
-  put('pixai_output_zh', zhDd === null ? null : zhDd === '1');
-  put('pixai_prompt_scope', ddl('#pixai-prompt-dd'));
-  put('pixai_recall_scope', ddl('#pixai-recall-dd'));
-  put('pixai_tagger_enabled', chk('#pixai-enable-toggle'));
+  put('tagger_threshold', thr);
+  const zhDd = ddl('#tagger-output-zh-dd');
+  put('tagger_output_zh', zhDd === null ? null : zhDd === '1');
+  put('tagger_prompt_scope', ddl('#tagger-prompt-dd'));
+  put('tagger_recall_scope', ddl('#tagger-recall-dd'));
+  put('tagger_enabled', chk('#tagger-enable-toggle'));
   const wvad = ddl('#whisper-vad-dd');
   put('whisper_vad', wvad === null ? null : wvad === '1');
   const lang = $('#whisper-language');
@@ -96,13 +97,14 @@ function _collectExperimentalData() {
 }
 
 async function _saveExperimentalNow() {
-  if (!$('#pixai-enable-toggle')) return;
+  if (!$('#tagger-enable-toggle')) return;
   const token = ++_expSaveToken;
   const data = _collectExperimentalData();
   try {
     const res = await apiCall('save_config', data);
     if (res && res.ok) {
-      if (data.experimental.pixai_tagger_enabled != null) state.pixaiTaggerEnabled = !!data.experimental.pixai_tagger_enabled;
+      if (data.experimental.tagger_enabled != null) state.taggerEnabled = !!data.experimental.tagger_enabled;
+      if (data.experimental.tagger_classify != null) state.taggerClassify = !!data.experimental.tagger_classify;
       if (data.experimental.whisper_enabled != null) state.whisperEnabled = !!data.experimental.whisper_enabled;
       if (data.experimental.rag_vec_enabled != null) state.ragVecEnabled = !!data.experimental.rag_vec_enabled;
     } else if (token === _expSaveToken) {
@@ -143,7 +145,7 @@ function renderExperimentalPage(cfg, uvStatus, llamaStatus, pStatus, wStatus, rv
   body.innerHTML = `
     <div class="exp-page">
       ${_renderLlamaSection(llamaStatus)}
-      ${_renderPixaiSection(exp, pStatus)}
+      ${_renderTaggerSection(exp, pStatus)}
       ${_renderWhisperSection(exp, wStatus)}
       ${_renderRagVecSection(exp, rvStatus)}
       ${_renderUvCard(uvStatus)}
@@ -153,7 +155,7 @@ function renderExperimentalPage(cfg, uvStatus, llamaStatus, pStatus, wStatus, rv
 
   _bindManageButtons(uvStatus, llamaStatus, pStatus, wStatus, rvStatus);
   _bindLlamaEvents(llamaStatus);
-  _bindPixaiEvents();
+  _bindTaggerEvents();
   _bindWhisperEvents();
   _bindRagVecEvents();
 }
@@ -221,20 +223,20 @@ function _bindManageButtons(uvStatus, llamaStatus, pStatus, wStatus, rvStatus) {
   const removeBtn = $('#btn-llama-remove');
   if (removeBtn && llamaStatus.dir_exists) removeBtn.addEventListener('click', () => removeLlama());
 
-  const pInstallBtn = $('#btn-pixai-install');
+  const pInstallBtn = $('#btn-tagger-install');
   if (pInstallBtn && !pStatus.ready) pInstallBtn.addEventListener('click', async () => {
-    const sel = await showPixaiInstallDialog();
-    if (sel) startPixaiInstall(sel.site || 'sjtu');
+    const sel = await showTaggerInstallDialog();
+    if (sel) startTaggerInstall(sel.site || 'sjtu');
   });
 
-  const pRemoveBtn = $('#btn-pixai-remove');
+  const pRemoveBtn = $('#btn-tagger-remove');
   if (pRemoveBtn && pStatus.dir_exists) pRemoveBtn.addEventListener('click', async () => {
-    if (!await showConfirm('确定删除 pixai-tagger 吗？\n\n将删除所有已安装的依赖和模型文件。')) return;
+    if (!await showConfirm('确定删除 Tagger 吗？\n\n将删除所有已安装的依赖和模型文件。')) return;
     pRemoveBtn.disabled = true; pRemoveBtn.textContent = '删除中…';
-    const r = await apiCall('remove_pixai_tagger');
+    const r = await apiCall('remove_tagger');
     if (r && r.ok) {
-      state.pixaiTaggerEnabled = false; state.pixaiTaggedIds.clear(); state.pixaiRealIds.clear(); state.pixaiAnimeIds.clear(); state.pixaiUncertainIds.clear();
-      state.settingsOpen.delete('pixai-cfg');
+      state.taggerEnabled = false; state.taggerTaggedIds.clear(); state.taggerCategories = {};
+      state.settingsOpen.delete('tagger-cfg');
       refreshGridData(); toast(r.message || '已删除', 'ok'); renderSettings();
     } else { toast('删除失败: ' + ((r && r.error) || ''), 'err'); pRemoveBtn.disabled = false; pRemoveBtn.textContent = '卸载'; }
   });
@@ -423,11 +425,11 @@ async function showMirrorSelectDialog(opts) {
 }
 
 /* ════════════════════════════════════════════════════════════
-   PixAI 安装弹窗（GPU 必需 + 模型版本 + 站点）
+   Hammy 安装弹窗（GPU 必需 + 模型版本 + 站点）
    ════════════════════════════════════════════════════════════ */
-async function showPixaiInstallDialog() {
+async function showTaggerInstallDialog() {
   let mirrors;
-  try { mirrors = await apiCall('get_pixai_mirrors'); }
+  try { mirrors = await apiCall('get_tagger_mirrors'); }
   catch (e) { toast('获取镜像列表失败', 'err'); return null; }
 
   const gpu = mirrors.gpu || null;
@@ -442,7 +444,7 @@ async function showPixaiInstallDialog() {
     : gpuBannerHtml(gpu, '安装时按显卡自动构建对应精度的 TensorRT 引擎');
 
   const siteSection = mirrorSection({
-    title: '下载站点', name: 'pixai-site',
+    title: '下载站点', name: 'tagger-site',
     items: sites.map(s => ({ value: s.id, name: s.name, desc: s.desc || '', recommended: s.id === defaultSite })),
   });
 
@@ -457,7 +459,7 @@ async function showPixaiInstallDialog() {
   return new Promise(resolve => {
     $('#mirrorCancel').addEventListener('click', () => { dlg.close(); resolve(null); });
     $('#mirrorOk').addEventListener('click', () => {
-      const site = dlg.box.querySelector('input[name="pixai-site"]:checked');
+      const site = dlg.box.querySelector('input[name="tagger-site"]:checked');
       dlg.close();
       resolve({ site: site ? site.value : 'sjtu' });
     });
@@ -574,12 +576,12 @@ function _bindLlamaEvents(llamaStatus) {
   });
 }
 
-function _renderPixaiSection(exp, pStatus) {
-  const enabled = !!state.pixaiTaggerEnabled;
+function _renderTaggerSection(exp, pStatus) {
+  const enabled = !!state.taggerEnabled;
   const ready = !!(pStatus && pStatus.ready);
   const specBadge = ready && pStatus.precision
     ? String(pStatus.precision).toUpperCase() : '';
-  const zhOn = exp.pixai_output_zh !== false;
+  const zhOn = exp.tagger_output_zh !== false;
   const scopeNames = { char: '仅角色', all: '角色/IP', off: '不使用' };
   const scopeOf = v => scopeNames[v] ? v : 'char';
   const scopeDd = (id, val) => `
@@ -594,30 +596,30 @@ function _renderPixaiSection(exp, pStatus) {
     <div class="exp-card ${!enabled ? 'is-disabled' : ''}">
       <div class="exp-card-head">
         <label class="switch master-switch">
-          <input type="checkbox" id="pixai-enable-toggle" ${enabled ? 'checked' : ''} ${!ready ? 'disabled' : ''}/>
+          <input type="checkbox" id="tagger-enable-toggle" ${enabled ? 'checked' : ''} ${!ready ? 'disabled' : ''}/>
         </label>
         <div class="exp-head-main">
-          <div class="exp-title-row"><strong>PixAI Tagger 标签获取</strong>${_statusBadge(pStatus || {}, specBadge)}</div>
-          <div class="exp-desc">识别视频角色与作品/IP，用于整理MMD/COS视频，下版本会大改。</div>
+          <div class="exp-title-row"><strong>Hammy-tagger 标签获取</strong>${_statusBadge(pStatus || {}, specBadge)}</div>
+          <div class="exp-desc">识别视频角色与作品/IP，用于整理MMD/COS视频。</div>
         </div>
         <div class="exp-head-actions">
-          ${enabled ? '<button class="ws-btn" id="btn-pixai-clear-tags">清除标签</button>' : ''}
-          ${_installBtns('pixai', pStatus || {})}
+          ${enabled ? '<button class="ws-btn" id="btn-tagger-clear-tags">清除标签</button>' : ''}
+          ${_installBtns('tagger', pStatus || {})}
         </div>
       </div>
-      <div id="pixai-cfg-panel" class="exp-cfg-panel" style="display:${state.settingsOpen.has('pixai-cfg') ? 'block' : 'none'}">
+      <div id="tagger-cfg-panel" class="exp-cfg-panel" style="display:${state.settingsOpen.has('tagger-cfg') ? 'block' : 'none'}">
         <div class="exp-input-row">
           <div class="field">
             <label data-tip="每个视频的采样点位数，每点位取 1 帧（短视频固定头中尾 3 帧）：越多识别越全面，耗时越长">采样帧数</label>
-            <input type="number" id="pixai-frames" min="1" value="${exp.pixai_frames || 15}"/>
+            <input type="number" id="tagger-frames" min="1" value="${exp.tagger_frames || 15}"/>
           </div>
           <div class="field">
             <label data-tip="角色与 IP 均按出现次数加权，超过该值才输出；IP 仅输出加权得分最高者">角色/IP阈值</label>
-            <input type="number" id="pixai-threshold" min="0.1" max="1" step="0.01" value="${exp.pixai_threshold || 0.75}"/>
+            <input type="number" id="tagger-threshold" min="0.1" max="1" step="0.01" value="${exp.tagger_threshold || 0.75}"/>
           </div>
           <div class="field">
             <label data-tip="显示与注入提示词时使用预先翻译的文本，可能存在错误翻译">显示中文</label>
-            <div class="dd" id="pixai-output-zh-dd">
+            <div class="dd" id="tagger-output-zh-dd">
               <button class="dd-btn" type="button"><span class="dd-label">${zhOn ? '开启' : '关闭'}</span>${ddArrow()}</button>
               <div class="dd-panel">
                 <div class="dd-opt${zhOn ? ' active' : ''}" data-value="1">开启</div>
@@ -628,68 +630,68 @@ function _renderPixaiSection(exp, pStatus) {
         </div>
         <div class="exp-input-row">
           <div class="field">
-            <label data-tip="开启后非二次元作品跳过标签获取（角标 REAL 无 IP）">跳过非二次元作品</label>
-            <div class="dd" id="pixai-classify-dd">
-              <button class="dd-btn" type="button"><span class="dd-label">${exp.pixai_classify === true ? '开启' : '关闭'}</span>${ddArrow()}</button>
+            <label data-tip="开启后角标区分 2D/3D 画面；关闭时合并显示 ACG">2D/3D分类</label>
+            <div class="dd" id="tagger-classify-dd">
+              <button class="dd-btn" type="button"><span class="dd-label">${exp.tagger_classify === true ? '启用' : '不启用'}</span>${ddArrow()}</button>
               <div class="dd-panel">
-                <div class="dd-opt${exp.pixai_classify === true ? ' active' : ''}" data-value="1">开启</div>
-                <div class="dd-opt${exp.pixai_classify === true ? '' : ' active'}" data-value="0">关闭</div>
+                <div class="dd-opt${exp.tagger_classify === true ? ' active' : ''}" data-value="1">启用</div>
+                <div class="dd-opt${exp.tagger_classify === true ? '' : ' active'}" data-value="0">不启用</div>
               </div>
             </div>
           </div>
           <div class="field">
             <label data-tip="AI 重命名提示词注入的识别结果范围">提示词注入</label>
-            ${scopeDd('pixai-prompt-dd', scopeOf(exp.pixai_prompt_scope))}
+            ${scopeDd('tagger-prompt-dd', scopeOf(exp.tagger_prompt_scope))}
           </div>
           <div class="field">
             <label data-tip="标签检索（增强模式）召回查询使用的识别结果范围">标签检索</label>
-            ${scopeDd('pixai-recall-dd', scopeOf(exp.pixai_recall_scope))}
+            ${scopeDd('tagger-recall-dd', scopeOf(exp.tagger_recall_scope))}
           </div>
         </div>
       </div>
     </div>`;
 }
 
-function _bindPixaiEvents() {
-  const toggle = $('#pixai-enable-toggle');
+function _bindTaggerEvents() {
+  const toggle = $('#tagger-enable-toggle');
   if (toggle) toggle.addEventListener('change', () => {
-    state.pixaiTaggerEnabled = toggle.checked;
+    state.taggerEnabled = toggle.checked;
     const card = toggle.closest('.exp-card');
     if (card) card.classList.toggle('is-disabled', !toggle.checked);
-    const clearBtn = $('#btn-pixai-clear-tags');
+    const clearBtn = $('#btn-tagger-clear-tags');
     if (clearBtn) clearBtn.style.display = toggle.checked ? '' : 'none';
     scheduleExperimentalSave(true);
     updateSortDropdown();
   });
 
-  _bindCardToggle('pixai');
+  _bindCardToggle('tagger');
 
-  ['#pixai-frames', '#pixai-threshold'].forEach(sel => {
+  ['#tagger-frames', '#tagger-threshold'].forEach(sel => {
     const el = $(sel);
     if (el) el.addEventListener('input', () => scheduleExperimentalSave());
   });
-  const clsDd = $('#pixai-classify-dd');
+  const clsDd = $('#tagger-classify-dd');
   if (clsDd) initDropdown(clsDd, () => scheduleExperimentalSave(true));
-  const zhDd = $('#pixai-output-zh-dd');
+  const zhDd = $('#tagger-output-zh-dd');
   if (zhDd) initDropdown(zhDd, () => scheduleExperimentalSave(true));
-  const promptDd = $('#pixai-prompt-dd');
+  const promptDd = $('#tagger-prompt-dd');
   if (promptDd) initDropdown(promptDd, () => scheduleExperimentalSave(true));
-  const recallDd = $('#pixai-recall-dd');
+  const recallDd = $('#tagger-recall-dd');
   if (recallDd) initDropdown(recallDd, () => scheduleExperimentalSave(true));
 
-  const clearBtn = $('#btn-pixai-clear-tags');
+  const clearBtn = $('#btn-tagger-clear-tags');
   if (clearBtn) clearBtn.addEventListener('click', async () => {
     if (!await showConfirm('确定清除所有已保存的标签数据吗？')) return;
-    const r = await apiCall('clear_pixai_tags');
+    const r = await apiCall('clear_tagger_tags');
     if (r && r.ok) {
-      state.pixaiTaggedIds.clear(); state.pixaiRealIds.clear(); state.pixaiAnimeIds.clear(); state.pixaiUncertainIds.clear();
+      state.taggerTaggedIds.clear(); state.taggerCategories = {};
       refreshGridData(); toast(r.message || '已清除', 'ok');
     } else toast('清除失败', 'err');
   });
 }
 
 /* ════════════════════════════════════════════════════════════
-   安装流程骨架（PixAI / Whisper / llama.cpp / 向量检索共用）
+   安装流程骨架（Hammy / Whisper / llama.cpp / 向量检索共用）
    ════════════════════════════════════════════════════════════ */
 async function runInstallTask(run, onOk) {
   if (state.installing || state.hfDownloading) {
@@ -732,14 +734,14 @@ async function runInstallTask(run, onOk) {
   }
 }
 
-async function startPixaiInstall(site) {
+async function startTaggerInstall(site) {
   await runInstallTask(
-    () => apiCall('install_pixai_tagger', '448-Hammy', site),
+    () => apiCall('install_tagger', site),
     async () => {
-      await apiCall('set_pixai_tagger_enabled', true);
-      state.pixaiTaggerEnabled = true;
+      await apiCall('set_tagger_enabled', true);
+      state.taggerEnabled = true;
       updateSortDropdown();
-      toast('PixAI Tagger 安装完成，已自动启用', 'ok');
+      toast('Hammy-tagger 安装完成，已自动启用', 'ok');
     });
 }
 
