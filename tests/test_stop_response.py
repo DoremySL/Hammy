@@ -72,7 +72,7 @@ class TestAnalyzeStreamCloseFastPath(unittest.TestCase):
     """改动②：stop_event 置位时 close 走快路径，unregister/unlink 仍执行。"""
 
     def _mk_stream(self, stop_set, broken):
-        from gui_app.pixai_tagger import AnalyzeStream
+        from gui_app.tagger import AnalyzeStream
         stream = AnalyzeStream.__new__(AnalyzeStream)
         se = threading.Event()
         if stop_set:
@@ -90,8 +90,8 @@ class TestAnalyzeStreamCloseFastPath(unittest.TestCase):
 
     def test_close_fast_path_on_stop(self):
         stream = self._mk_stream(stop_set=True, broken=False)
-        with mock.patch("gui_app.pixai_tagger.unregister_subprocess") as mock_unreg, \
-             mock.patch("gui_app.pixai_tagger.os.unlink") as mock_unlink:
+        with mock.patch("gui_app.tagger.unregister_subprocess") as mock_unreg, \
+             mock.patch("gui_app.tagger.os.unlink") as mock_unlink:
             r = stream.close()
         self.assertFalse(r["ok"])
         self.assertEqual(r["error"], "已停止")
@@ -101,8 +101,8 @@ class TestAnalyzeStreamCloseFastPath(unittest.TestCase):
 
     def test_close_normal_path_when_no_stop(self):
         stream = self._mk_stream(stop_set=False, broken=False)
-        with mock.patch("gui_app.pixai_tagger.unregister_subprocess"), \
-             mock.patch("gui_app.pixai_tagger.os.unlink"):
+        with mock.patch("gui_app.tagger.unregister_subprocess"), \
+             mock.patch("gui_app.tagger.os.unlink"):
             r = stream.close()
         self.assertTrue(r["ok"])
         self.assertIsNone(r["error"])

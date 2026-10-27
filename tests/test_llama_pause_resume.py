@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import unittest
 
 from gui_app import llama_cpp
-from gui_app.config_store import _default_config, _pixai_defaults
+from gui_app.config_store import _default_config, _tagger_defaults
 
 
 def _reset_runtime_state():
@@ -82,25 +82,25 @@ class TestTaskHooks(unittest.TestCase):
         from gui_app.api_mixins.experimental import ExperimentalMixin
         return ExperimentalMixin()
 
-    def _pixai_patches(self, extract):
+    def _tagger_patches(self, extract):
         """detect_ip_tags 的公共 mock：模块就绪、配置默认、不写真实 workspace、
         假分析流（start_analyze_stream 在函数体内导入，patch 源模块）。
         ensure_model_files 同样在函数体内导入，必须 mock，否则缺失模型会触发真实下载。"""
         return [
-            mock.patch("gui_app.pixai_tagger.get_status",
+            mock.patch("gui_app.tagger.get_status",
                        return_value={"ready": True}),
-            mock.patch("gui_app.api_mixins.experimental.load_pixai_config",
-                       side_effect=_pixai_defaults),
+            mock.patch("gui_app.api_mixins.experimental.load_tagger_config",
+                       side_effect=_tagger_defaults),
             mock.patch("gui_app.api_mixins.experimental.load_config",
                        return_value={"video": {"frame_max_side": 640}}),
             mock.patch("gui_app.api_mixins.experimental.update_json"),  # 标签落盘不入真实工作区
             mock.patch("batch_rename.dependencies.ffmpeg_tools.ffmpeg",
                        "/fake/ffmpeg.exe"),
-            mock.patch("gui_app.pixai_tagger.ensure_model_files",
+            mock.patch("gui_app.tagger.ensure_model_files",
                        return_value=None),
-            mock.patch("gui_app.pixai_tagger.extract_frames_for_tagger",
+            mock.patch("gui_app.tagger.extract_frames_for_tagger",
                        **extract),
-            mock.patch("gui_app.pixai_tagger.start_analyze_stream",
+            mock.patch("gui_app.tagger.start_analyze_stream",
                        return_value=_FakeStream()),
         ]
 
@@ -108,7 +108,7 @@ class TestTaskHooks(unittest.TestCase):
         api = self._api()
         with mock.patch("gui_app.llama_cpp.pause_for_task") as pause_mock, \
              ExitStack() as stack:
-            for p in self._pixai_patches({"return_value": []}):
+            for p in self._tagger_patches({"return_value": []}):
                 stack.enter_context(p)
             r = api.detect_ip_tags([["vid1", "C:/v.mp4"]])
         self.assertTrue(r["ok"])
@@ -119,7 +119,7 @@ class TestTaskHooks(unittest.TestCase):
         api = self._api()
         with mock.patch("gui_app.llama_cpp.pause_for_task") as pause_mock, \
              ExitStack() as stack:
-            for p in self._pixai_patches({"side_effect": RuntimeError("boom")}):
+            for p in self._tagger_patches({"side_effect": RuntimeError("boom")}):
                 stack.enter_context(p)
             r = api.detect_ip_tags([["vid1", "C:/v.mp4"]])
         self.assertTrue(r["ok"])                          # 单视频异常不影响整体
