@@ -57,7 +57,7 @@ pip install openai pywebview pystray
 ### 方式二：双击启动GUI
 
 - 安装好依赖后直接双击 `Hammy\GUI Launcher.bat`启动界面
-- 点击左上或右下按钮进入设置页
+- 点击左上连接检测按钮或左下配置按钮进入配置页
 - 配置好模型api或在扩展功能界面安装llama.cpp并下载模型后在主界面添加视频
 - 点击右下角按钮进行AI重命名
 - 单选或按住CTRL多选视频卡片后右键查看更多功能
