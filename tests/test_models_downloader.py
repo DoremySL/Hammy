@@ -677,7 +677,7 @@ class TestDownloadFiles(unittest.TestCase):
 
 
 class TestDownloadUrls(unittest.TestCase):
-    """download_urls：直连下载 / label 显示 / 取消 / 磁盘预检。"""
+    """download_urls_parallel：直连下载 / label 显示 / 取消 / 磁盘预检。"""
 
     def setUp(self):
         self._td = tempfile.TemporaryDirectory()
@@ -690,7 +690,7 @@ class TestDownloadUrls(unittest.TestCase):
                         side_effect=urlopen_side_effect), \
              mock.patch("urllib.request.Request", wraps=urllib.request.Request), \
              mock.patch("gui_app.models_downloader.time.sleep"):
-            return md.download_urls(items, str(self.root),
+            return md.download_urls_parallel(items, str(self.root),
                                     log_fn=self.logs.append, cancel_event=cancel)
 
     def test_download_with_label(self):
@@ -700,7 +700,9 @@ class TestDownloadUrls(unittest.TestCase):
         self.assertTrue(r["ok"])
         self.assertEqual(r["downloaded"], 1)
         self.assertEqual((self.root / "pkg.zip").read_bytes(), b"x" * 10)
-        self.assertTrue(any("开始下载: 预编译" in s for s in self.logs))
+        self.assertTrue(any("下载完成（预编译" in s for s in self.logs))
+        self.assertFalse(any(s.startswith("  开始下载") for s in self.logs))
+        self.assertFalse(any(s.startswith("  下载完成") for s in self.logs))
         self.assertTrue((self.root / "pkg.zip").exists())
 
     def test_resume_206(self):
@@ -724,7 +726,7 @@ class TestDownloadUrls(unittest.TestCase):
         with mock.patch("gui_app.models_downloader.shutil.disk_usage") as du, \
              mock.patch("gui_app.models_downloader.os.makedirs"):
             du.return_value.free = 5
-            r = md.download_urls([{"url": "http://x/a.bin", "filename": "a.bin",
+            r = md.download_urls_parallel([{"url": "http://x/a.bin", "filename": "a.bin",
                                    "size": 10 ** 9}], str(self.root))
         self.assertFalse(r["ok"])
         self.assertIn("磁盘空间不足", r["error"])
