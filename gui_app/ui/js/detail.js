@@ -3,13 +3,13 @@
    ════════════════════════════════════════════════════════════ */
 let _detailSeq = 0;
 
-function showDetail(v) {
+function showDetail(v, quiet) {
   if (v.status === 'pending' && (state.whisperEnabled || state.taggerEnabled)) {
-    showPendingDetail(v);
+    showPendingDetail(v, quiet);
     return;
   }
   ++_detailSeq;
-  switchTab('detail');
+  if (!quiet) switchTab('detail');
   const d = $('#detail');
   const tags = (v.tags || []).map(t =>
     `<button class="chip" data-tag="${esc(t)}">${esc(t)}</button>`).join('')
@@ -36,9 +36,9 @@ function showDetail(v) {
   }
 }
 
-async function showPendingDetail(v) {
+async function showPendingDetail(v, quiet) {
   const seq = ++_detailSeq;
-  switchTab('detail');
+  if (!quiet) switchTab('detail');
   const d = $('#detail');
   d.innerHTML = '<div class="empty">加载中…</div>';
 
@@ -57,7 +57,7 @@ async function showPendingDetail(v) {
 
   if (!showTagger && !hasWhisper) {
     const hints = [];
-    if (state.taggerEnabled && !taggerDone) hints.push('右键「获取辅助分类标签」');
+    if (state.taggerEnabled && !taggerDone) hints.push('右键「生成辅助分类标签」');
     if (state.whisperEnabled) hints.push('右键「语音转录」');
     d.innerHTML = `<div class="empty">该视频暂无分析数据` +
       (hints.length ? `<br/><span style="font-size:11px;color:var(--faint)">${hints.join(' / ')}</span>` : '') +

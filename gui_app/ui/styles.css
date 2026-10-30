@@ -674,6 +674,10 @@
   .empty-state .icon:active .ic-hammy{filter:none}
   .empty-state .icon:active{transform:translateY(0) scale(.96)}
   .empty-state .icon:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .empty-state .empty-tips{margin-top:22px;max-width:440px;min-height:41px}
+  .empty-state .empty-tip{font-size:11px;line-height:1.85;color:var(--faint);
+    transition:opacity .35s ease}
+  .empty-state .empty-tip.blend{opacity:0}
 
   /* ── contextmenu ── */
 

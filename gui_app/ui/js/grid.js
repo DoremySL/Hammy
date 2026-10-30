@@ -628,11 +628,11 @@ function renderDetailForSelection(v) {
   const collapsed = $('#pane-bottom').classList.contains('collapsed');
   if (state.selected.size === 0) {
     $('#detail').innerHTML = _EMPTY_DETAIL;
-  } else if (state.selected.size === 1 && v.status === 'processed' && !collapsed) {
-    showDetail(v);
+  } else if (state.selected.size === 1 && v.status === 'processed') {
+    showDetail(v, collapsed);
   } else if (state.selected.size === 1 && v.status === 'pending'
-             && (state.taggerEnabled || state.whisperEnabled) && !collapsed) {
-    showPendingDetail(v);
+             && (state.taggerEnabled || state.whisperEnabled)) {
+    showPendingDetail(v, collapsed);
   } else if (v.status !== 'processed') {
     $('#detail').innerHTML = _EMPTY_DETAIL;
   }
@@ -884,3 +884,21 @@ function updateStats() {
     fp.style.display = 'none';
   }
 }
+
+const _EMPTY_TIPS = [
+  '点击左上按钮配置AI服务或下载本地推理模块',
+  '可按住 Ctrl 或 Shift 进行多选，Ctrl+A 全选',
+  '选中一个或多个视频卡片后，右键查看更多选项',
+  '双击视频卡片可展开详情界面',
+];
+let _emptyTipIdx = 0;
+setInterval(() => {
+  const el = document.getElementById('emptyTip');
+  if (!el) return;
+  el.classList.add('blend');
+  setTimeout(() => {
+    _emptyTipIdx = (_emptyTipIdx + 1) % _EMPTY_TIPS.length;
+    el.textContent = _EMPTY_TIPS[_emptyTipIdx];
+    el.classList.remove('blend');
+  }, 360);
+}, 6000);

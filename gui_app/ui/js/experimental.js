@@ -33,6 +33,8 @@ function syncLlamaState(llamaStatus) {
     updateStartBtn();
   } else if (state.pillMode === 'llama') {
     state.pillMode = 'conn';
+    showConnChecking();
+    updateStartBtn();
     checkConnection();
   }
   if (typeof updateLlamaTabVisibility === 'function') updateLlamaTabVisibility();
@@ -599,7 +601,7 @@ function _renderTaggerSection(exp, pStatus) {
           <input type="checkbox" id="tagger-enable-toggle" ${enabled ? 'checked' : ''} ${!ready ? 'disabled' : ''}/>
         </label>
         <div class="exp-head-main">
-          <div class="exp-title-row"><strong>Hammy-tagger 标签获取</strong>${_statusBadge(pStatus || {}, specBadge)}</div>
+          <div class="exp-title-row"><strong>Hammy-tagger 辅助分类标签</strong>${_statusBadge(pStatus || {}, specBadge)}</div>
           <div class="exp-desc">识别视频角色与作品/IP，用于整理MMD/COS视频。</div>
         </div>
         <div class="exp-head-actions">
@@ -1664,6 +1666,13 @@ async function removeLlama() {
   if (r && r.ok) {
     toast(r.message || '已卸载', 'ok');
     state.llamaEnabled = false;
+    if (state.llamaIntegration) {
+      state.llamaIntegration = false;
+      state.pillMode = 'conn';
+      showConnChecking();
+      updateStartBtn();
+      checkConnection();
+    }
     state.settingsOpen.delete('llama-cfg');
     updateLlamaTabVisibility();
   } else {
@@ -1968,75 +1977,77 @@ function renderLlamaTab(llamaStatus) {
       </div>
     </div>
 
-    <!-- 服务参数 -->
-    <div class="group">
-      <div class="grid-3">
-        <div class="field">
-          <label data-tip="监听地址：127.0.0.1 仅本机可访问；0.0.0.0 允许局域网访问">监听地址 <code>--host</code></label>
-          <input type="text" id="llama-host" value="${esc(pv('host', d.host))}"/>
-        </div>
-        <div class="field">
-          <label>端口 <code>--port</code></label>
-          <input type="number" id="llama-port" value="${pv('port', d.port)}"/>
-        </div>
-        <div class="field">
-          <label data-tip="模型别名：显示在聊天界面标题，便于区分多模型；留空不传 -a">模型别名 <code>-a</code></label>
-          <input type="text" id="llama-alias" value="${esc(pv('alias', d.alias || ''))}"/>
-        </div>
-      </div>
-    </div>
-
-    <!-- 进阶参数（默认收起） -->
+    <!-- 进阶参数（默认收起，内分三组） -->
     <button class="llama-adv-bar" id="llama-adv-toggle">
       <span>进阶参数</span>
       ${ddArrow('chev')}
     </button>
     <div id="llama-adv-panel" style="display:${state.settingsOpen.has('llama-adv') ? 'block' : 'none'};margin-top:12px">
-      <div class="grid-3">
-        <div class="field">
-          <label data-tip="CPU 推理线程数，一般设为物理核心数">推理线程数 <code>-t</code></label>
-          <input type="number" id="llama-threads" value="${pv('threads', d.threads)}"/>
-        </div>
-        <div class="field">
-          <label data-tip="批处理线程数：prompt 处理阶段使用的线程数">批处理线程数 <code>-tb</code></label>
-          <input type="number" id="llama-tb" value="${pv('threads_batch', d.threads_batch)}"/>
-        </div>
-        <div class="field">
-          <label data-tip="逻辑批大小：影响生成速度与显存占用">逻辑批大小 <code>-b</code></label>
-          <input type="number" id="llama-batch" value="${pv('batch', d.batch)}"/>
-        </div>
-        <div class="field">
-          <label data-tip="物理批大小：内部计算微批大小">物理批大小 <code>-ub</code></label>
-          <input type="number" id="llama-ubatch" value="${pv('ubatch', d.ubatch)}"/>
-        </div>
-        <div class="field">
-          <label data-tip="最大生成长度 (-1 = 无限)">最大生成长度 <code>-n</code></label>
-          <input type="number" id="llama-npredict" value="${pv('npredict', d.npredict)}"/>
-        </div>
-        <div class="field">
-          <label data-tip="请求超时秒数">请求超时秒 <code>--timeout</code></label>
-          <input type="number" id="llama-timeout" value="${pv('timeout', d.timeout)}"/>
-        </div>
-        <div class="field">
-          <label data-tip="用于切换模型文件的底层加载策略，从而直接控制推理任务的启动速度、内存占用峰值以及运行时是否会被交换到磁盘">加载模式 <code>--load-mode</code></label>
-          <div class="dd llama-loadmode-dd" id="llama-loadmode">${_loadModeDdInner(_loadModeSelectVal(pv('load_mode', d.load_mode)))}</div>
-        </div>
-        <div class="field">
-          <label data-tip="决定单张图片最低使用token数，更高数值可提高识图精度">视觉预算下限 <code>--image-min-tokens</code></label>
-          <div class="dd llama-img-tokens-dd" id="llama-image-min">${_imgTokensDdInner(_imgTokensSelectVal(pv('image_min_tokens', d.image_min_tokens)))}</div>
-        </div>
-        <div class="field">
-          <label data-tip="决定单张图片最高使用token数，建议设置低于物理批-ub的数值避免部分模型崩溃">视觉预算上限 <code>--image-max-tokens</code></label>
-          <div class="dd llama-img-tokens-dd" id="llama-image-max">${_imgTokensDdInner(_imgTokensSelectVal(pv('image_max_tokens', d.image_max_tokens)))}</div>
+      <div class="group">
+        <div class="grid-3">
+          <div class="field">
+            <label data-tip="监听地址：127.0.0.1 仅本机可访问；0.0.0.0 允许局域网访问">监听地址 <code>--host</code></label>
+            <input type="text" id="llama-host" value="${esc(pv('host', d.host))}"/>
+          </div>
+          <div class="field">
+            <label>端口 <code>--port</code></label>
+            <input type="number" id="llama-port" value="${pv('port', d.port)}"/>
+          </div>
+          <div class="field">
+            <label data-tip="模型别名：显示在聊天界面标题，便于区分多模型；留空不传 -a">模型别名 <code>-a</code></label>
+            <input type="text" id="llama-alias" value="${esc(pv('alias', d.alias || ''))}"/>
+          </div>
         </div>
       </div>
-      <div class="field" style="margin-top:10px">
-        <label data-tip="追加更多启动参数，值含空格需添加引号">额外启动参数</label>
-        <div class="xarg-quick">
-          <input type="text" id="llama-extra" placeholder="Enter 添加，添加后可点击选中，Ctrl/Shift 多选，右键编辑或删除"/>
-          <button class="ws-btn" id="btn-xarg-add">添加</button>
+      <div class="group" style="margin-top:12px">
+        <div class="grid-3">
+          <div class="field">
+            <label data-tip="CPU 推理线程数，一般设为物理核心数">推理线程数 <code>-t</code></label>
+            <input type="number" id="llama-threads" value="${pv('threads', d.threads)}"/>
+          </div>
+          <div class="field">
+            <label data-tip="批处理线程数：prompt 处理阶段使用的线程数">批处理线程数 <code>-tb</code></label>
+            <input type="number" id="llama-tb" value="${pv('threads_batch', d.threads_batch)}"/>
+          </div>
+          <div class="field">
+            <label data-tip="逻辑批大小：影响生成速度与显存占用">逻辑批大小 <code>-b</code></label>
+            <input type="number" id="llama-batch" value="${pv('batch', d.batch)}"/>
+          </div>
+          <div class="field">
+            <label data-tip="物理批大小：内部计算微批大小">物理批大小 <code>-ub</code></label>
+            <input type="number" id="llama-ubatch" value="${pv('ubatch', d.ubatch)}"/>
+          </div>
+          <div class="field">
+            <label data-tip="最大生成长度 (-1 = 无限)">最大生成长度 <code>-n</code></label>
+            <input type="number" id="llama-npredict" value="${pv('npredict', d.npredict)}"/>
+          </div>
+          <div class="field">
+            <label data-tip="请求超时秒数">请求超时秒 <code>--timeout</code></label>
+            <input type="number" id="llama-timeout" value="${pv('timeout', d.timeout)}"/>
+          </div>
+          <div class="field">
+            <label data-tip="用于切换模型文件的底层加载策略，从而直接控制推理任务的启动速度、内存占用峰值以及运行时是否会被交换到磁盘">加载模式 <code>--load-mode</code></label>
+            <div class="dd llama-loadmode-dd" id="llama-loadmode">${_loadModeDdInner(_loadModeSelectVal(pv('load_mode', d.load_mode)))}</div>
+          </div>
+          <div class="field">
+            <label data-tip="决定单张图片最低使用token数，更高数值可提高识图精度">视觉预算下限 <code>--image-min-tokens</code></label>
+            <div class="dd llama-img-tokens-dd" id="llama-image-min">${_imgTokensDdInner(_imgTokensSelectVal(pv('image_min_tokens', d.image_min_tokens)))}</div>
+          </div>
+          <div class="field">
+            <label data-tip="决定单张图片最高使用token数，建议设置低于物理批-ub的数值避免部分模型崩溃">视觉预算上限 <code>--image-max-tokens</code></label>
+            <div class="dd llama-img-tokens-dd" id="llama-image-max">${_imgTokensDdInner(_imgTokensSelectVal(pv('image_max_tokens', d.image_max_tokens)))}</div>
+          </div>
         </div>
-        <div class="xarg-list" id="llama-xargs-list" style="display:none"></div>
+      </div>
+      <div class="group" style="margin-top:12px">
+        <div class="field" style="margin-top:0">
+          <label data-tip="追加更多启动参数，值含空格需添加引号">额外启动参数</label>
+          <div class="xarg-quick">
+            <input type="text" id="llama-extra" placeholder="Enter 添加，添加后可点击选中，Ctrl/Shift 多选，右键编辑或删除"/>
+            <button class="ws-btn" id="btn-xarg-add">添加</button>
+          </div>
+          <div class="xarg-list" id="llama-xargs-list" style="display:none"></div>
+        </div>
       </div>
     </div>
   </div>

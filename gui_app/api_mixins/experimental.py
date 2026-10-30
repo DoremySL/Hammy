@@ -17,7 +17,7 @@ from ..workspace_paths import (LLAMA_CONFIG_FILE, TAGGER_TAGS_FILE,
 from ..workspace_store import read_json, update_json, write_json
 from batch_rename.utils import safe_float, safe_int
 
-# GPU 密集任务互斥（转录/标签获取/翻译同刻只允许一个）
+# GPU 密集任务互斥（转录/辅助分类标签/翻译同刻只允许一个）
 _gpu_task_lock = threading.Lock()
 # 安装/卸载/清缓存互斥
 _install_lock = threading.Lock()
@@ -59,7 +59,7 @@ class ExperimentalMixin:
     # ── GPU 任务停止 ──
 
     def stop_gpu_task(self) -> Dict[str, Any]:
-        """停止当前运行中的 GPU 任务（转录/标签获取/翻译）。"""
+        """停止当前运行中的 GPU 任务（转录/辅助分类标签/翻译）。"""
         if not _gpu_task_lock.locked():
             return {"ok": False, "error": "当前没有运行中的任务"}
         if _gpu_stop_event.is_set():
@@ -207,7 +207,7 @@ class ExperimentalMixin:
         stop_worker()
         return {"ok": True, "message": "已停止嵌入后台进程", "worker_running": get_status().get("worker_running")}
 
-    # ── Hammy Tagger 标签获取 ──
+    # ── Hammy Tagger 辅助分类标签 ──
 
     def get_tagger_status(self) -> Dict[str, Any]:
         """获取 Hammy-tagger 安装状态与启用状态。"""
@@ -259,7 +259,7 @@ class ExperimentalMixin:
             _install_lock.release()
 
     def detect_ip_tags(self, items: List) -> Dict[str, Any]:
-        """对选中视频执行 IP 标签获取（items: [[video_id, video_path], ...]）。"""
+        """对选中视频执行辅助分类标签识别（items: [[video_id, video_path], ...]）。"""
         from ..tagger import (get_status, start_analyze_stream,
                                     extract_frames_for_tagger, ensure_model_files,
                                     TAG_THRESHOLD)
@@ -543,7 +543,7 @@ class ExperimentalMixin:
                 if data.get("category")}
 
     def _save_tags(self, results: Dict[str, Any]) -> None:
-        """将标签获取结果合并保存到 tagger/tags.json（失败条目不落盘）。"""
+        """将辅助分类标签结果合并保存到 tagger/tags.json（失败条目不落盘）。"""
         def _mutate(current):
             if not isinstance(current, dict):
                 current = {}

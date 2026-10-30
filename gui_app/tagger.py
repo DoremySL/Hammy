@@ -259,7 +259,7 @@ def install_dependencies(
             if dl.get("error") or core_failed:
                 err = dl.get("error") or str(core_failed[0].get("error", ""))[:200]
                 return {"ok": False, "error": f"模型下载失败: {err}"}
-            _log("标签翻译表下载失败（不影响标签获取，中文显示将回退英文）", log_fn)
+            _log("标签翻译表下载失败（不影响标签生成，中文显示将回退英文）", log_fn)
     finally:
         models_downloader.end_download()
 

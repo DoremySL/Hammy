@@ -730,11 +730,13 @@ def _download_entries(entries: List[Dict[str, Any]], cleanup_dir: str,
                       log_fn: Callable[[str], None],
                       progress_cb: Optional[Callable[[Dict[str, Any]], None]],
                       cancel_event: Optional[threading.Event],
-                      cleanup_on_cancel: bool) -> Dict[str, Any]:
-    """逐条目下载（download_files / download_urls 共用）。
+                      cleanup_on_cancel: bool,
+                      concurrent: bool = False) -> Dict[str, Any]:
+    """逐条目下载（download_files / download_urls_parallel 共用）。
 
-    entries = [{"url", "dest", "display", "size"}]；取消时 cleanup_on_cancel=True
-    删除整个 cleanup_dir，否则只删未完成文件。progress 事件统一携带 idx/count。
+    entries = [{"url", "dest", "display", "size"}]；concurrent=False 逐个下载，
+    进度事件带 idx/count（大文件走分片多连接）；concurrent=True 全部条目按序号
+    错峰 1 秒同时单流下载，进度事件为总字节口径的总进度，取消时仅清理未完成的文件。
     """
     partial_files: set = set()
 
@@ -754,47 +756,117 @@ def _download_entries(entries: List[Dict[str, Any]], cleanup_dir: str,
                else "已取消，无未完成的文件")
 
     ok, failed, cancelled = 0, [], False
-    count = len(entries)
-    for idx, ent in enumerate(entries, 1):
-        if cancel_event and cancel_event.is_set():
-            cancelled = True
-            _on_cancel()
-            break
-        url, dest, display, exp = ent["url"], ent["dest"], ent["display"], ent["size"]
 
-        def file_cb(ev: Dict[str, Any], idx: int = idx, display: str = display) -> None:
+    if not concurrent:
+        count = len(entries)
+        for idx, ent in enumerate(entries, 1):
+            if cancel_event and cancel_event.is_set():
+                cancelled = True
+                _on_cancel()
+                break
+            url, dest, display, exp = ent["url"], ent["dest"], ent["display"], ent["size"]
+
+            def file_cb(ev: Dict[str, Any], idx: int = idx, display: str = display) -> None:
+                if progress_cb:
+                    progress_cb({**ev, "file": display, "idx": idx, "count": count})
+
             if progress_cb:
-                progress_cb({**ev, "file": display, "idx": idx, "count": count})
-
-        if progress_cb:
-            progress_cb({"type": "file_start", "file": display, "idx": idx,
-                         "count": count})
-        partial_files.add(dest)
-        try:
-            if exp >= CHUNK_MIN_SIZE and not os.path.exists(dest):
-                try:
-                    _download_file_chunked(url, dest, display, log_fn, file_cb,
-                                           cancel_event, expected_size=exp)
-                except ChunkedFallback:
-                    log_fn(f"  分片不可用（服务端忽略 Range），回退单流: {display}")
+                progress_cb({"type": "file_start", "file": display, "idx": idx,
+                             "count": count})
+            partial_files.add(dest)
+            try:
+                if exp >= CHUNK_MIN_SIZE and not os.path.exists(dest):
+                    try:
+                        _download_file_chunked(url, dest, display, log_fn, file_cb,
+                                               cancel_event, expected_size=exp)
+                    except ChunkedFallback:
+                        log_fn(f"  分片不可用（服务端忽略 Range），回退单流: {display}")
+                        _download_file(url, dest, display, log_fn, file_cb, cancel_event,
+                                       expected_size=exp)
+                else:
                     _download_file(url, dest, display, log_fn, file_cb, cancel_event,
                                    expected_size=exp)
-            else:
-                _download_file(url, dest, display, log_fn, file_cb, cancel_event,
-                               expected_size=exp)
-            ok += 1
-            partial_files.discard(dest)
-        except DownloadCancelled:
-            cancelled = True
-            _on_cancel()
-            break
-        except Exception as e:
-            failed.append({"file": display, "error": str(e)[:200]})
-            log_fn(f"  失败: {display} — {str(e)[:200]}")
-            partial_files.discard(dest)
+                ok += 1
+                partial_files.discard(dest)
+            except DownloadCancelled:
+                cancelled = True
+                _on_cancel()
+                break
+            except Exception as e:
+                failed.append({"file": display, "error": str(e)[:200]})
+                log_fn(f"  失败: {display} — {str(e)[:200]}")
+                partial_files.discard(dest)
+    else:
+        total = sum(e["size"] for e in entries)
 
-    log_fn(f"完成：成功 {ok} / 失败 {len(failed)}" + (" / 已取消" if cancelled else "")
-           + f"  |  保存于 {os.path.abspath(cleanup_dir)}")
+        agg_lock = threading.Lock()
+        dones: Dict[str, int] = {}
+        last = [0.0]
+
+        def file_cb(ev: Dict[str, Any], display: str) -> None:
+            typ = ev.get("type")
+            if typ not in ("progress", "file_done", "file_skip"):
+                return
+            emit = None
+            with agg_lock:
+                dones[display] = int(ev.get("done" if typ == "progress" else "size") or 0)
+                if total:
+                    pct = min(1.0, sum(dones.values()) / total)
+                    if pct - last[0] >= 0.005 or pct >= 1.0:
+                        last[0] = pct
+                        emit = {"type": "progress", "file": display,
+                                "done": sum(dones.values()), "total": total,
+                                "pct": pct}
+            if emit and progress_cb:
+                progress_cb(emit)
+
+        def run_entry(ent: Dict[str, Any], delay: int = 0) -> None:
+            def cb(ev: Dict[str, Any]) -> None:
+                file_cb(ev, ent["display"])
+
+            def quiet_log(msg: str) -> None:
+                if not any(msg.startswith(p) for p in
+                           ("  开始下载", "  继续下载", "  下载完成")):
+                    log_fn(msg)
+
+            if delay:
+                if cancel_event is not None:
+                    if cancel_event.wait(delay):
+                        raise DownloadCancelled()
+                else:
+                    time.sleep(delay)
+            if cancel_event and cancel_event.is_set():
+                raise DownloadCancelled()
+            _download_file(ent["url"], ent["dest"], ent["display"], quiet_log, cb,
+                           cancel_event, expected_size=ent["size"])
+
+        if entries:
+            for ent in entries:
+                partial_files.add(ent["dest"])
+            with ThreadPoolExecutor(max_workers=len(entries)) as ex:
+                futs = [(ent, ex.submit(run_entry, ent, idx))
+                        for idx, ent in enumerate(entries)]
+                for ent, fu in futs:
+                    try:
+                        fu.result()
+                        ok += 1
+                        partial_files.discard(ent["dest"])
+                    except DownloadCancelled:
+                        cancelled = True
+                    except Exception as e:  # noqa: BLE001
+                        failed.append({"file": ent["display"], "error": str(e)[:200]})
+                        log_fn(f"  失败: {ent['display']} — {str(e)[:200]}")
+        if cancelled:
+            _on_cancel()
+
+    if concurrent and not failed and not cancelled:
+        parts = "、".join(f"{e['display']} {fmt_size(e['size'])}"
+                          for e in entries if e["size"])
+        detail = f"（{parts}）" if parts else ""
+        log_fn(f"下载完成{detail}  |  保存于 {os.path.abspath(cleanup_dir)}")
+    elif not concurrent:
+        log_fn(f"完成：成功 {ok} / 失败 {len(failed)}" + (" / 已取消" if cancelled else "")
+               + f"  |  保存于 {os.path.abspath(cleanup_dir)}")
     return {"ok": not failed and not cancelled, "downloaded": ok,
             "failed": failed, "cancelled": cancelled, "dir": os.path.abspath(cleanup_dir)}
 
@@ -843,12 +915,14 @@ def download_files(source: str, repo_id: str, filenames: List[str], dest_root: s
     return r
 
 
-def download_urls(items: List[Dict[str, Any]], dest_root: str,
-                  log_fn: Optional[Callable[[str], None]] = None,
-                  progress_cb: Optional[Callable[[Dict[str, Any]], None]] = None,
-                  cancel_event: Optional[threading.Event] = None,
-                  cleanup_on_cancel: bool = False) -> Dict[str, Any]:
-    """直连 URL 下载（不经模型源 API）：items = [{"url", "filename", "size", "label"?}]。"""
+def download_urls_parallel(items: List[Dict[str, Any]], dest_root: str,
+                           log_fn: Optional[Callable[[str], None]] = None,
+                           progress_cb: Optional[Callable[[Dict[str, Any]], None]] = None,
+                           cancel_event: Optional[threading.Event] = None) -> Dict[str, Any]:
+    """直连 URL 并发下载：所有文件同时单流下载，共用一份总进度。
+
+    items = [{"url", "filename", "size", "label"?}]。
+    """
     log_fn = log_fn or (lambda s: None)
     os.makedirs(dest_root, exist_ok=True)
     entries, pre_failed = [], []
@@ -867,9 +941,11 @@ def download_urls(items: List[Dict[str, Any]], dest_root: str,
     if err:
         return {"ok": False, "error": err, "downloaded": 0, "failed": pre_failed,
                 "cancelled": False, "dir": os.path.abspath(dest_root)}
-    log_fn(f"开始直连下载 → {os.path.abspath(dest_root)}（共 {len(entries)} 个文件）")
+    total = sum(e["size"] for e in entries)
+    log_fn(f"开始下载（共 {len(entries)} 个文件"
+           + (f" {fmt_size(total)}" if total else "") + "）")
     r = _download_entries(entries, dest_root, log_fn, progress_cb,
-                          cancel_event, cleanup_on_cancel)
+                          cancel_event, cleanup_on_cancel=False, concurrent=True)
     if pre_failed:
         r["failed"] = pre_failed + r["failed"]
         r["ok"] = False

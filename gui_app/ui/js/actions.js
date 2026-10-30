@@ -415,7 +415,7 @@ function showContextMenu(e, v) {
       return vv && vv.status === 'pending';
     });
     if (pendingIds2.length) {
-      gTagger.push({ label: `获取辅助分类标签（${pendingIds2.length} 个）`, fn: () => detectTags(pendingIds2), disabled: state.gpuBusy });
+      gTagger.push({ label: `生成辅助分类标签（${pendingIds2.length} 个）`, fn: () => detectTags(pendingIds2), disabled: state.gpuBusy });
     }
   }
   if (gTagger.length) groups.push(gTagger);
@@ -445,27 +445,28 @@ function showContextMenu(e, v) {
   }
   if (gView.length) groups.push(gView);
 
-  const gNfo = [];
+  const gNfo = [], gRestore = [];
   if (multi) {
     const processedIds = selIds.filter(id => {
       const vv = findVideoById(id);
       return vv && vv.status === 'processed';
     });
     if (processedIds.length) {
-      gNfo.push({ label: `导出 NFO（${processedIds.length} 个）`, fn: () => exportNfoBatch(processedIds) });
+      gNfo.push({ label: `导出 NFO 到视频目录（${processedIds.length} 个）`, fn: () => exportNfoBatch(processedIds) });
       if (state.thumbOptimize) {
-        gNfo.push({ label: `生成缩略图（${processedIds.length} 个）`, fn: () => generatePosters(processedIds) });
+        gNfo.push({ label: `导出缩略图到视频目录（${processedIds.length} 个）`, fn: () => generatePosters(processedIds) });
       }
-      gNfo.push({ label: `还原初始文件名（${processedIds.length} 个）`, fn: () => restoreBatch(processedIds) });
+      gRestore.push({ label: `还原初始文件名（${processedIds.length} 个）`, fn: () => restoreBatch(processedIds) });
     }
   } else if (v.status === 'processed') {
     gNfo.push({ label: '导出 NFO 到视频目录', fn: () => exportNfo(v.id) });
     if (state.thumbOptimize) {
-      gNfo.push({ label: '生成缩略图', fn: () => generatePosters([v.id]) });
+      gNfo.push({ label: '导出缩略图到视频目录', fn: () => generatePosters([v.id]) });
     }
-    gNfo.push({ label: '还原初始文件名', fn: () => restoreVideo(v.id) });
+    gRestore.push({ label: '还原初始文件名', fn: () => restoreVideo(v.id) });
   }
   if (gNfo.length) groups.push(gNfo);
+  if (gRestore.length) groups.push(gRestore);
 
   const allItems = [];
   m.innerHTML = groups.map(g => {

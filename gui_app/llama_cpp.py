@@ -833,10 +833,6 @@ def install(build_sel: str, log_fn=None, proxy: str = "",
         _check_cancel()
         if proxy:
             log_fn(f"下载将使用加速代理：{proxy}（构建列表仍从官方获取）")
-        if build.get("cudart_url"):
-            log_fn("将下载「预编译」与「cudart」两个压缩包…")
-        else:
-            log_fn("将下载「预编译」压缩包（单个文件）…")
 
         items = [{"url": _proxy_url(proxy, build["precompiled_url"]),
                   "filename": pre_zip.name,
@@ -851,21 +847,20 @@ def install(build_sel: str, log_fn=None, proxy: str = "",
 
         def _dl_progress(ev: Dict[str, Any]):
             if ev.get("type") == "progress" and ev.get("total") and ev.get("pct") is not None:
-                pct10 = int(ev["pct"] * 100 // 10)
-                if pct10 > last_pct["v"]:
-                    last_pct["v"] = pct10
-                    log_fn(f"  [{ev['file']}] {int(ev['pct'] * 100)}%"
+                pct = ev["pct"]
+                cur = int(pct * 100)
+                if cur > last_pct["v"]:
+                    last_pct["v"] = cur
+                    log_fn(f"  下载中 {cur}%"
                            f"（{ev['done'] // (1024 * 1024)}"
                            f"/{ev['total'] // (1024 * 1024)} MB）")
-                steps.push(2, ((ev.get("idx", 1) - 1) + ev["pct"]) / max(1, ev.get("count", 1)))
-            elif ev.get("type") in ("file_done", "file_skip"):
-                steps.push(2, ev.get("idx", 0) / max(1, ev.get("count", 1)))
+                steps.push(2, pct)
 
         steps.push(2)
         from . import models_downloader
-        r = models_downloader.download_urls(items, str(LLAMA_DIR), log_fn=log_fn,
-                                            progress_cb=_dl_progress,
-                                            cancel_event=stop_event)
+        r = models_downloader.download_urls_parallel(items, str(LLAMA_DIR), log_fn=log_fn,
+                                                     progress_cb=_dl_progress,
+                                                     cancel_event=stop_event)
         if r.get("cancelled"):
             raise InstallCancelled()
         if not r.get("ok"):
@@ -880,14 +875,10 @@ def install(build_sel: str, log_fn=None, proxy: str = "",
 
         _check_cancel()
         steps.push(3)
-        log_fn(("两个压缩包下载完成，开始解压…" if build.get("cudart_url")
-                else "压缩包下载完成，开始解压…"))
-        log_fn("解压预编译二进制…")
         with zipfile.ZipFile(pre_zip) as z:
             z.extractall(LLAMA_DIR)
         if build.get("cudart_url"):
             _check_cancel()
-            log_fn("解压 cudart 运行时…")
             with zipfile.ZipFile(cu_zip) as z:
                 z.extractall(LLAMA_DIR)
         else:

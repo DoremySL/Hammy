@@ -613,6 +613,16 @@ function updateLlamaPill(st) {
   }
 }
 
+function showConnChecking() {
+  const dot = $('#conn-dot');
+  if (dot) dot.className = 'conn-dot yellow';
+  const pill = $('#conn-pill');
+  if (pill) {
+    pill.setAttribute('aria-label', 'AI 服务：检测中');
+    pill.setAttribute('data-tip', 'AI 服务：检测中');
+  }
+}
+
 let _llamaPollTimer = null;
 let _llamaPollToken = 0;
 function startLlamaPillPolling() {
@@ -680,7 +690,7 @@ function updateStartBtn() {
     : state.pending.length === 0 ? '请先添加视频'
     : state.llamaPendingLaunch ? '本地推理服务启动中…'
     : state.llamaIntegration && !state.aiConnected ? '本地推理服务未就绪，点击自动启动'
-    : '开始自动重命名';
+    : '对全部待处理进行自动重命名';
 }
 
 let _connInflight = null;

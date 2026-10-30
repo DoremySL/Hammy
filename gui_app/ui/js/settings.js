@@ -23,7 +23,24 @@ async function openSettings(tab) {
   $$('#settings-tabs .tab').forEach(x =>
     x.classList.toggle('active', x.dataset.settingsTab === state.settings_tab));
   $('#modal').classList.add('show');
-  renderSettings();
+  _resetModalAnchor();
+  await renderSettings();
+  await _pinModalAnchor();
+}
+function _resetModalAnchor() {
+  const bg = $('#modal'), m = bg.querySelector('.modal');
+  bg.style.alignItems = '';
+  bg.style.paddingTop = '';
+  if (m) m.style.marginTop = '';
+}
+async function _pinModalAnchor() {
+  const bg = $('#modal'), m = bg.querySelector('.modal');
+  if (!bg.classList.contains('show') || !m) return;
+  try { await Promise.all(m.getAnimations().map(a => a.finished)); } catch (e) {}
+  const top = m.offsetTop;
+  bg.style.paddingTop = '0px';
+  bg.style.alignItems = 'flex-start';
+  m.style.marginTop = top + 'px';
 }
 async function settingsLeaveGuard() {
   if (state.settings_tab === 'tags' && !await ptLeaveGuard()) return false;
@@ -40,6 +57,7 @@ async function closeSettings() {
   state.settingsScroll = 0;
   $('#modal-body').innerHTML = '';
   $('#modal').classList.remove('show');
+  _resetModalAnchor();
 }
 $('#btn-settings').addEventListener('click', () => openSettings());
 $('#btn-closemodal').addEventListener('click', closeSettings);
