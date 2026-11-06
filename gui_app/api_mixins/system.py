@@ -114,7 +114,7 @@ class SystemMixin:
         if sys.platform == "win32":
             kw["creationflags"] = subprocess.CREATE_NO_WINDOW
         try:
-            subprocess.Popen(["explorer", "/select,", path], **kw)
+            subprocess.Popen(["explorer", "/select," + path], **kw)
             return {"ok": True}
         except Exception as e:
             return {"ok": False, "error": str(e)}

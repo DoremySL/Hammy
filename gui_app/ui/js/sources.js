@@ -271,7 +271,7 @@ function showDedupCtxMenu(e, it) {
   const m = $('#ctxmenu');
   m.innerHTML =
     '<button data-i="0">使用默认播放器播放</button>' +
-    '<button data-i="1">在资源管理器中打开</button>';
+    '<button data-i="1">在资源管理器中查看</button>';
   m.querySelector('[data-i="0"]').onclick = () => { callApi('play_video', it.path); hideContextMenu(); };
   m.querySelector('[data-i="1"]').onclick = () => { openInExplorer(it.path); hideContextMenu(); };
   positionCtxMenu(m, e);

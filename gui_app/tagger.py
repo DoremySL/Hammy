@@ -44,16 +44,17 @@ REPO_ID = "DoremySL/Hammy-tagger-dual"  # 双模型仓库：H 504×336 横 / V 3
 TAG_THRESHOLD = 0.75
 TAG_ZH_FILE = "tag_zh.json"  # 标签中文翻译表
 
-# 仓库文件：ONNX 仅安装期需要（引擎构建后自动删除），共享文件长期保留
-_ONNX_FILES = {
-    "fp16": ("fp16-onnx/tagger-H.onnx", "fp16-onnx/tagger-V.onnx"),
-    "fp32": ("fp32-onnx/tagger-H.onnx", "fp32-onnx/tagger-H.onnx.data",
-             "fp32-onnx/tagger-V.onnx", "fp32-onnx/tagger-V.onnx.data"),
-}
+# 仓库文件：ONNX 仅安装期需要，共享文件长期保留
 SHARED_FILES = ("config.json", "char_ip_map.json", "tag_zh.json", "manifest.json",
                 "hammy_tagger.py", "hammy_server.py", "build_trt.py")
 _CRITICAL_SHARED = ("config.json", "char_ip_map.json", "hammy_tagger.py", "hammy_server.py")
 _ENGINES = ("tagger-H.trt", "tagger-V.trt")
+
+
+def _onnx_files(precision: str) -> Tuple[str, ...]:
+    """按精度生成 ONNX 文件清单。"""
+    return tuple(f"{precision}-onnx/tagger-{t}.onnx" for t in ("H", "V"))
+
 
 # 子进程超时
 _INSTALL_TIMEOUT_SEC = 2400.0
@@ -245,7 +246,7 @@ def install_dependencies(
                 steps.push(4, ev.get("idx", 0) / max(1, ev.get("count", 1)))
 
         steps.push(4)
-        files = [*_ONNX_FILES[precision], *SHARED_FILES]
+        files = [*_onnx_files(precision), *SHARED_FILES]
         _log(f"━━ 步骤 4/5：从魔搭下载 Hammy tagger 双模型与脚本"
              f"（{precision.upper()}，共 {len(files)} 个文件）━━", log_fn)
         dl = models_downloader.download_files(
@@ -342,7 +343,7 @@ _NO_STOP = threading.Event()
 def extract_frames_for_tagger(video_path: str,
                               stop_event: Optional[threading.Event] = None,
                               frame_count: int = 15) -> List[str]:
-    """复用主流程抽帧（FRAME_VF：短边压到 448），返回 JPEG base64 帧列表。"""
+    """复用主流程抽帧，返回 JPEG base64 帧列表。"""
     if stop_event is None:
         stop_event = _NO_STOP
     if stop_event.is_set():

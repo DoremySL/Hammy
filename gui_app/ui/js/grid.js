@@ -123,11 +123,16 @@ function _sortCmp(mode) {
   }
 }
 
-function _typeRank(v, realFirst) {
-  const order = realFirst ? { real: 0, unk: 1, cos: 2, '3d': 3, '2d': 4 }
-                          : { '2d': 0, '3d': 1, cos: 2, unk: 3, real: 4 };
+function _taggerCat(v) {
   const c = state.taggerCategories[v.id];
-  return (c && order[c] !== undefined) ? order[c] : 5;  // 未分类垫底
+  return (c === 'unk' && state.taggerTaggedIds.has(v.id)) ? 'acg' : c;
+}
+
+function _typeRank(v, realFirst) {
+  const order = realFirst ? { real: 0, unk: 1, cos: 2, acg: 3, '3d': 4, '2d': 5 }
+                          : { '2d': 0, '3d': 1, acg: 2, cos: 3, unk: 4, real: 5 };
+  const c = _taggerCat(v);
+  return (c && order[c] !== undefined) ? order[c] : 6;  // 未分类垫底
 }
 
 function _applySort(list) {
@@ -555,17 +560,16 @@ function makeCard(v) {
   v._ext = ext;
   const meta = _cardMeta(v);
   const durBadge = v.duration ? `<span class="dur-badge">${fmtDur(v.duration)}</span>` : '';
-  const cat = state.taggerCategories[v.id];
-  const split = state.taggerClassify;  // 2D/3D 分类开启时细分角标，否则合并 ACG
+  const cat = _taggerCat(v);
+  const tagged = state.taggerTaggedIds.has(v.id);
   let taggerBadge = '';
-  if (cat === '2d') taggerBadge += split ? '<span class="tag-badge anime" data-tip="分类为 2D 动漫画面">2D</span>'
-                                        : '<span class="tag-badge anime" data-tip="分类为动漫/二次元画面">ACG</span>';
-  else if (cat === '3d') taggerBadge += split ? '<span class="tag-badge d3" data-tip="分类为 3D 动漫画面">3D</span>'
-                                             : '<span class="tag-badge anime" data-tip="分类为动漫/二次元画面">ACG</span>';
+  if (cat === '2d') taggerBadge += '<span class="tag-badge anime" data-tip="分类为 2D 动漫画面">2D</span>';
+  else if (cat === '3d') taggerBadge += '<span class="tag-badge d3" data-tip="分类为 3D 动漫画面">3D</span>';
   else if (cat === 'real') taggerBadge += '<span class="tag-badge real" data-tip="分类为真实拍摄画面">REAL</span>';
   else if (cat === 'cos') taggerBadge += '<span class="tag-badge cos" data-tip="真实画面且识别到角色/IP（REAL+IP）">COS</span>';
+  else if (cat === 'acg') taggerBadge += '<span class="tag-badge anime" data-tip="画面类型无法判定且识别到角色/IP">ACG</span>';
   else if (cat === 'unk') taggerBadge += '<span class="tag-badge unc" data-tip="画面类型无法判定">UNK</span>';
-  if (state.taggerTaggedIds.has(v.id)) taggerBadge += '<span class="tag-badge tagger" data-tip="已获取角色/IP标签">IP</span>';
+  if (tagged) taggerBadge += '<span class="tag-badge tagger" data-tip="已获取角色/IP标签">IP</span>';
   const whisperBadge = state.whisperTranscribedIds.has(v.id) ? '<span class="tag-badge whisper" data-tip="已获取语音转录">CC</span>' : '';
   const stBadge = v.status === 'failed' ? '<span class="tag-badge failed" data-tip="自动重命名失败，位于 _failed 目录">FAIL</span>'
     : v.status === 'duplicate' ? '<span class="tag-badge dup" data-tip="去重移除，位于 _duplicates 目录">DUP</span>' : '';

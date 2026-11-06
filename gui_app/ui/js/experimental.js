@@ -9,7 +9,6 @@ async function renderExperimentalTabWrapper() {
       const st = await apiCall('get_experimental_status');
       syncLlamaState(st.llama);
       state.taggerEnabled = !!(st.tagger && st.tagger.enabled);
-      state.taggerClassify = !!(st.cfg && st.cfg.experimental && st.cfg.experimental.tagger_classify);
       state.whisperEnabled = !!(st.whisper && st.whisper.enabled);
       state.ragVecEnabled = !!(st.ragvec && st.ragvec.enabled);
       return { cfg: st.cfg, uvStatus: st.uv, llamaStatus: st.llama, pStatus: st.tagger, wStatus: st.whisper, rvStatus: st.ragvec };
@@ -61,8 +60,6 @@ function _collectExperimentalData() {
   let topN = num('#ragvec-topn');
   if (topN !== null) topN = Math.min(100, Math.max(1, topN));
   put('rag_vec_top_n', topN);
-  const clsDd = ddl('#tagger-classify-dd');
-  put('tagger_classify', clsDd === null ? null : clsDd === '1');
   let frames = num('#tagger-frames');
   if (frames !== null) frames = Math.max(1, frames);
   put('tagger_frames', frames);
@@ -71,8 +68,6 @@ function _collectExperimentalData() {
   put('tagger_threshold', thr);
   const zhDd = ddl('#tagger-output-zh-dd');
   put('tagger_output_zh', zhDd === null ? null : zhDd === '1');
-  put('tagger_prompt_scope', ddl('#tagger-prompt-dd'));
-  put('tagger_recall_scope', ddl('#tagger-recall-dd'));
   put('tagger_enabled', chk('#tagger-enable-toggle'));
   const wvad = ddl('#whisper-vad-dd');
   put('whisper_vad', wvad === null ? null : wvad === '1');
@@ -106,7 +101,6 @@ async function _saveExperimentalNow() {
     const res = await apiCall('save_config', data);
     if (res && res.ok) {
       if (data.experimental.tagger_enabled != null) state.taggerEnabled = !!data.experimental.tagger_enabled;
-      if (data.experimental.tagger_classify != null) state.taggerClassify = !!data.experimental.tagger_classify;
       if (data.experimental.whisper_enabled != null) state.whisperEnabled = !!data.experimental.whisper_enabled;
       if (data.experimental.rag_vec_enabled != null) state.ragVecEnabled = !!data.experimental.rag_vec_enabled;
     } else if (token === _expSaveToken) {
@@ -584,16 +578,6 @@ function _renderTaggerSection(exp, pStatus) {
   const specBadge = ready && pStatus.precision
     ? String(pStatus.precision).toUpperCase() : '';
   const zhOn = exp.tagger_output_zh !== false;
-  const scopeNames = { char: '仅角色', all: '角色/IP', off: '不使用' };
-  const scopeOf = v => scopeNames[v] ? v : 'char';
-  const scopeDd = (id, val) => `
-    <div class="dd" id="${id}">
-      <button class="dd-btn" type="button"><span class="dd-label">${scopeNames[val]}</span>${ddArrow()}</button>
-      <div class="dd-panel">
-        ${Object.entries(scopeNames).map(([v, t]) =>
-          `<div class="dd-opt${v === val ? ' active' : ''}" data-value="${v}">${t}</div>`).join('')}
-      </div>
-    </div>`;
   return `
     <div class="exp-card ${!enabled ? 'is-disabled' : ''}">
       <div class="exp-card-head">
@@ -616,7 +600,7 @@ function _renderTaggerSection(exp, pStatus) {
             <input type="number" id="tagger-frames" min="1" value="${exp.tagger_frames || 15}"/>
           </div>
           <div class="field">
-            <label data-tip="角色与 IP 均按出现次数加权，超过该值才输出；IP 仅输出加权得分最高者">角色/IP阈值</label>
+            <label data-tip="两者均按出现次数加权；角色超过该值输出，IP 需超过 2 倍该值">角色/IP阈值</label>
             <input type="number" id="tagger-threshold" min="0.1" max="1" step="0.01" value="${exp.tagger_threshold || 0.75}"/>
           </div>
           <div class="field">
@@ -628,26 +612,6 @@ function _renderTaggerSection(exp, pStatus) {
                 <div class="dd-opt${zhOn ? '' : ' active'}" data-value="0">关闭</div>
               </div>
             </div>
-          </div>
-        </div>
-        <div class="exp-input-row">
-          <div class="field">
-            <label data-tip="开启后角标区分 2D/3D 画面；关闭时合并显示 ACG">2D/3D分类</label>
-            <div class="dd" id="tagger-classify-dd">
-              <button class="dd-btn" type="button"><span class="dd-label">${exp.tagger_classify === true ? '启用' : '不启用'}</span>${ddArrow()}</button>
-              <div class="dd-panel">
-                <div class="dd-opt${exp.tagger_classify === true ? ' active' : ''}" data-value="1">启用</div>
-                <div class="dd-opt${exp.tagger_classify === true ? '' : ' active'}" data-value="0">不启用</div>
-              </div>
-            </div>
-          </div>
-          <div class="field">
-            <label data-tip="AI 重命名提示词注入的识别结果范围">提示词注入</label>
-            ${scopeDd('tagger-prompt-dd', scopeOf(exp.tagger_prompt_scope))}
-          </div>
-          <div class="field">
-            <label data-tip="标签检索（增强模式）召回查询使用的识别结果范围">标签检索</label>
-            ${scopeDd('tagger-recall-dd', scopeOf(exp.tagger_recall_scope))}
           </div>
         </div>
       </div>
@@ -672,14 +636,8 @@ function _bindTaggerEvents() {
     const el = $(sel);
     if (el) el.addEventListener('input', () => scheduleExperimentalSave());
   });
-  const clsDd = $('#tagger-classify-dd');
-  if (clsDd) initDropdown(clsDd, () => scheduleExperimentalSave(true));
   const zhDd = $('#tagger-output-zh-dd');
   if (zhDd) initDropdown(zhDd, () => scheduleExperimentalSave(true));
-  const promptDd = $('#tagger-prompt-dd');
-  if (promptDd) initDropdown(promptDd, () => scheduleExperimentalSave(true));
-  const recallDd = $('#tagger-recall-dd');
-  if (recallDd) initDropdown(recallDd, () => scheduleExperimentalSave(true));
 
   const clearBtn = $('#btn-tagger-clear-tags');
   if (clearBtn) clearBtn.addEventListener('click', async () => {

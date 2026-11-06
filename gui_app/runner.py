@@ -193,17 +193,9 @@ class PipelineRunner:
 
     # ── 扩展功能上下文注入 ──
 
-    def _build_tagger_meta_map(self, paths: List[str], exp_cfg: Dict[str, Any],
-                              scope: str = "char") -> Dict[str, str]:
-        """构建 tagger 标签上下文映射（video_path → 提示词文本）。
-
-        scope：char=仅角色 / all=角色+IP / off=不注入（非法值按 char）。
-        仅当功能开启且标签存在时才注入。exp_cfg 为 experimental 段配置。
-        输出中文开启时标签以「英文/中文名」注入（提示词与标签检索两通道同格式）。
-        """
-        if scope not in ("char", "all", "off"):
-            scope = "char"
-        if scope == "off" or not exp_cfg.get("tagger_enabled", False):
+    def _build_tagger_meta_map(self, paths: List[str], exp_cfg: Dict[str, Any]) -> Dict[str, str]:
+        """构建 tagger 标签上下文映射（角色/IP → 提示词文本）。"""
+        if not exp_cfg.get("tagger_enabled", False):
             return {}
         from .workspace_paths import TAGGER_TAGS_FILE
         tags_store = read_json(TAGGER_TAGS_FILE, {})
@@ -213,7 +205,6 @@ class PipelineRunner:
         if exp_cfg.get("tagger_output_zh", True):
             from .tagger import load_tag_zh
             zh_map = load_tag_zh()
-        # 附带译名时指令指向「英文/中文名」对照；未附带时维持原指令（由模型自译）
         tail = ("生成 tags 与plot时，上述角色/IP 名称请统一改用「英文/中文名」中的常用中文名"
                 if zh_map else
                 "生成 tags 与plot时，上述角色/IP 名称请统一改用常用中文名")
@@ -234,7 +225,7 @@ class PipelineRunner:
             rows = []
             if char_tags:
                 rows.append("- 疑似角色: " + ", ".join(_fmt(t) for t in char_tags))
-            if scope == "all" and ip_tags:
+            if ip_tags:
                 rows.append("- 疑似IP/作品: " + ", ".join(_fmt(t) for t in ip_tags))
             if not rows:
                 continue
@@ -403,13 +394,10 @@ class PipelineRunner:
                     return
 
                 begin_batch()  # history 变更累积到内存，结束时一次性落盘
-                # 扩展功能上下文（功能开启且数据存在时注入提示词；均关闭时为空 dict）；
-                # 提示词与标签检索各自按 scope 构建 tagger 通道
+                # 扩展功能上下文
                 exp_cfg = cfg_dict.get("experimental", {})
-                extra_meta_map = self._build_tagger_meta_map(
-                    paths, exp_cfg, scope=exp_cfg.get("tagger_prompt_scope", "char"))
-                recall_meta_map = self._build_tagger_meta_map(
-                    paths, exp_cfg, scope=exp_cfg.get("tagger_recall_scope", "char"))
+                extra_meta_map = self._build_tagger_meta_map(paths, exp_cfg)
+                recall_meta_map = dict(extra_meta_map)
                 for vp, txt in self._build_whisper_meta_map(paths, exp_cfg).items():
                     for m in (extra_meta_map, recall_meta_map):
                         if vp in m:

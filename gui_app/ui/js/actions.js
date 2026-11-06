@@ -379,7 +379,7 @@ function showContextMenu(e, v) {
 
   const groups = [];
   const gBasic = [
-    { label: '在资源管理器中打开', fn: () => openInExplorer(v.path) },
+    { label: '在资源管理器中查看', fn: () => openInExplorer(v.path) },
     { label: '使用默认播放器播放', fn: () => callApi('play_video', v.path) },
   ];
   const pendingIds = state.view === 'pending' ? selIds.filter(id => {

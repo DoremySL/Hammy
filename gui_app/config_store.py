@@ -139,12 +139,9 @@ def update_config(mutator: Callable[[Dict[str, Any]], Dict[str, Any]]) -> Dict[s
 # 模块文件内键名 → experimental 段键名（load_config 组装用）
 _TAGGER_KEY_MAP = {
     "enabled": "tagger_enabled",
-    "classify": "tagger_classify",
     "frames": "tagger_frames",
     "threshold": "tagger_threshold",
     "output_zh": "tagger_output_zh",
-    "prompt_scope": "tagger_prompt_scope",
-    "recall_scope": "tagger_recall_scope",
 }
 _WHISPER_KEY_MAP = {
     "enabled": "whisper_enabled",
@@ -167,10 +164,9 @@ _LLAMA_KEYS = frozenset({"llama_enabled", "llama_integrate"})
 
 
 def _tagger_defaults() -> Dict[str, Any]:
-    """tagger 模块配置默认值（文件缺失/损坏时的兜底）。classify = 2D/3D 分类角标开关。"""
-    return {"enabled": False, "classify": False, "frames": 15, "threshold": 0.75,
-            "output_zh": True, "precision": "",
-            "prompt_scope": "char", "recall_scope": "char"}
+    """tagger 模块配置默认值（文件缺失/损坏时的兜底）。"""
+    return {"enabled": False, "frames": 15, "threshold": 0.75,
+            "output_zh": True, "precision": ""}
 
 
 def _whisper_defaults() -> Dict[str, Any]:

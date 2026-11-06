@@ -113,7 +113,6 @@ const state = {
   settings_scroll_to: null,
   thumbCache: new Map(),
   taggerEnabled: false,
-  taggerClassify: false,          // 2D/3D 分类角标开关
   taggerCategories: {},           // 视频 ID → 分类（2d/3d/real/cos/unk）
   whisperEnabled: false,
   ragVecEnabled: false,
