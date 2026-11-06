@@ -120,7 +120,7 @@ class TestAssemble(_WorkspaceTestCase):
         from gui_app import config_store
         self._write_config(_cfg())
         exp = config_store.load_config()["experimental"]
-        # tagger（含 classify）+ whisper + llama 2 开关，全部默认值
+        # tagger + whisper + llama 2 开关，全部默认值
         self.assertEqual(exp, {
             **_TAGGER_KEYMAP_DEFAULTS(), **_WHISPER_KEYMAP_DEFAULTS(),
             "llama_enabled": False, "llama_integrate": False,
@@ -130,14 +130,13 @@ class TestAssemble(_WorkspaceTestCase):
 
     def test_assemble_reflects_module_files(self):
         from gui_app import config_store
-        self._write("tagger", {"enabled": True, "frames": 9, "classify": False})
+        self._write("tagger", {"enabled": True, "frames": 9})
         self._write("whisper", {"enabled": True, "batch": True})
         self._write("llama", {"enabled": True, "integrate": True})
         self._write_config(_cfg())
         exp = config_store.load_config()["experimental"]
         self.assertIs(exp["tagger_enabled"], True)
         self.assertEqual(exp["tagger_frames"], 9)
-        self.assertIs(exp["tagger_classify"], False)
         self.assertIs(exp["whisper_enabled"], True)
         self.assertIs(exp["whisper_batch"], True)
         self.assertIs(exp["llama_enabled"], True)
@@ -194,14 +193,6 @@ class TestSaveConfigSplit(_WorkspaceTestCase):
         self.assertEqual(self._read("tagger")["enabled"], True)
         self.assertEqual(self._read("tagger")["frames"], 6)
         # config.json：experimental 段为空（模块键不落盘）
-        self.assertEqual(self._disk_cfg().get("experimental", {}), {})
-
-    def test_tagger_classify_routes_to_module_file(self):
-        # 「2D/3D分类」开关同样路由到 tagger/config.json 的 classify 键
-        from gui_app import config_store
-        self._write_config(_cfg())
-        config_store.save_config({"experimental": {"tagger_classify": False}})
-        self.assertIs(self._read("tagger")["classify"], False)
         self.assertEqual(self._disk_cfg().get("experimental", {}), {})
 
     def test_whisper_keys_route_to_module_file(self):
@@ -516,7 +507,6 @@ class TestModuleConfigStore(_WorkspaceTestCase):
 
         def _bump(c):
             c["threshold"] = 0.75
-            c["classify"] = False
             return c
 
         update_tagger_config(_seed)
@@ -525,7 +515,6 @@ class TestModuleConfigStore(_WorkspaceTestCase):
         self.assertIs(cfg["enabled"], True)
         self.assertEqual(cfg["frames"], 8)
         self.assertEqual(cfg["threshold"], 0.75)
-        self.assertIs(cfg["classify"], False)
         self.assertNotIn("short_side", cfg)  # v1.0 起废弃键不再注入默认值
 
     def test_tagger_corrupt_tolerated(self):
