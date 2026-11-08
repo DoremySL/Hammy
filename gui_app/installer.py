@@ -522,7 +522,7 @@ def ensure_uv(pypi_url: str, log_fn: Optional[Callable[[str], None]] = None,
     tmp_target = UV_RUNTIME_DIR / "_uv_tmp"
     rc, out = run_subprocess_streaming(
         [PYTHON_EXE, "-m", "pip", "install", "uv", "-i", pypi_url,
-         "--target", str(tmp_target), "--quiet"],
+         "--target", str(tmp_target), "--no-cache-dir", "--quiet"],
         UV_TIMEOUT_SEC, log_fn, stop_event,
     )
     if stop_event is not None and stop_event.is_set():

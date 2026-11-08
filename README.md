@@ -9,32 +9,38 @@ AI模型（本地或云端均可）， 自动生成标题、剧情描述与标�
 ## 功能特性
 
 - **视频去重**：快速排除完全相同副本（非删除，可找回），可选基于时长预筛 + 分阶段指纹比对排除相似版本。
+
+- **格式修复**：为缺少后缀名的视频补上对应后缀，将播放抽帧兼容性不好的.ts等流媒体容器复制流封装为.mp4。
+
 - **AI 分析**：抽取多组连续关键帧 → 发送给 Vision 模型 → 返回结构化  `{"plot", "tags", "title"}` JSON。
-- **检索增强生成**：可选通过嵌入模型+AI复用缓存跑第二轮修订优化生成。
+
 - **重命名**：根据AI生成内容进行重命名，默认文件名格式为 日期_标题（可选追加原始名）。
+
 - **优化缩略图**：让AI从输入的截图中挑选封面，解决jellyfin默认抽取视频10%位置关键帧作为缩略图时效果不佳问题。
+
 - **NFO 生成**：生成包含 title / plot / tags / 时长 / 分辨率 / 编码 / 音轨等信息的 `movie` XML（Kodi/Emby/Jellyfin 兼容），可根据需要导出到视频目录。
-- **提示词**：结构层（只读 JSON 约束）与内容层（可编辑）分离；支持自定义。
+
 - **本地推理集成**：可选安装 `llama.cpp` ，提供启动设置界面与模型下载功能，自动接管 AI 地址。
+
 - **可选语音 / 标签辅助上下文**：
-  - `faster-whisper` 转录语音，注入提示词辅助AI理解，也可调用 AI 翻译导出中文字幕；
+  
+  - `transcribe.cpp` 转录语音，注入提示词辅助AI理解，也可调用 AI 翻译导出中文字幕；
   - PixAI 角色 / IP 标签识别，用于MMD等同人视频的分类。
 
 ---
 
 ## 环境要求
 
-| 依赖 | 说明 |
-| --- | --- |
-| **Windows** | GUI支持平台（脚本简单修改后或许可以在其他平台使用） |
-| **Python 3.8+** | 优先使用目录内 `python\python.exe`（便携版）；缺失时回退系统 `python` |
-| **ffmpeg / ffprobe** | 放入 `Hammy\ffmpeg\` 或加入系统 `PATH`，用于抽帧 / 探针 / 缩略图 |
-| **openai** | `pip install "openai>=1.0"`（AI 调用 SDK） |
-| **pywebview** | `pip install pywebview`（GUI 渲染后端） |
-| **pystray** | `pip install pystray`（最小化到托盘，自动带入 Pillow） |
-| **WebView2 Runtime** | Windows 版 pywebview 所需（系统自带 Edge 通常已包含） |
-| **.NET Framework 4.8** | 原生对话框（pythonnet / WinForms）所需，Windows 一般自带 |
-
+| 依赖                     | 说明                                                |
+| ---------------------- | ------------------------------------------------- |
+| **Windows**            | GUI支持平台（脚本简单修改后或许可以在其他平台使用）                       |
+| **Python 3.8+**        | 优先使用目录内 `python\python.exe`（便携版）；缺失时回退系统 `python` |
+| **ffmpeg / ffprobe**   | 放入 `Hammy\ffmpeg\` 或加入系统 `PATH`，用于抽帧 / 探针 / 缩略图   |
+| **openai**             | `pip install "openai>=1.0"`（AI 调用 SDK）            |
+| **pywebview**          | `pip install pywebview`（GUI 渲染后端）                 |
+| **pystray**            | `pip install pystray`（最小化到托盘，自动带入 Pillow）         |
+| **WebView2 Runtime**   | Windows 版 pywebview 所需（系统自带 Edge 通常已包含）           |
+| **.NET Framework 4.8** | 原生对话框（pythonnet / WinForms）所需，Windows 一般自带        |
 
 安装 Python 依赖：
 
@@ -57,9 +63,13 @@ pip install openai pywebview pystray
 ### 方式二：双击启动GUI
 
 - 安装好依赖后直接双击 `Hammy\GUI Launcher.bat`启动界面
+
 - 点击左上连接检测按钮或左下配置按钮进入配置页
+
 - 配置好模型api或在扩展功能界面安装llama.cpp并下载模型后在主界面添加视频
+
 - 点击右下角按钮进行AI重命名
+
 - 单选或按住CTRL多选视频卡片后右键查看更多功能
 
 - 压缩包解压前建议右键查看属性，在解除锁定的选项处打勾应用后再解压
@@ -84,5 +94,5 @@ Hammy 源码**不包含**下列项目的源码，而是在需要时引导用户�
   https://ffmpeg.org/
 - **llama.cpp** —— 本地视觉模型推理
   https://github.com/ggml-org/llama.cpp
-- **faster-whisper** —— 本地语音转录
-  https://github.com/SYSTRAN/faster-whisper
+- **transcribe.cpp** —— 本地语音转录
+  https://github.com/handy-computer/transcribe.cpp

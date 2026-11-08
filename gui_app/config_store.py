@@ -8,7 +8,7 @@ from .workspace_paths import (
     LLAMA_CONFIG_FILE,
     LLAMA_MODEL_CONFIGS_FILE,
     TAGGER_CONFIG_FILE,
-    WHISPER_CONFIG_FILE,
+    TRANSCRIBE_CONFIG_FILE,
 )
 from .workspace_store import NO_WRITE, read_json_cached, update_json
 
@@ -94,14 +94,14 @@ def save_config(data: Dict[str, Any]) -> Dict[str, Any]:
     exp = data.get("experimental")
     if isinstance(exp, dict):
         tagger = {_TAGGER_KEY_MAP_REV[k]: v for k, v in exp.items() if k in _TAGGER_KEY_MAP_REV}
-        whisper = {_WHISPER_KEY_MAP_REV[k]: v for k, v in exp.items() if k in _WHISPER_KEY_MAP_REV}
+        transcribe = {_TRANSCRIBE_KEY_MAP_REV[k]: v for k, v in exp.items() if k in _TRANSCRIBE_KEY_MAP_REV}
         if tagger:
             update_tagger_config(lambda c: c.update(tagger))
-        if whisper:
-            update_whisper_config(lambda c: c.update(whisper))
+        if transcribe:
+            update_transcribe_config(lambda c: c.update(transcribe))
         # 剩余非模块键（如有）仍走 config.json
         rest = {k: v for k, v in exp.items()
-                if k not in _TAGGER_KEY_MAP_REV and k not in _WHISPER_KEY_MAP_REV
+                if k not in _TAGGER_KEY_MAP_REV and k not in _TRANSCRIBE_KEY_MAP_REV
                 and k not in _LLAMA_KEYS}
         if rest:
             data = {**data, "experimental": rest}
@@ -143,21 +143,18 @@ _TAGGER_KEY_MAP = {
     "threshold": "tagger_threshold",
     "output_zh": "tagger_output_zh",
 }
-_WHISPER_KEY_MAP = {
-    "enabled": "whisper_enabled",
-    "model": "whisper_model",
-    "vad": "whisper_vad",
-    "language": "whisper_language",
-    "max_chars": "whisper_max_chars",
-    "inject_timestamps": "whisper_inject_timestamps",
-    "batch": "whisper_batch",
-    "workers": "whisper_workers",
-    "beam_size": "whisper_beam_size",
-    "compression_ratio": "whisper_compression_ratio",
+_TRANSCRIBE_KEY_MAP = {
+    "enabled": "transcribe_enabled",
+    "model": "transcribe_model",
+    "inject_model": "transcribe_inject_model",
+    "language": "transcribe_language",
+    "max_chars": "transcribe_max_chars",
+    "inject_timestamps": "transcribe_inject_timestamps",
+    "integration": "transcribe_integration",
 }
 # 反向映射：experimental 段键名 → 模块文件键名（save_config 拆键路由用）
 _TAGGER_KEY_MAP_REV = {v: k for k, v in _TAGGER_KEY_MAP.items()}
-_WHISPER_KEY_MAP_REV = {v: k for k, v in _WHISPER_KEY_MAP.items()}
+_TRANSCRIBE_KEY_MAP_REV = {v: k for k, v in _TRANSCRIBE_KEY_MAP.items()}
 # llama 开关在 experimental 段的键名：不经 save_config，只走
 # set_llama_enabled / set_llama_config，提交时直接丢弃
 _LLAMA_KEYS = frozenset({"llama_enabled", "llama_integrate"})
@@ -169,11 +166,11 @@ def _tagger_defaults() -> Dict[str, Any]:
             "output_zh": True, "precision": ""}
 
 
-def _whisper_defaults() -> Dict[str, Any]:
-    """whisper 模块配置默认值（文件缺失/损坏时的兜底）。"""
-    return {"enabled": False, "model": "v3-turbo", "vad": True, "language": "",
-            "max_chars": 800, "inject_timestamps": False, "batch": False,
-            "workers": 4, "beam_size": 5, "compression_ratio": 2.4}
+def _transcribe_defaults() -> Dict[str, Any]:
+    """语音转录模块配置默认值。"""
+    return {"enabled": False, "model": "whisper-turbo", "inject_model": "sensevoice",
+            "language": "", "max_chars": 800, "inject_timestamps": False,
+            "integration": True}
 
 
 def load_tagger_config() -> Dict[str, Any]:
@@ -202,26 +199,26 @@ def update_tagger_config(
     return update_json(TAGGER_CONFIG_FILE, _wrapped, default_factory=dict)
 
 
-def load_whisper_config() -> Dict[str, Any]:
-    """读取 faster-whisper 模块配置。文件不存在/损坏时返回默认值（enabled=False）。"""
-    data = read_json_cached(WHISPER_CONFIG_FILE)
-    merged = dict(_whisper_defaults())
-    merged.update(data)
+def load_transcribe_config() -> Dict[str, Any]:
+    """读取语音转录模块配置。"""
+    data = read_json_cached(TRANSCRIBE_CONFIG_FILE)
+    merged = dict(_transcribe_defaults())
+    merged.update({k: v for k, v in data.items() if k in merged})
     return merged
 
 
-def update_whisper_config(
+def update_transcribe_config(
     mutator: Callable[[Dict[str, Any]], Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """原子读-改-写 whisper 模块配置（mutator 可原地修改后返回 None）。"""
+    """原子读-改-写语音转录模块配置。"""
     def _wrapped(current):
         current = current if isinstance(current, dict) else {}
-        merged = dict(_whisper_defaults())
+        merged = dict(_transcribe_defaults())
         merged.update(current)
         result = mutator(merged)
         return merged if result is None else result
 
-    return update_json(WHISPER_CONFIG_FILE, _wrapped, default_factory=dict)
+    return update_json(TRANSCRIBE_CONFIG_FILE, _wrapped, default_factory=dict)
 
 
 def load_llama_config() -> Dict[str, Any]:
@@ -265,9 +262,9 @@ def _assemble_experimental(cfg: Dict[str, Any]) -> None:
     for k, v in load_tagger_config().items():
         if k in _TAGGER_KEY_MAP:
             exp[_TAGGER_KEY_MAP[k]] = v
-    for k, v in load_whisper_config().items():
-        if k in _WHISPER_KEY_MAP:
-            exp[_WHISPER_KEY_MAP[k]] = v
+    for k, v in load_transcribe_config().items():
+        if k in _TRANSCRIBE_KEY_MAP:
+            exp[_TRANSCRIBE_KEY_MAP[k]] = v
     llama = load_llama_config()
     exp["llama_enabled"] = bool(llama.get("enabled", False))
     exp["llama_integrate"] = bool(llama.get("integrate", False))

@@ -288,7 +288,7 @@ async function detectTags(ids) {
 }
 
 /* ════════════════════════════════════════════════════════════
-   Faster-Whisper
+   语音转录
    ════════════════════════════════════════════════════════════ */
 async function detectSpeech(ids) {
   if (state.gpuBusy) { toast('GPU 正忙，请等待当前操作完成', 'err'); return; }
@@ -299,7 +299,7 @@ async function detectSpeech(ids) {
   if (!r) { $('#prog-bar').className = ''; return; }
   if (r.results) {
     for (const [vid, d] of Object.entries(r.results)) {
-      if (!d.error) state.whisperTranscribedIds.add(vid);
+      if (!d.error) state.transcribeTranscribedIds.add(vid);
     }
   }
   const stopped = r.error === '已停止';
@@ -317,11 +317,11 @@ async function detectSpeech(ids) {
 
 async function ensureTranscribed(ids) {
   const videos = ids.map(id => findVideoById(id)).filter(v => v && v.path);
-  const need = videos.filter(v => !state.whisperTranscribedIds.has(v.id));
+  const need = videos.filter(v => !state.transcribeTranscribedIds.has(v.id));
   if (need.length) {
     toast(`其中 ${need.length} 个尚未转录，先自动转录…`, 'info');
     await detectSpeech(need.map(v => v.id));
-    return need.every(v => state.whisperTranscribedIds.has(v.id));
+    return need.every(v => state.transcribeTranscribedIds.has(v.id));
   }
   return true;
 }
@@ -419,20 +419,20 @@ function showContextMenu(e, v) {
     }
   }
   if (gTagger.length) groups.push(gTagger);
-  const gWhisper = [];
-  if (state.whisperEnabled && (state.view === 'pending' || state.view === 'processed')) {
+  const gSpeech = [];
+  if (state.transcribeEnabled && (state.view === 'pending' || state.view === 'processed')) {
     const viewStatus = state.view;
     const matchIds = selIds.filter(id => {
       const vv = findVideoById(id);
       return vv && vv.status === viewStatus;
     });
     if (matchIds.length) {
-      gWhisper.push({ label: `语音转录（${matchIds.length} 个）`, fn: () => detectSpeech(matchIds), disabled: state.gpuBusy });
-      gWhisper.push({ label: `导出字幕 SRT（${matchIds.length} 个）`, fn: () => exportSrt(matchIds), disabled: state.gpuBusy });
-      gWhisper.push({ label: `导出字幕并翻译为中文（${matchIds.length} 个）`, fn: () => exportSrtTranslated(matchIds), disabled: state.gpuBusy || (!state.llamaIntegration && !state.aiConnected) });
+      gSpeech.push({ label: `语音转录（${matchIds.length} 个）`, fn: () => detectSpeech(matchIds), disabled: state.gpuBusy });
+      gSpeech.push({ label: `导出字幕 SRT（${matchIds.length} 个）`, fn: () => exportSrt(matchIds), disabled: state.gpuBusy });
+      gSpeech.push({ label: `导出字幕并翻译为中文（${matchIds.length} 个）`, fn: () => exportSrtTranslated(matchIds), disabled: state.gpuBusy || (!state.llamaIntegration && !state.aiConnected) });
     }
   }
-  if (gWhisper.length) groups.push(gWhisper);
+  if (gSpeech.length) groups.push(gSpeech);
   if (state.view === 'failed') {
     const exIds = selIds.filter(id => {
       const vv = findVideoById(id);

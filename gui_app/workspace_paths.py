@@ -24,10 +24,10 @@ LLAMA_SCAN_CACHE_FILE = WORKSPACE_DIR / "llama" / "scan_cache.json"
 # Hammy-tagger：配置与标签结果
 TAGGER_CONFIG_FILE = WORKSPACE_DIR / "tagger" / "config.json"
 TAGGER_TAGS_FILE = WORKSPACE_DIR / "tagger" / "tags.json"
-# faster-whisper：配置、轻量转录索引与 SRT 字幕
-WHISPER_CONFIG_FILE = WORKSPACE_DIR / "whisper" / "config.json"
-WHISPER_TRANSCRIPTS_FILE = WORKSPACE_DIR / "whisper" / "transcripts.json"
-WHISPER_SRT_DIR = WORKSPACE_DIR / "whisper" / "srt"
+# 语音转录：配置、转录索引与 SRT 字幕
+TRANSCRIBE_CONFIG_FILE = WORKSPACE_DIR / "transcribe" / "config.json"
+TRANSCRIBE_TRANSCRIPTS_FILE = WORKSPACE_DIR / "transcribe" / "transcripts.json"
+TRANSCRIBE_SRT_DIR = WORKSPACE_DIR / "transcribe" / "srt"
 PRIORITY_TAGS_FILE = WORKSPACE_DIR / "priority_tags.json"
 
 

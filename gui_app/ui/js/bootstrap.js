@@ -54,10 +54,10 @@ pywebviewReady(30000).then(async () => {
         apiCall('get_tagger_category_ids').then(m => { if (m) state.taggerCategories = m; }).catch(() => {}),
       );
     }
-    if (exp.whisper_enabled) {
-      state.whisperEnabled = true;
+    if (exp.transcribe_enabled) {
+      state.transcribeEnabled = true;
       idFetches.push(
-        apiCall('get_whisper_transcribed_ids').then(ids => { if (ids) state.whisperTranscribedIds = new Set(ids); }).catch(() => {}),
+        apiCall('get_transcribe_transcribed_ids').then(ids => { if (ids) state.transcribeTranscribedIds = new Set(ids); }).catch(() => {}),
       );
     }
     if (idFetches.length) await Promise.all(idFetches);

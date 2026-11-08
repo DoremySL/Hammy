@@ -238,35 +238,39 @@ class PipelineRunner:
             ])
         return result
 
-    def _build_whisper_meta_map(self, paths: List[str], exp_cfg: Dict[str, Any]) -> Dict[str, str]:
-        """构建 whisper 转录上下文映射（video_path → 提示词文本）。
-
-        仅当功能开启且 SRT 文件存在时才注入。exp_cfg 为 experimental 段配置。
-        """
-        if not exp_cfg.get("whisper_enabled", False):
+    def _build_transcribe_meta_map(self, paths: List[str], exp_cfg: Dict[str, Any],
+                                   inject_texts: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+        """构建语音转录上下文映射：优先右键 SRT，缺失回退 inject_texts。"""
+        if not exp_cfg.get("transcribe_enabled", False):
             return {}
-        from .workspace_paths import WHISPER_SRT_DIR, WHISPER_TRANSCRIPTS_FILE
-        if not WHISPER_SRT_DIR.exists():
+        from .workspace_paths import TRANSCRIBE_SRT_DIR, TRANSCRIBE_TRANSCRIPTS_FILE
+        inject_texts = inject_texts or {}
+        if not TRANSCRIBE_SRT_DIR.exists() and not inject_texts:
             return {}
-        max_chars = max(100, _safe_int(exp_cfg, "whisper_max_chars", 800))
-        inject_ts = exp_cfg.get("whisper_inject_timestamps", False)
-        store = read_json(WHISPER_TRANSCRIPTS_FILE, {})
+        max_chars = max(100, _safe_int(exp_cfg, "transcribe_max_chars", 800))
+        inject_ts = exp_cfg.get("transcribe_inject_timestamps", False)
+        store = read_json(TRANSCRIBE_TRANSCRIPTS_FILE, {})
         result: Dict[str, str] = {}
         for vp in paths:
             vid = stable_id(vp)
-            srt_file = WHISPER_SRT_DIR / f"{vid}.srt"
-            if not srt_file.exists():
+            srt_file = TRANSCRIBE_SRT_DIR / f"{vid}.srt"
+            text = ""
+            lang = ""
+            if srt_file.exists():
+                try:
+                    srt_content = srt_file.read_text(encoding="utf-8").strip()
+                except OSError:
+                    srt_content = ""
+                if not srt_content:
+                    continue
+                text = srt_to_text(srt_content, inject_ts)
+                lang = store.get(vid, {}).get("language", "")
+            elif vp in inject_texts:
+                text = (inject_texts.get(vp) or "").strip()
+            if not text:
                 continue
-            try:
-                srt_content = srt_file.read_text(encoding="utf-8").strip()
-            except OSError:
-                continue
-            if not srt_content:
-                continue
-            text = srt_to_text(srt_content, inject_ts)
             if len(text) > max_chars:
                 text = text[:max_chars] + "…（已截断）"
-            lang = store.get(vid, {}).get("language", "")
             parts = ["【语音辅助参考】",
                      "以下为自动语音转录结果，仅供参考。请结合视频画面自行判断："]
             if lang:
@@ -275,6 +279,51 @@ class PipelineRunner:
             parts.append("过长的转录文本可能被截断，注意判断")
             result[vp] = "\n".join(parts)
         return result
+
+    def _run_rename_injection(self, paths: List[str], exp_cfg: Dict[str, Any],
+                              on_log) -> Optional[Dict[str, str]]:
+        """为缺转录的视频生成注入文本；None=用户停止，失败降级为 {}。"""
+        if not (exp_cfg.get("transcribe_enabled", False)
+                and exp_cfg.get("transcribe_integration", True)):
+            return {}
+        from . import transcribe_cpp
+        if not transcribe_cpp.inject_ready():
+            return {}
+        inject_title = transcribe_cpp.TRANSCRIBE_MODELS[
+            transcribe_cpp.get_inject_model()]["title"]
+        from .workspace_paths import TRANSCRIBE_SRT_DIR
+        missing = [vp for vp in paths
+                   if not (TRANSCRIBE_SRT_DIR / f"{stable_id(vp)}.srt").exists()]
+        if not missing:
+            return {}
+        max_chars = max(100, _safe_int(exp_cfg, "transcribe_max_chars", 800))
+
+        from .api_mixins.experimental import _gpu_task_lock
+        # 轮询获取 GPU 任务锁，期间响应停止
+        acquired = False
+        while not acquired:
+            if self._stop.is_set():
+                return None
+            acquired = _gpu_task_lock.acquire(blocking=False)
+            if not acquired:
+                time.sleep(0.2)
+        try:
+            on_log("info", f"[语音辅助] {len(missing)} 个视频无转录，"
+                           f"使用 {inject_title} 生成参考文本…")
+            r = transcribe_cpp.run_inject_batch(
+                missing, max_chars=max_chars,
+                on_log=lambda m: on_log("info", str(m)),
+                stop_event=self._stop)
+        finally:
+            _gpu_task_lock.release()
+
+        if self._stop.is_set():
+            return None
+        if not r.get("ok"):
+            on_log("warn", f"[语音辅助] 注入失败（不影响重命名）: {r.get('error')}")
+            return {}
+        on_log("info", f"[语音辅助] 已生成 {len(r.get('texts') or {})} 个视频的参考文本")
+        return r.get("texts") or {}
 
     def run(
         self,
@@ -397,8 +446,17 @@ class PipelineRunner:
                 # 扩展功能上下文
                 exp_cfg = cfg_dict.get("experimental", {})
                 extra_meta_map = self._build_tagger_meta_map(paths, exp_cfg)
+                # 注入文本；None 表示用户已停止
+                _log_cb = on_log or (lambda lv, msg: None)
+                inject_texts = self._run_rename_injection(paths, exp_cfg, _log_cb)
+                if inject_texts is None:
+                    if on_done:
+                        on_done({"ok": False, "error": "已停止", "ok_count": 0,
+                                  "error_count": 0, "skipped_count": 0})
+                    return
                 recall_meta_map = dict(extra_meta_map)
-                for vp, txt in self._build_whisper_meta_map(paths, exp_cfg).items():
+                for vp, txt in self._build_transcribe_meta_map(
+                        paths, exp_cfg, inject_texts=inject_texts).items():
                     for m in (extra_meta_map, recall_meta_map):
                         if vp in m:
                             m[vp] += "\n\n" + txt

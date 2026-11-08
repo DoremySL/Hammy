@@ -10,6 +10,10 @@ echo.
 set "ROOT=%~dp0"
 set "APP=!ROOT!gui_app\app.py"
 
+if not exist "!ROOT!_workspace\temp" mkdir "!ROOT!_workspace\temp"
+set "TMP=!ROOT!_workspace\temp"
+set "TEMP=!ROOT!_workspace\temp"
+
 if exist "!APP!" goto :find_python
 echo [ERROR] GUI entry not found: !APP!
 pause

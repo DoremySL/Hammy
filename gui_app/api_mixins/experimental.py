@@ -1,4 +1,4 @@
-"""ExperimentalMixin — 扩展功能 API（llama.cpp / faster-whisper / Hammy-tagger）。"""
+"""ExperimentalMixin — 扩展功能 API（llama.cpp / 语音转录 / Hammy-tagger）。"""
 from __future__ import annotations
 
 import shutil
@@ -8,12 +8,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..config_store import (load_config, load_llama_config, load_llama_model_configs,
-                            load_tagger_config, load_whisper_config,
-                            update_llama_config, update_tagger_config, update_whisper_config)
+                            load_tagger_config, load_transcribe_config,
+                            update_llama_config, update_tagger_config, update_transcribe_config)
 from ..installer import DEFAULT_PYPI_MIRROR, DEFAULT_TRT_SITE
 from ..js_push import js_pusher
 from ..workspace_paths import (LLAMA_CONFIG_FILE, TAGGER_TAGS_FILE,
-                               WHISPER_SRT_DIR, WHISPER_TRANSCRIPTS_FILE)
+                               TRANSCRIBE_SRT_DIR, TRANSCRIBE_TRANSCRIPTS_FILE)
 from ..workspace_store import read_json, update_json, write_json
 from batch_rename.utils import safe_float, safe_int
 
@@ -69,7 +69,7 @@ class ExperimentalMixin:
         return {"ok": True}
 
     def stop_install(self) -> Dict[str, Any]:
-        """停止当前正在进行的安装（llama.cpp / faster-whisper / Hammy-tagger）。"""
+        """停止当前正在进行的安装（llama.cpp / 语音转录 / Hammy-tagger）。"""
         if not _install_lock.locked():
             return {"ok": False, "error": "当前没有正在进行的安装"}
         if _install_stop_event.is_set():
@@ -125,7 +125,7 @@ class ExperimentalMixin:
             "uv": self.get_uv_status(),
             "llama": self.get_llama_status(),
             "tagger": self.get_tagger_status(),
-            "whisper": self.get_whisper_status(),
+            "transcribe": self.get_transcribe_status(),
             "ragvec": self.get_rag_vec_status(cfg.get("experimental") or {}),
         }
 
@@ -561,41 +561,43 @@ class ExperimentalMixin:
 
         update_json(TAGGER_TAGS_FILE, _mutate, default_factory=dict)
 
-    # ── Faster-Whisper 语音转录 ──
+    # ── 语音转录（transcribe.cpp）──
 
-    def get_whisper_status(self) -> Dict[str, Any]:
-        """获取 faster-whisper 安装状态与启用状态。"""
-        from ..faster_whisper import get_status
-        enabled = load_whisper_config().get("enabled", False)
+    def get_transcribe_status(self) -> Dict[str, Any]:
+        """获取语音转录安装状态与启用状态。"""
+        from ..transcribe_cpp import get_status
+        enabled = load_transcribe_config().get("enabled", False)
         status = get_status()
         status["enabled"] = enabled
         return status
 
-    def set_whisper_enabled(self, enabled: bool) -> Dict[str, Any]:
-        """启用/禁用 faster-whisper 功能。"""
-        from ..faster_whisper import WHISPER_DIR
-        if not WHISPER_DIR.is_dir():
+    def set_transcribe_enabled(self, enabled: bool) -> Dict[str, Any]:
+        """启用/禁用语音转录功能。"""
+        from ..transcribe_cpp import TRANSCRIBE_DIR
+        if not TRANSCRIBE_DIR.is_dir():
             return {"ok": True, "enabled": enabled}
-        update_whisper_config(lambda c: c.update(enabled=enabled))
+        update_transcribe_config(lambda c: c.update(enabled=enabled))
         return {"ok": True, "enabled": enabled}
 
-    def get_whisper_mirrors(self) -> Dict[str, Any]:
-        """获取 faster-whisper 安装可选镜像（仅通用 PyPI）。"""
+    def get_transcribe_mirrors(self) -> Dict[str, Any]:
+        """获取语音转录安装可选镜像。"""
         from ..installer import detect_gpu, get_mirror_groups
         info = get_mirror_groups(["pypi"])
         info["gpu"] = detect_gpu()
         return info
 
-    def install_whisper(self, pypi_mirror: str = DEFAULT_PYPI_MIRROR,
-                        model: str = "v3-turbo") -> Dict[str, Any]:
-        """安装 faster-whisper 依赖（uv + venv + packages + 所选模型）。"""
-        from ..faster_whisper import install_dependencies
+    def install_transcribe(self, pypi_mirror: str = DEFAULT_PYPI_MIRROR,
+                           bundle: str = "whisper+sv",
+                           github_proxy: str = "") -> Dict[str, Any]:
+        """安装语音转录依赖。"""
+        from ..transcribe_cpp import install_dependencies
 
         if not _install_lock.acquire(blocking=False):
             return {"ok": False, "error": "已有模块正在安装，请等待完成后再试"}
         _install_stop_event.clear()
         try:
-            r = install_dependencies(pypi_mirror=pypi_mirror, model=model,
+            r = install_dependencies(pypi_mirror=pypi_mirror, bundle=bundle,
+                                     github_proxy=github_proxy,
                                      log_fn=_push_log,
                                      stop_event=_install_stop_event)
             if r.get("ok"):
@@ -605,9 +607,9 @@ class ExperimentalMixin:
             _install_stop_event.clear()
             _install_lock.release()
 
-    def download_whisper_model(self, model_key: str = "") -> Dict[str, Any]:
-        """下载未安装的 whisper 模型（hf-mirror.com，取消时清理未完成文件）。"""
-        from ..faster_whisper import _download_model
+    def download_transcribe_model(self, model_key: str = "") -> Dict[str, Any]:
+        """下载未安装的转录模型。"""
+        from ..transcribe_cpp import _download_model
 
         if not model_key:
             return {"ok": False, "error": "未指定模型"}
@@ -615,7 +617,7 @@ class ExperimentalMixin:
             return {"ok": False, "busy": True, "error": "已有模块正在安装，请等待完成后再试"}
 
         def _progress(ev: Dict[str, Any]):
-            js_pusher.push("whisperModelProgress", ev)
+            js_pusher.push("transcribeModelProgress", ev)
 
         try:
             result = _download_model(model_key, log_fn=_push_log,
@@ -623,13 +625,13 @@ class ExperimentalMixin:
         except Exception as e:
             result = {"ok": False, "error": f"下载过程异常: {e}"}
         finally:
-            js_pusher.push("whisperModelDone", result)
+            js_pusher.push("transcribeModelDone", result)
             _install_lock.release()
         return result
 
-    def remove_whisper(self) -> Dict[str, Any]:
-        """删除 faster-whisper 文件夹与模块数据。"""
-        from ..faster_whisper import remove_faster_whisper as _remove
+    def remove_transcribe(self) -> Dict[str, Any]:
+        """删除语音转录文件夹与模块数据。"""
+        from ..transcribe_cpp import remove_transcribe as _remove
         if not _install_lock.acquire(blocking=False):
             return {"ok": False, "error": "已有模块正在安装，请等待完成后再卸载"}
         try:
@@ -639,21 +641,14 @@ class ExperimentalMixin:
 
     def detect_speech(self, items: List) -> Dict[str, Any]:
         """对选中视频执行语音转录（items: [[video_id, video_path], ...]）。"""
-        from ..faster_whisper import get_status, run_transcription_batch
+        from ..transcribe_cpp import get_status, run_transcription_batch
 
         status = get_status()
         if not status["ready"]:
-            return {"ok": False, "results": {}, "error": "faster-whisper 未安装或未就绪，请先在扩展功能页安装依赖"}
+            return {"ok": False, "results": {}, "error": "语音转录未安装或未就绪，请先在扩展功能页安装依赖"}
 
         cfg_exp = load_config().get("experimental", {})
-        use_vad = cfg_exp.get("whisper_vad", True)
-        language = cfg_exp.get("whisper_language", "")
-        use_batch = cfg_exp.get("whisper_batch", False)
-        # 转录并发（0 = 自动）
-        workers = max(0, safe_int(cfg_exp.get("whisper_workers"), 0))
-        beam_size = max(1, safe_int(cfg_exp.get("whisper_beam_size"), 5))
-        cr_raw = cfg_exp.get("whisper_compression_ratio", 2.4)
-        compression_ratio = None if cr_raw is None else safe_float(cr_raw, 2.4)
+        language = cfg_exp.get("transcribe_language", "")
 
         if not _gpu_task_lock.acquire(blocking=False):
             return {"ok": False, "results": {}, "error": "已有 GPU 任务在运行，请等待完成后再试"}
@@ -694,13 +689,11 @@ class ExperimentalMixin:
                               + (f": {err_txt[:200]}" if err_txt else ""), "err")
                     if err_txt and any(k in err_txt.lower()
                                        for k in ("out of memory", "cuda", "oom", "alloc")):
-                        _push_log("    （显存不足，可尝试减少并发或关闭批处理模式）", "warn")
+                        _push_log("    （显存不足，可关闭其他占显存的功能后重试）", "warn")
                 js_pusher.push("setProgress", done, total)
 
             batch_result = run_transcription_batch(
-                video_paths, vad=use_vad, language=language, batch=use_batch,
-                workers=workers,
-                beam_size=beam_size, compression_ratio=compression_ratio,
+                video_paths, language=language,
                 on_video_done=_on_done, on_log=_push_log,
                 stop_event=_gpu_stop_event,
             )
@@ -726,7 +719,7 @@ class ExperimentalMixin:
                 _push_log(f"  转录完成（{total} 个视频，总耗时 {elapsed:.1f}s）")
 
             # 保存 SRT 文件 + 索引
-            self._save_whisper_srt(results)
+            self._save_transcribe_srt(results)
             ok_count = sum(1 for r in results.values() if not r.get("error"))
             if not batch_result["ok"]:
                 # 「已取消」归一为「已停止」
@@ -743,40 +736,40 @@ class ExperimentalMixin:
         finally:
             _gpu_task_lock.release()
 
-    def get_whisper_transcript(self, video_id: str) -> Dict[str, Any]:
+    def get_transcribe_transcript(self, video_id: str) -> Dict[str, Any]:
         """获取指定视频的转录内容（读 SRT 文件）。"""
-        srt_file = WHISPER_SRT_DIR / f"{video_id}.srt"
+        srt_file = TRANSCRIBE_SRT_DIR / f"{video_id}.srt"
         if srt_file.exists():
             try:
                 srt_text = srt_file.read_text(encoding="utf-8")
             except OSError:
                 return {"ok": False, "text": ""}
-            store = read_json(WHISPER_TRANSCRIPTS_FILE, {})
+            store = read_json(TRANSCRIBE_TRANSCRIPTS_FILE, {})
             lang = store.get(video_id, {}).get("language", "")
             return {"ok": True, "text": srt_text, "language": lang}
         return {"ok": False, "text": ""}
 
-    def clear_whisper_transcripts(self) -> Dict[str, Any]:
+    def clear_transcribe_transcripts(self) -> Dict[str, Any]:
         """清除所有转录数据（SRT 文件 + 索引）。"""
-        write_json(WHISPER_TRANSCRIPTS_FILE, {})
-        if WHISPER_SRT_DIR.exists():
-            shutil.rmtree(WHISPER_SRT_DIR, ignore_errors=True)
+        write_json(TRANSCRIBE_TRANSCRIPTS_FILE, {})
+        if TRANSCRIBE_SRT_DIR.exists():
+            shutil.rmtree(TRANSCRIBE_SRT_DIR, ignore_errors=True)
         return {"ok": True, "message": "已清除所有语音转录数据"}
 
-    def get_whisper_transcribed_ids(self) -> List[str]:
+    def get_transcribe_transcribed_ids(self) -> List[str]:
         """返回已有转录的视频 ID 列表（轻量，供前端角标显示）。"""
-        store = read_json(WHISPER_TRANSCRIPTS_FILE, {})
+        store = read_json(TRANSCRIBE_TRANSCRIPTS_FILE, {})
         return list(store.keys())
 
-    def _save_whisper_srt(self, results: Dict[str, Any]) -> None:
+    def _save_transcribe_srt(self, results: Dict[str, Any]) -> None:
         """保存 SRT 文件 + 轻量索引 JSON（索引只存语言）。"""
-        WHISPER_SRT_DIR.mkdir(parents=True, exist_ok=True)
+        TRANSCRIBE_SRT_DIR.mkdir(parents=True, exist_ok=True)
         langs = {}
         for vid, data in results.items():
             if data.get("error"):
                 continue
             try:
-                (WHISPER_SRT_DIR / f"{vid}.srt").write_text(data.get("srt", ""), encoding="utf-8")
+                (TRANSCRIBE_SRT_DIR / f"{vid}.srt").write_text(data.get("srt", ""), encoding="utf-8")
             except OSError:
                 continue
             langs[vid] = {"language": data.get("language", "")}
@@ -787,7 +780,7 @@ class ExperimentalMixin:
             current.update(langs)
             return current
 
-        update_json(WHISPER_TRANSCRIPTS_FILE, _mutate, default_factory=dict)
+        update_json(TRANSCRIBE_TRANSCRIPTS_FILE, _mutate, default_factory=dict)
 
     def export_srt(self, items: List) -> Dict[str, Any]:
         """导出 SRT 字幕到视频同目录（items: [[video_id, video_path], ...]）。"""
@@ -795,7 +788,7 @@ class ExperimentalMixin:
         errors = []
         for item in items:
             vid, vpath = item[0], item[1]
-            src = WHISPER_SRT_DIR / f"{vid}.srt"
+            src = TRANSCRIBE_SRT_DIR / f"{vid}.srt"
             if not src.exists():
                 errors.append(f"{Path(vpath).name}: 无转录数据")
                 continue
@@ -839,7 +832,7 @@ class ExperimentalMixin:
             errors = []
             for idx, item in enumerate(items):
                 vid, vpath = item[0], item[1]
-                src = WHISPER_SRT_DIR / f"{vid}.srt"
+                src = TRANSCRIBE_SRT_DIR / f"{vid}.srt"
                 name = Path(vpath).name
                 if not src.exists():
                     errors.append(f"{name}: 无转录数据")

@@ -114,13 +114,13 @@ const state = {
   thumbCache: new Map(),
   taggerEnabled: false,
   taggerCategories: {},           // 视频 ID → 分类（2d/3d/real/cos/unk）
-  whisperEnabled: false,
+  transcribeEnabled: false,
   ragVecEnabled: false,
   thumbOptimize: true,
   gpuBusy: false,
   installing: false,
   taggerTaggedIds: new Set(),
-  whisperTranscribedIds: new Set(),
+  transcribeTranscribedIds: new Set(),
   hfDownloading: false,
   hfDlPct: 0,
   dlKind: null,
@@ -524,11 +524,11 @@ window.__ui = {
   hfDownloadDone(ev) {
     if (typeof window.__onHfDownloadDone === 'function') window.__onHfDownloadDone(ev);
   },
-  whisperModelProgress(ev) {
-    if (typeof window.__onWhisperModelProgress === 'function') window.__onWhisperModelProgress(ev);
+  transcribeModelProgress(ev) {
+    if (typeof window.__onTranscribeModelProgress === 'function') window.__onTranscribeModelProgress(ev);
   },
-  whisperModelDone(ev) {
-    if (typeof window.__onWhisperModelDone === 'function') window.__onWhisperModelDone(ev);
+  transcribeModelDone(ev) {
+    if (typeof window.__onTranscribeModelDone === 'function') window.__onTranscribeModelDone(ev);
   },
   onFileDone(entry) {
     if (entry.thumb_refresh) state.thumbCache.delete(entry.id);

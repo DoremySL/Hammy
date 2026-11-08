@@ -9,9 +9,9 @@ async function renderExperimentalTabWrapper() {
       const st = await apiCall('get_experimental_status');
       syncLlamaState(st.llama);
       state.taggerEnabled = !!(st.tagger && st.tagger.enabled);
-      state.whisperEnabled = !!(st.whisper && st.whisper.enabled);
+      state.transcribeEnabled = !!(st.transcribe && st.transcribe.enabled);
       state.ragVecEnabled = !!(st.ragvec && st.ragvec.enabled);
-      return { cfg: st.cfg, uvStatus: st.uv, llamaStatus: st.llama, pStatus: st.tagger, wStatus: st.whisper, rvStatus: st.ragvec };
+      return { cfg: st.cfg, uvStatus: st.uv, llamaStatus: st.llama, pStatus: st.tagger, wStatus: st.transcribe, rvStatus: st.ragvec };
     },
     (data) => renderExperimentalPage(data.cfg, data.uvStatus, data.llamaStatus, data.pStatus, data.wStatus, data.rvStatus),
     () => renderSettings()
@@ -69,27 +69,20 @@ function _collectExperimentalData() {
   const zhDd = ddl('#tagger-output-zh-dd');
   put('tagger_output_zh', zhDd === null ? null : zhDd === '1');
   put('tagger_enabled', chk('#tagger-enable-toggle'));
-  const wvad = ddl('#whisper-vad-dd');
-  put('whisper_vad', wvad === null ? null : wvad === '1');
-  const lang = $('#whisper-language');
-  put('whisper_language', lang ? lang.value.trim() : null);
-  let mc = num('#whisper-max-chars');
+  const lang = $('#transcribe-language');
+  put('transcribe_language', lang ? lang.value.trim() : null);
+  let mc = num('#transcribe-max-chars');
   if (mc !== null) mc = Math.max(100, mc);
-  put('whisper_max_chars', mc);
-  const wts = ddl('#whisper-ts-dd');
-  put('whisper_inject_timestamps', wts === null ? null : wts === '1');
-  const wbatch = ddl('#whisper-batch-dd');
-  put('whisper_batch', wbatch === null ? null : wbatch === '1');
-  let wv = num('#whisper-workers');
-  if (wv !== null) wv = Math.min(16, Math.max(0, wv));
-  put('whisper_workers', wv);
-  put('whisper_enabled', chk('#whisper-enable-toggle'));
-  const wmv = ddl('#whisper-model-dd');
-  if (wmv) e.whisper_model = wmv;
-  const wbeam = ddl('#whisper-beam-dd');
-  put('whisper_beam_size', wbeam ? Number(wbeam) : null);
-  const wcr = ddl('#whisper-cr-dd');
-  if (wcr !== null) e.whisper_compression_ratio = wcr === 'none' ? null : Number(wcr);
+  put('transcribe_max_chars', mc);
+  const wts = ddl('#transcribe-ts-dd');
+  put('transcribe_inject_timestamps', wts === null ? null : wts === '1');
+  const integ = ddl('#transcribe-integration-dd');
+  put('transcribe_integration', integ === null ? null : integ === '1');
+  put('transcribe_enabled', chk('#transcribe-enable-toggle'));
+  const wmv = ddl('#transcribe-model-dd');
+  if (wmv) e.transcribe_model = wmv;
+  const imv = ddl('#transcribe-inject-model-dd');
+  if (imv) e.transcribe_inject_model = imv;
   return { experimental: e };
 }
 
@@ -101,7 +94,7 @@ async function _saveExperimentalNow() {
     const res = await apiCall('save_config', data);
     if (res && res.ok) {
       if (data.experimental.tagger_enabled != null) state.taggerEnabled = !!data.experimental.tagger_enabled;
-      if (data.experimental.whisper_enabled != null) state.whisperEnabled = !!data.experimental.whisper_enabled;
+      if (data.experimental.transcribe_enabled != null) state.transcribeEnabled = !!data.experimental.transcribe_enabled;
       if (data.experimental.rag_vec_enabled != null) state.ragVecEnabled = !!data.experimental.rag_vec_enabled;
     } else if (token === _expSaveToken) {
       toast('保存失败: ' + ((res && res.error) || ''), 'err');
@@ -142,7 +135,7 @@ function renderExperimentalPage(cfg, uvStatus, llamaStatus, pStatus, wStatus, rv
     <div class="exp-page">
       ${_renderLlamaSection(llamaStatus)}
       ${_renderTaggerSection(exp, pStatus)}
-      ${_renderWhisperSection(exp, wStatus)}
+      ${_renderTranscribeSection(exp, wStatus)}
       ${_renderRagVecSection(exp, rvStatus)}
       ${_renderUvCard(uvStatus)}
       ${anyModuleInstalled ? '' : '<div class="exp-intro">安装占用大量硬盘空间，运行时消耗较高的硬件资源，仅推荐显存≥6GB的N卡用户尝试；安装并启用后点击对应卡片展开功能设置</div>'}
@@ -152,7 +145,7 @@ function renderExperimentalPage(cfg, uvStatus, llamaStatus, pStatus, wStatus, rv
   _bindManageButtons(uvStatus, llamaStatus, pStatus, wStatus, rvStatus);
   _bindLlamaEvents(llamaStatus);
   _bindTaggerEvents();
-  _bindWhisperEvents();
+  _bindTranscribeEvents();
   _bindRagVecEvents();
 }
 
@@ -237,23 +230,28 @@ function _bindManageButtons(uvStatus, llamaStatus, pStatus, wStatus, rvStatus) {
     } else { toast('删除失败: ' + ((r && r.error) || ''), 'err'); pRemoveBtn.disabled = false; pRemoveBtn.textContent = '卸载'; }
   });
 
-  const wInstallBtn = $('#btn-whisper-install');
+  const wInstallBtn = $('#btn-transcribe-install');
   if (wInstallBtn && !wStatus.ready) wInstallBtn.addEventListener('click', async () => {
+    const bundles = [
+      { value: 'whisper+sv', name: 'whisper-turbo + SenseVoice', desc: '多语言快速字幕 + 重命名语音辅助（推荐，约 1.1GB）', recommended: true },
+      { value: 'moss+sv', name: 'MOSS-Diarize + SenseVoice', desc: '中日影视字幕（说话人/热词）+ 重命名语音辅助（约 1.2GB）' },
+    ];
     const sel = await showMirrorSelectDialog({
-      api: 'get_whisper_mirrors',
-      showModelSelect: true, models: (wStatus && wStatus.models) || [],
+      api: 'get_transcribe_mirrors',
+      showModelSelect: true, models: bundles,
+      githubProxy: true,
     });
-    if (sel) startWhisperInstall(sel.pypi || 'sjtu', sel.model || 'v3-turbo');
+    if (sel) startTranscribeInstall(sel.pypi || 'sjtu', sel.model || 'whisper+sv', sel.github_proxy || '');
   });
 
-  const wRemoveBtn = $('#btn-whisper-remove');
+  const wRemoveBtn = $('#btn-transcribe-remove');
   if (wRemoveBtn && wStatus.dir_exists) wRemoveBtn.addEventListener('click', async () => {
-    if (!await showConfirm('确定删除 faster-whisper 吗？\n\n将删除所有已安装的依赖和模型文件。')) return;
+    if (!await showConfirm('确定删除语音转录吗？\n\n将删除所有已安装的依赖和模型文件。')) return;
     wRemoveBtn.disabled = true; wRemoveBtn.textContent = '删除中…';
-    const r = await apiCall('remove_whisper');
+    const r = await apiCall('remove_transcribe');
     if (r && r.ok) {
-      state.whisperEnabled = false; state.whisperTranscribedIds.clear();
-      state.settingsOpen.delete('whisper-cfg');
+      state.transcribeEnabled = false; state.transcribeTranscribedIds.clear();
+      state.settingsOpen.delete('transcribe-cfg');
       refreshGridData(); toast(r.message || '已删除', 'ok'); renderSettings();
     } else { toast('删除失败: ' + ((r && r.error) || ''), 'err'); wRemoveBtn.disabled = false; wRemoveBtn.textContent = '卸载'; }
   });
@@ -372,7 +370,7 @@ async function showMirrorSelectDialog(opts) {
 
   let gpuBanner = '';
   if (gpu) {
-    // bannerSub 未传时按 whisper 场景给默认副标题；传空串则只显示驱动信息
+    // bannerSub 未传时按转录场景给默认副标题；传空串则只显示驱动信息
     const sub = opts.bannerSub !== undefined ? opts.bannerSub
       : (gpu.has_nvidia ? '转录使用 GPU 加速' : '转录使用 CPU 模式');
     gpuBanner = gpuBannerHtml(gpu, sub, sub);
@@ -397,6 +395,29 @@ async function showMirrorSelectDialog(opts) {
       items: mirrors.pypi.map(m => ({ value: m.id, name: m.name, desc: m.desc || m.url || '', recommended: m.id === mirrors.default_pypi })),
     }));
   }
+  if (opts.githubProxy && gpu && gpu.has_nvidia) {
+    sections.push(`
+    <div class="mirror-section">
+      <div class="mirror-section-head">
+        <strong>GitHub 引擎下载</strong>
+        <span class="mirror-section-hint">CUDA 引擎 wheel，约 200MB</span>
+      </div>
+      <div class="mirror-opts">
+        <label class="mirror-opt selected">
+          <input type="radio" name="gh-method" value="direct" checked/>
+          <span class="mirror-opt-name">GitHub 直连<small class="mirror-opt-url">官方 Release，国内访问不稳定</small></span>
+        </label>
+        <label class="mirror-opt">
+          <input type="radio" name="gh-method" value="proxy"/>
+          <span class="mirror-opt-name">使用加速代理<small class="mirror-opt-url">使用代理加速站，直连下载受限时可尝试</small></span>
+          <input type="text" id="gh-proxy-input" class="mirror-url-input" spellcheck="false"
+                 style="display:none" value="${esc(LLAMA_DEFAULT_PROXY)}"
+                 placeholder="${esc(LLAMA_DEFAULT_PROXY)}"
+                 data-tip="当前代理失效时请自行查找最新可用GitHub加速站地址填入"/>
+        </label>
+      </div>
+    </div>`);
+  }
 
   const dlg = openMirrorDialog(`
     <div class="mirror-body">${gpuBanner}${sections.join('')}</div>
@@ -404,7 +425,13 @@ async function showMirrorSelectDialog(opts) {
       <button class="btn" id="mirrorCancel">取消</button>
       <button class="btn primary" id="mirrorOk">${esc(opts.confirmText || '开始安装')}</button>
     </div>`);
-  bindMirrorRadios(dlg.box);
+  bindMirrorRadios(dlg.box, () => {
+    const inp = dlg.box.querySelector('#gh-proxy-input');
+    if (inp) {
+      const m = dlg.box.querySelector('input[name="gh-method"]:checked');
+      inp.style.display = (m && m.value === 'proxy') ? '' : 'none';
+    }
+  });
 
   return new Promise(resolve => {
     $('#mirrorCancel').addEventListener('click', () => { dlg.close(); resolve(null); });
@@ -412,10 +439,14 @@ async function showMirrorSelectDialog(opts) {
       const device = dlg.box.querySelector('input[name="device"]:checked');
       const pypi = dlg.box.querySelector('input[name="pypi-mirror"]:checked');
       const model = dlg.box.querySelector('input[name="model-select"]:checked');
+      const gh = dlg.box.querySelector('input[name="gh-method"]:checked');
+      const ghInput = dlg.box.querySelector('#gh-proxy-input');
+      const ghProxy = (gh && gh.value === 'proxy' && ghInput) ? ghInput.value.trim() : '';
       dlg.close();
       resolve({ device: device ? device.value : null,
                 pypi: pypi ? pypi.value : 'sjtu',
-                model: model ? model.value : null });
+                model: model ? model.value : null,
+                github_proxy: ghProxy });
     });
   });
 }
@@ -651,7 +682,7 @@ function _bindTaggerEvents() {
 }
 
 /* ════════════════════════════════════════════════════════════
-   安装流程骨架（Hammy / Whisper / llama.cpp / 向量检索共用）
+   安装流程骨架（Hammy / 语音转录 / llama.cpp / 向量检索共用）
    ════════════════════════════════════════════════════════════ */
 async function runInstallTask(run, onOk) {
   if (state.installing || state.hfDownloading) {
@@ -705,91 +736,88 @@ async function startTaggerInstall(site) {
     });
 }
 
-function _renderWhisperSection(exp, wStatus) {
-  const enabled = !!state.whisperEnabled;
+function _renderTranscribeSection(exp, wStatus) {
+  const enabled = !!state.transcribeEnabled;
   const ready = !!(wStatus && wStatus.ready);
   const wModels = (wStatus && wStatus.models) || [];
+  const iModels = (wStatus && wStatus.inject_models) || [];
   const installed = (wStatus && wStatus.installed) || {};
-  const current = (wStatus && wStatus.current_model) || 'v3-turbo';
-  const hasInstalled = wModels.some(m => installed[m.key]);
-  const modelSel = hasInstalled ? `
-    <div class="dd whisper-model-dd" id="whisper-model-dd">
+  const current = (wStatus && wStatus.current_model) || 'whisper-turbo';
+  const injectCur = (wStatus && wStatus.inject_model) || 'sensevoice';
+
+  const _dd = (id, list, cur, emptyTip) => {
+    if (list.some(m => installed[m.key])) {
+      return `
+    <div class="dd transcribe-model-dd" id="${id}">
       <button class="dd-btn" type="button">
-        <span class="dd-label">${esc((wModels.find(m => m.key === current) || {}).title || '请选择模型')}</span>
+        <span class="dd-label">${esc((list.find(m => m.key === cur) || {}).title || '请选择模型')}</span>
         ${ddArrow()}
       </button>
       <div class="dd-panel">
-        ${wModels.map(m => {
+        ${list.map(m => {
           const isInst = !!installed[m.key];
-          return `<div class="dd-opt${m.key === current ? ' active' : ''}${isInst ? '' : ' disabled'}" data-value="${esc(m.key)}"${isInst ? '' : ` data-tip="${esc(m.repo)}（未下载，点击打开模型下载）"`}>${esc(m.title)}${isInst ? '' : '（未下载）'}</div>`;
+          return `<div class="dd-opt${m.key === cur ? ' active' : ''}${isInst ? '' : ' disabled'}" data-value="${esc(m.key)}"${isInst ? '' : ` data-tip="${esc(m.hf_repo || m.ms_repo || '')}（未下载，点击打开模型下载）"`}>${esc(m.title)}${isInst ? '' : '（未下载）'}</div>`;
         }).join('')}
       </div>
-    </div>` : `
-    <div class="dd whisper-model-dd is-empty" id="whisper-model-dd">
+    </div>`;
+    }
+    return `
+    <div class="dd transcribe-model-dd is-empty" id="${id}">
       <button class="dd-btn" type="button" data-tip="还没有下载任何模型，点击下方选项打开模型下载">
         <span class="dd-label">暂无已下载模型</span>
         ${ddArrow()}
       </button>
       <div class="dd-panel">
-        <div class="dd-opt disabled">还没有下载任何模型：<br>点击这里从 hf-mirror.com 下载。</div>
+        <div class="dd-opt disabled">${esc(emptyTip)}</div>
       </div>
     </div>`;
+  };
+  const modelSel = _dd('transcribe-model-dd', wModels, current,
+    '还没有下载任何模型，点击打开模型下载');
+  const injectSel = _dd('transcribe-inject-model-dd', iModels, injectCur,
+    '还没有下载任何模型，点击打开模型下载');
   return `
     <div class="exp-card ${!enabled ? 'is-disabled' : ''}">
       <div class="exp-card-head">
         <label class="switch master-switch">
-          <input type="checkbox" id="whisper-enable-toggle" ${enabled ? 'checked' : ''} ${!ready ? 'disabled' : ''}/>
+          <input type="checkbox" id="transcribe-enable-toggle" ${enabled ? 'checked' : ''} ${!ready ? 'disabled' : ''}/>
         </label>
         <div class="exp-head-main">
-          <div class="exp-title-row"><strong>Faster-Whisper 语音转录</strong>${_statusBadge(wStatus || {})}</div>
+          <div class="exp-title-row"><strong>语音转录（transcribe.cpp）</strong>${_statusBadge(wStatus || {})}</div>
           <div class="exp-desc">转录视频语音为字幕，辅助 AI 重命名，支持导出与翻译。</div>
         </div>
         <div class="exp-head-actions">
-          ${enabled ? '<button class="ws-btn" id="btn-whisper-clear">清除转录</button>' : ''}
-          ${_installBtns('whisper', wStatus || {})}
+          ${enabled ? '<button class="ws-btn" id="btn-transcribe-clear">清除转录</button>' : ''}
+          ${_installBtns('transcribe', wStatus || {})}
         </div>
       </div>
-      <div id="whisper-cfg-panel" class="exp-cfg-panel" style="display:${state.settingsOpen.has('whisper-cfg') ? 'block' : 'none'}">
+      <div id="transcribe-cfg-panel" class="exp-cfg-panel" style="display:${state.settingsOpen.has('transcribe-cfg') ? 'block' : 'none'}">
         <div class="exp-input-row">
           <div class="field">
-            <label data-tip="转录使用的模型；点击未下载的模型可直接下载">当前模型</label>
+            <label data-tip="右键转录 / 导出字幕使用的模型；点击未下载的模型可直接下载">字幕模型</label>
             ${modelSel}
           </div>
           <div class="field">
-            <label data-tip="跳过静音片段再转录，速度更快、更省资源">VAD过滤静音</label>
-            ${_boolDd('whisper-vad-dd', exp.whisper_vad !== false)}
+            <label data-tip="集成到自动重命名后，为未转录视频生成参考文本的模型（SenseVoice 最快；高配用户可选 whisper-turbo / MOSS）">辅助重命名模型</label>
+            ${injectSel}
           </div>
           <div class="field">
-            <label data-tip="转录目标语言，留空自动检测；示例：ja（日语）、zh（中文）、en（英文）。ja-1.5B 模型仅支持日语，选择后自动固定为 ja">预期语言</label>
-            <input type="text" id="whisper-language" placeholder="自动检测" value="${esc(exp.whisper_language || '')}"/>
-          </div>
-        </div>
-        <div class="exp-input-row">
-          <div class="field">
-            <label data-tip="束搜索宽度：越大越准越慢，1 为贪心最快">解码束宽</label>
-            ${_optDd('whisper-beam-dd', [1, 3, 5, 8], ([1, 3, 5, 8].includes(exp.whisper_beam_size) ? exp.whisper_beam_size : 5))}
-          </div>
-          <div class="field">
-            <label data-tip="输出重复超过该压缩比判定为幻觉，升温重试；不启用则关闭该判定">复读判定</label>
-            ${_crDd(exp.whisper_compression_ratio)}
-          </div>
-          <div class="field">
-            <label data-tip="GPU 上显著提速，CPU 反而更慢；会影响字幕时间戳准确性">批处理模式</label>
-            ${_boolDd('whisper-batch-dd', !!exp.whisper_batch)}
+            <label data-tip="开启后，自动重命名时对未转录过的视频自动用辅助重命名模型生成语音参考（仅供 AI 参考，不产生字幕、不显示角标）">集成到自动重命名</label>
+            ${_boolDd('transcribe-integration-dd', exp.transcribe_integration !== false)}
           </div>
         </div>
         <div class="exp-input-row">
           <div class="field">
-            <label data-tip="同时处理视频的数量；0 = 自动（GPU 4 路 / CPU 1 路）。开启批处理模式时建议设置为 1">并发数</label>
-            <input type="number" id="whisper-workers" min="0" max="16" step="1" value="${exp.whisper_workers ?? 4}"/>
+            <label data-tip="转录目标语言，留空自动检测；示例：ja（日语）、zh（中文）、en（英文）">预期语言</label>
+            <input type="text" id="transcribe-language" placeholder="自动检测" value="${esc(exp.transcribe_language || '')}"/>
           </div>
           <div class="field">
             <label data-tip="转录文本注入重命名提示词时发送 [MM:SS] 时间标记，AI 可结合台词时间轴理解内容">发送时间戳</label>
-            ${_boolDd('whisper-ts-dd', !!exp.whisper_inject_timestamps)}
+            ${_boolDd('transcribe-ts-dd', !!exp.transcribe_inject_timestamps)}
           </div>
           <div class="field">
-            <label data-tip="注入重命名 AI 提示词的最大字符数">提示词截断</label>
-            <input type="number" id="whisper-max-chars" min="100" step="100" value="${exp.whisper_max_chars || 800}"/>
+            <label data-tip="注入重命名 AI 提示词的最大字符数；辅助重命名模型推理到此字符数即提前停止">提示词截断</label>
+            <input type="number" id="transcribe-max-chars" min="100" step="100" value="${exp.transcribe_max_chars || 800}"/>
           </div>
         </div>
       </div>
@@ -807,86 +835,73 @@ function _boolDd(id, on, onText = '开启', offText = '关闭') {
     </div>`;
 }
 
-function _optDd(id, values, cur) {
-  return `
-    <div class="dd" id="${id}">
-      <button class="dd-btn" type="button"><span class="dd-label">${esc(String(cur))}</span>${ddArrow()}</button>
-      <div class="dd-panel">
-        ${values.map(v => `<div class="dd-opt${v === cur ? ' active' : ''}" data-value="${v}">${v}</div>`).join('')}
-      </div>
-    </div>`;
-}
-
-function _crDd(cur) {
-  const val = (cur === null || cur === 'none') ? 'none'
-    : (['2', '2.0', '2.4', '3', '3.0'].includes(String(cur)) ? String(cur) : '2.4');
-  const opts = [['2', '2.0（严格）'], ['2.4', '2.4（默认）'], ['3', '3.0（宽松）'], ['none', '不启用']];
-  return `
-    <div class="dd" id="whisper-cr-dd">
-      <button class="dd-btn" type="button"><span class="dd-label">${esc((opts.find(([v]) => v === val) || opts[1])[1])}</span>${ddArrow()}</button>
-      <div class="dd-panel">
-        ${opts.map(([v, t]) => `<div class="dd-opt${v === val ? ' active' : ''}" data-value="${v}">${t}</div>`).join('')}
-      </div>
-    </div>`;
-}
-
-function _bindWhisperEvents() {
-  const toggle = $('#whisper-enable-toggle');
+function _bindTranscribeEvents() {
+  const toggle = $('#transcribe-enable-toggle');
   if (toggle) toggle.addEventListener('change', () => {
-    state.whisperEnabled = toggle.checked;
+    state.transcribeEnabled = toggle.checked;
     const card = toggle.closest('.exp-card');
     if (card) card.classList.toggle('is-disabled', !toggle.checked);
-    const clearBtn = $('#btn-whisper-clear');
+    const clearBtn = $('#btn-transcribe-clear');
     if (clearBtn) clearBtn.style.display = toggle.checked ? '' : 'none';
     scheduleExperimentalSave(true);
   });
 
-  _bindCardToggle('whisper');
+  _bindCardToggle('transcribe');
 
-  ['#whisper-language', '#whisper-workers', '#whisper-max-chars'].forEach(sel => {
+  ['#transcribe-language', '#transcribe-max-chars'].forEach(sel => {
     const el = $(sel);
     if (el) el.addEventListener('input', () => scheduleExperimentalSave());
   });
-  ['#whisper-vad-dd', '#whisper-ts-dd', '#whisper-batch-dd',
-   '#whisper-beam-dd', '#whisper-cr-dd'].forEach(sel => {
+  ['#transcribe-ts-dd', '#transcribe-integration-dd'].forEach(sel => {
     const el = $(sel);
     if (el) initDropdown(el, () => scheduleExperimentalSave(true));
   });
 
-  const modelDD = $('#whisper-model-dd');
+  const modelDD = $('#transcribe-model-dd');
   if (modelDD) initDropdown(modelDD, () => scheduleExperimentalSave(true));
 
   if (modelDD) modelDD.querySelectorAll('.dd-opt.disabled').forEach(opt => {
     opt.addEventListener('click', (e) => {
       e.stopPropagation();
       modelDD.classList.remove('open');
-      openWhisperModelDialog();
+      openTranscribeModelDialog();
     });
   });
 
-  const clearBtn = $('#btn-whisper-clear');
+  const injectDD = $('#transcribe-inject-model-dd');
+  if (injectDD) initDropdown(injectDD, () => scheduleExperimentalSave(true));
+
+  if (injectDD) injectDD.querySelectorAll('.dd-opt.disabled').forEach(opt => {
+    opt.addEventListener('click', (e) => {
+      e.stopPropagation();
+      injectDD.classList.remove('open');
+      openTranscribeModelDialog();
+    });
+  });
+
+  const clearBtn = $('#btn-transcribe-clear');
   if (clearBtn) clearBtn.addEventListener('click', async () => {
     if (!await showConfirm('确定清除所有已保存的语音转录数据吗？')) return;
-    const r = await apiCall('clear_whisper_transcripts');
+    const r = await apiCall('clear_transcribe_transcripts');
     if (r && r.ok) {
-      state.whisperTranscribedIds.clear();
+      state.transcribeTranscribedIds.clear();
       refreshGridData(); toast(r.message || '已清除', 'ok');
     } else toast('清除失败', 'err');
   });
 }
 
-async function startWhisperInstall(pypiMirror, modelKey) {
+async function startTranscribeInstall(pypiMirror, bundle, githubProxy) {
   await runInstallTask(
-    () => apiCall('install_whisper', pypiMirror || 'sjtu', modelKey || 'v3-turbo'),
+    () => apiCall('install_transcribe', pypiMirror || 'sjtu', bundle || 'whisper+sv', githubProxy || ''),
     async () => {
-      await apiCall('set_whisper_enabled', true);
-      state.whisperEnabled = true;
-      toast('Faster-Whisper 安装完成，已自动启用', 'ok');
+      await apiCall('set_transcribe_enabled', true);
+      state.transcribeEnabled = true;
+      toast('语音转录安装完成，已自动启用', 'ok');
     });
 }
 
 /* ════════════════════════════════════════════════════════════
-   模型下载弹窗（Whisper 模型管理 / llama.cpp HF 搜索下载 共用骨架）
+   模型下载弹窗（语音转录模型管理 / llama.cpp HF 搜索下载 共用骨架）
    ════════════════════════════════════════════════════════════ */
 function _hfFmtSize(n) {
   if (!n) return '0 B';
@@ -1142,12 +1157,12 @@ function makeModelManager(cfg) {
 }
 
 const _wMgr = makeModelManager({
-  title: 'Faster-Whisper 模型管理', dlKind: 'whisper', dialogCls: 'wm-dialog',
-  statusApi: 'get_whisper_status', downloadApi: 'download_whisper_model',
+  title: '语音转录模型管理', dlKind: 'transcribe', dialogCls: 'wm-dialog',
+  statusApi: 'get_transcribe_status', downloadApi: 'download_transcribe_model',
 });
 _wMgr.dlApi = _makeModelDownloader({
-  kind: 'whisper', dialogCls: 'wm-dialog',
-  progressKey: '__onWhisperModelProgress', doneKey: '__onWhisperModelDone',
+  kind: 'transcribe', dialogCls: 'wm-dialog',
+  progressKey: '__onTranscribeModelProgress', doneKey: '__onTranscribeModelDone',
   cancelledMsg: () => '未完成的文件已清理，再次下载将从零开始。',
   successMsg: r => `<div class="ok">已下载 ${r.downloaded} 个文件到模型目录</div>
       <div class="hf-files-hint" style="margin-top:4px">关闭弹窗后，在卡片「当前模型」下拉中选择该模型即可切换。</div>`,
@@ -1157,7 +1172,7 @@ _wMgr.dlApi = _makeModelDownloader({
     if ($('#modal').classList.contains('show')) renderSettings();
   },
 });
-const openWhisperModelDialog = _wMgr.open;
+const openTranscribeModelDialog = _wMgr.open;
 
 let _hfLastSrc = 'hf';
 const HF_SOURCES = {
@@ -2541,7 +2556,7 @@ function _bindLlamaTabEvents(llamaStatus) {
 
 document.addEventListener('click', (e) => {
   if (e.target.closest('#miniProgBox') && state.hfDownloading) {
-    if (state.dlKind === 'whisper') openWhisperModelDialog();
+    if (state.dlKind === 'transcribe') openTranscribeModelDialog();
     else openHfDownloadDialog();
   }
 });

@@ -12,8 +12,8 @@ from batch_rename.dedup import DUPLICATES_DIR
 from ..workspace_paths import (
     TAGGER_TAGS_FILE,
     THUMB_DIR,
-    WHISPER_SRT_DIR,
-    WHISPER_TRANSCRIPTS_FILE,
+    TRANSCRIBE_SRT_DIR,
+    TRANSCRIBE_TRANSCRIPTS_FILE,
     nfo_path,
     stable_id,
 )
@@ -192,8 +192,8 @@ class MediaMixin:
             return {"ok": False, "error": f"无法创建目标目录: {e}"}
 
         # 语音转录开启时，除 NFO 外还一并带走视频同目录的导出字幕
-        from ..config_store import load_whisper_config
-        whisper_on = load_whisper_config().get("enabled", False)
+        from ..config_store import load_transcribe_config
+        transcribe_on = load_transcribe_config().get("enabled", False)
 
         moved, nfo_count, sub_count, poster_count, errors = 0, 0, 0, 0, []
         exported_paths: List[str] = []
@@ -242,8 +242,8 @@ class MediaMixin:
                     if nfo_exported:
                         nfo_count += 1
 
-                # 字幕导出：whisper 转录开启时，随视频一起移动同目录字幕
-                if with_nfo and whisper_on:
+                # 字幕导出：语音转录开启时，随视频一起移动同目录字幕
+                if with_nfo and transcribe_on:
                     for suf in (".srt", ".zh.srt"):
                         sub = p.with_suffix(suf)
                         if sub.is_file():
@@ -468,13 +468,13 @@ def _sync_after_manual_rename(vid: str, old_path: str, new_path: str) -> None:
             os.replace(tp, THUMB_DIR / f"{new_vid}.jpg")
         except OSError:
             pass
-    srt = WHISPER_SRT_DIR / f"{old_vid}.srt"
+    srt = TRANSCRIBE_SRT_DIR / f"{old_vid}.srt"
     if srt.exists():
         try:
-            os.replace(srt, WHISPER_SRT_DIR / f"{new_vid}.srt")
+            os.replace(srt, TRANSCRIBE_SRT_DIR / f"{new_vid}.srt")
         except OSError:
             pass
-    for fpath in (WHISPER_TRANSCRIPTS_FILE, TAGGER_TAGS_FILE):
+    for fpath in (TRANSCRIBE_TRANSCRIPTS_FILE, TAGGER_TAGS_FILE):
         data = read_json(fpath, {})
         if isinstance(data, dict) and old_vid in data:
             data[new_vid] = data.pop(old_vid)

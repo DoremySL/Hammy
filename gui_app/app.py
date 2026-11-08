@@ -37,6 +37,14 @@ except Exception:
         pass
 
 
+_TEMP_DIR = APP_ROOT / "_workspace" / "temp"
+_TEMP_DIR.mkdir(parents=True, exist_ok=True)
+os.environ["TMP"] = str(_TEMP_DIR)
+os.environ["TEMP"] = str(_TEMP_DIR)
+tempfile.tempdir = str(_TEMP_DIR)
+os.environ.setdefault("CUDA_CACHE_PATH", str(_TEMP_DIR / "cuda"))
+os.environ["WEBVIEW2_USER_DATA_FOLDER"] = str(APP_ROOT / "_workspace" / "webview")
+
 # ── 全局崩溃日志 ──
 CRASH_LOG = Path(tempfile.gettempdir()) / "video_rename_gui_crash.log"
 CRASH_LOG_PREV = Path(tempfile.gettempdir()) / "video_rename_gui_crash.prev.log"
@@ -620,7 +628,8 @@ def main() -> None:
     try:
         # Windows 上使用 winforms backend（pywebview 6.x 唯一支持），
         # 页面渲染由 WebView2 Runtime 提供
-        webview.start(func=on_started, private_mode=False)
+        webview.start(func=on_started, private_mode=False,
+                      storage_path=str(APP_ROOT / "_workspace" / "webview"))
     except Exception as e:
         _crash_log(f"webview.start error: {traceback.format_exc()}")
         _msgbox(

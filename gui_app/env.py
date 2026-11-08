@@ -13,7 +13,7 @@ def _resolve_ffmpeg(name: str) -> str:
 
 
 # 便携 Python（优先）；缺失时回退到系统 PATH / 当前解释器，使“不依赖便携 Python”
-# 的系统 Python 模式也能为 whisper/llama 建立虚拟环境。
+# 的系统 Python 模式也能为语音转录/llama 建立虚拟环境。
 def _resolve_portable_python_exe():
     portable = APP_ROOT / "python" / "python.exe"
     if portable.is_file():

@@ -4,7 +4,7 @@
 let _detailSeq = 0;
 
 function showDetail(v, quiet) {
-  if (v.status === 'pending' && (state.whisperEnabled || state.taggerEnabled)) {
+  if (v.status === 'pending' && (state.transcribeEnabled || state.taggerEnabled)) {
     showPendingDetail(v, quiet);
     return;
   }
@@ -42,23 +42,23 @@ async function showPendingDetail(v, quiet) {
   const d = $('#detail');
   d.innerHTML = '<div class="empty">加载中…</div>';
 
-  let tagger = null, whisper = null;
+  let tagger = null, transcript = null;
   const [p, w] = await Promise.all([
     state.taggerEnabled ? apiCall('get_tagger_tags', v.id).catch(() => null) : null,
-    state.whisperEnabled ? apiCall('get_whisper_transcript', v.id).catch(() => null) : null,
+    state.transcribeEnabled ? apiCall('get_transcribe_transcript', v.id).catch(() => null) : null,
   ]);
   if (seq !== _detailSeq) return;
-  tagger = p; whisper = w;
+  tagger = p; transcript = w;
 
   const taggerDone = !!(tagger && tagger.ok);
   const showTagger = taggerDone &&
     ((tagger.character_tags && tagger.character_tags.length) || (tagger.ip_tags && tagger.ip_tags.length));
-  const hasWhisper = whisper && whisper.ok && whisper.text;
+  const hasTranscript = transcript && transcript.ok && transcript.text;
 
-  if (!showTagger && !hasWhisper) {
+  if (!showTagger && !hasTranscript) {
     const hints = [];
     if (state.taggerEnabled && !taggerDone) hints.push('右键「生成辅助分类标签」');
-    if (state.whisperEnabled) hints.push('右键「语音转录」');
+    if (state.transcribeEnabled) hints.push('右键「语音转录」');
     d.innerHTML = `<div class="empty">该视频暂无分析数据` +
       (hints.length ? `<br/><span style="font-size:11px;color:var(--faint)">${hints.join(' / ')}</span>` : '') +
       `</div>`;
@@ -84,12 +84,12 @@ async function showPendingDetail(v, quiet) {
       <div class="chips">${ipTags}</div>
     </div>`;
   }
-  if (hasWhisper) {
-    const lang = whisper.language ? ` <small style="color:var(--faint)">(${esc(whisper.language)})</small>` : '';
+  if (hasTranscript) {
+    const lang = transcript.language ? ` <small style="color:var(--faint)">(${esc(transcript.language)})</small>` : '';
     html += `
     <div class="row">
       <h4>语音转录${lang}</h4>
-      <div class="transcript-box">${esc(whisper.text)}</div>
+      <div class="transcript-box">${esc(transcript.text)}</div>
     </div>`;
   }
   d.innerHTML = html;
