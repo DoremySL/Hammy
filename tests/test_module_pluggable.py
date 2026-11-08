@@ -1,4 +1,4 @@
-"""可插拔模块（llama/whisper/tagger）测试。
+"""可插拔模块（llama/语音转录/tagger）测试。
 """
 import json
 import shutil
@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import unittest
 
-from gui_app.config_store import _default_config, _tagger_defaults, _whisper_defaults
+from gui_app.config_store import _default_config, _tagger_defaults, _transcribe_defaults
 
 
 def _cfg(**over):
@@ -26,16 +26,16 @@ def _redirect_workspace_files(ws_dir):
 
     绑定语义：模块级导入的常量 patch 消费方命名空间（config_store /
     experimental），函数内延迟导入的常量 patch 源模块 workspace_paths
-    （tagger / faster_whisper / runner / llama_cpp）。
+    （tagger / transcribe_cpp / runner / llama_cpp）。
     """
     from gui_app import config_store, workspace_paths
     from gui_app.api_mixins import experimental
     config_file = ws_dir / "config.json"
     tagger_file = ws_dir / "tagger" / "config.json"
     tagger_tags = ws_dir / "tagger" / "tags.json"
-    whisper_file = ws_dir / "whisper" / "config.json"
-    whisper_tx = ws_dir / "whisper" / "transcripts.json"
-    whisper_srt = ws_dir / "whisper" / "srt"
+    transcribe_file = ws_dir / "transcribe" / "config.json"
+    transcribe_tx = ws_dir / "transcribe" / "transcripts.json"
+    transcribe_srt = ws_dir / "transcribe" / "srt"
     llama_file = ws_dir / "llama" / "config.json"
     mcfgs_file = ws_dir / "llama" / "model_configs.json"
     scan_cache = ws_dir / "llama" / "scan_cache.json"
@@ -43,26 +43,26 @@ def _redirect_workspace_files(ws_dir):
         # config_store（模块级导入）
         mock.patch.object(config_store, "CONFIG_FILE", config_file),
         mock.patch.object(config_store, "TAGGER_CONFIG_FILE", tagger_file),
-        mock.patch.object(config_store, "WHISPER_CONFIG_FILE", whisper_file),
+        mock.patch.object(config_store, "TRANSCRIBE_CONFIG_FILE", transcribe_file),
         mock.patch.object(config_store, "LLAMA_CONFIG_FILE", llama_file),
         mock.patch.object(config_store, "LLAMA_MODEL_CONFIGS_FILE", mcfgs_file),
         # experimental（模块级导入）
         mock.patch.object(experimental, "TAGGER_TAGS_FILE", tagger_tags),
-        mock.patch.object(experimental, "WHISPER_TRANSCRIPTS_FILE", whisper_tx),
-        mock.patch.object(experimental, "WHISPER_SRT_DIR", whisper_srt),
+        mock.patch.object(experimental, "TRANSCRIBE_TRANSCRIPTS_FILE", transcribe_tx),
+        mock.patch.object(experimental, "TRANSCRIBE_SRT_DIR", transcribe_srt),
         mock.patch.object(experimental, "LLAMA_CONFIG_FILE", llama_file),
-        # 源模块 workspace_paths（tagger / faster_whisper / runner 函数内导入）
+        # 源模块 workspace_paths（tagger / transcribe_cpp / runner 函数内导入）
         mock.patch.object(workspace_paths, "TAGGER_CONFIG_FILE", tagger_file),
         mock.patch.object(workspace_paths, "TAGGER_TAGS_FILE", tagger_tags),
-        mock.patch.object(workspace_paths, "WHISPER_CONFIG_FILE", whisper_file),
-        mock.patch.object(workspace_paths, "WHISPER_TRANSCRIPTS_FILE", whisper_tx),
-        mock.patch.object(workspace_paths, "WHISPER_SRT_DIR", whisper_srt),
+        mock.patch.object(workspace_paths, "TRANSCRIBE_CONFIG_FILE", transcribe_file),
+        mock.patch.object(workspace_paths, "TRANSCRIBE_TRANSCRIPTS_FILE", transcribe_tx),
+        mock.patch.object(workspace_paths, "TRANSCRIBE_SRT_DIR", transcribe_srt),
         mock.patch.object(workspace_paths, "LLAMA_SCAN_CACHE_FILE", scan_cache),
     ]
     paths = {
         "config": config_file, "tagger": tagger_file, "tagger_tags": tagger_tags,
-        "whisper": whisper_file, "whisper_tx": whisper_tx,
-        "whisper_srt": whisper_srt, "llama": llama_file, "mcfgs": mcfgs_file,
+        "transcribe": transcribe_file, "transcribe_tx": transcribe_tx,
+        "transcribe_srt": transcribe_srt, "llama": llama_file, "mcfgs": mcfgs_file,
         "scan_cache": scan_cache,
     }
     return patchers, paths
@@ -107,10 +107,10 @@ def _TAGGER_KEYMAP_DEFAULTS():
             for k, v in _tagger_defaults().items() if k in config_store._TAGGER_KEY_MAP}
 
 
-def _WHISPER_KEYMAP_DEFAULTS():
+def _TRANSCRIBE_KEYMAP_DEFAULTS():
     from gui_app import config_store
-    return {config_store._WHISPER_KEY_MAP[k]: v
-            for k, v in _whisper_defaults().items()}
+    return {config_store._TRANSCRIBE_KEY_MAP[k]: v
+            for k, v in _transcribe_defaults().items()}
 
 
 class TestAssemble(_WorkspaceTestCase):
@@ -120,9 +120,9 @@ class TestAssemble(_WorkspaceTestCase):
         from gui_app import config_store
         self._write_config(_cfg())
         exp = config_store.load_config()["experimental"]
-        # tagger + whisper + llama 2 开关，全部默认值
+        # tagger + 语音转录 + llama 2 开关，全部默认值
         self.assertEqual(exp, {
-            **_TAGGER_KEYMAP_DEFAULTS(), **_WHISPER_KEYMAP_DEFAULTS(),
+            **_TAGGER_KEYMAP_DEFAULTS(), **_TRANSCRIBE_KEYMAP_DEFAULTS(),
             "llama_enabled": False, "llama_integrate": False,
         })
         # 内部状态键（precision）不进设置段
@@ -131,14 +131,14 @@ class TestAssemble(_WorkspaceTestCase):
     def test_assemble_reflects_module_files(self):
         from gui_app import config_store
         self._write("tagger", {"enabled": True, "frames": 9})
-        self._write("whisper", {"enabled": True, "batch": True})
+        self._write("transcribe", {"enabled": True, "language": "en"})
         self._write("llama", {"enabled": True, "integrate": True})
         self._write_config(_cfg())
         exp = config_store.load_config()["experimental"]
         self.assertIs(exp["tagger_enabled"], True)
         self.assertEqual(exp["tagger_frames"], 9)
-        self.assertIs(exp["whisper_enabled"], True)
-        self.assertIs(exp["whisper_batch"], True)
+        self.assertIs(exp["transcribe_enabled"], True)
+        self.assertEqual(exp["transcribe_language"], "en")
         self.assertIs(exp["llama_enabled"], True)
         self.assertIs(exp["llama_integrate"], True)
 
@@ -146,29 +146,29 @@ class TestAssemble(_WorkspaceTestCase):
         # 组装只发生在返回值（内存）：磁盘 config.json 不写任何模块键
         from gui_app import config_store
         self._write("tagger", {"enabled": True, "frames": 9})
-        self._write("whisper", {"enabled": True, "batch": True})
+        self._write("transcribe", {"enabled": True, "language": "en"})
         self._write("llama", {"enabled": True, "integrate": True})
         self._write_config(_cfg())
         config_store.load_config()
         disk = self._disk_cfg()
         self.assertEqual(disk.get("experimental", {}), {})
         self.assertEqual(
-            [k for k in disk if "tagger" in k or "whisper" in k or "llama" in k],
+            [k for k in disk if "tagger" in k or "transcribe" in k or "llama" in k],
             [])
 
     def test_module_dir_deleted_still_usable(self):
         # 模拟卸载：模块文件夹整个删除后，load_config 用默认值组装，程序可用
         from gui_app import config_store
         self._write("tagger", {"enabled": True, "frames": 9})
-        self._write("whisper", {"enabled": True})
+        self._write("transcribe", {"enabled": True})
         self._write("llama", {"enabled": True, "integrate": True})
         self._write_config(_cfg())
         shutil.rmtree(self.paths["tagger"].parent)   # 卸载 tagger
-        shutil.rmtree(self.paths["whisper"].parent)  # 卸载 whisper
+        shutil.rmtree(self.paths["transcribe"].parent)  # 卸载语音转录
         shutil.rmtree(self.paths["llama"].parent)    # 卸载 llama
         exp = config_store.load_config()["experimental"]
         self.assertIs(exp["tagger_enabled"], False)
-        self.assertIs(exp["whisper_enabled"], False)
+        self.assertIs(exp["transcribe_enabled"], False)
         self.assertIs(exp["llama_enabled"], False)
         self.assertIs(exp["llama_integrate"], False)
         # 磁盘 config.json 的 experimental 段仍为空（无模块键残留）
@@ -180,7 +180,7 @@ class TestAssemble(_WorkspaceTestCase):
 # ═══════════════════════════════════════════════════════════════
 
 class TestSaveConfigSplit(_WorkspaceTestCase):
-    """save_config：experimental 提交的 tagger_*/whisper_* 路由到模块文件。"""
+    """save_config：experimental 提交的 tagger_*/transcribe_* 路由到模块文件。"""
 
     def test_tagger_keys_route_to_module_file(self):
         from gui_app import config_store
@@ -195,24 +195,24 @@ class TestSaveConfigSplit(_WorkspaceTestCase):
         # config.json：experimental 段为空（模块键不落盘）
         self.assertEqual(self._disk_cfg().get("experimental", {}), {})
 
-    def test_whisper_keys_route_to_module_file(self):
+    def test_transcribe_keys_route_to_module_file(self):
         from gui_app import config_store
         self._write_config(_cfg())
         config_store.save_config({
-            "experimental": {"whisper_enabled": True, "whisper_language": "en"},
+            "experimental": {"transcribe_enabled": True, "transcribe_language": "en"},
         })
-        self.assertEqual(self._read("whisper")["enabled"], True)
-        self.assertEqual(self._read("whisper")["language"], "en")
+        self.assertEqual(self._read("transcribe")["enabled"], True)
+        self.assertEqual(self._read("transcribe")["language"], "en")
         self.assertEqual(self._disk_cfg().get("experimental", {}), {})
 
     def test_mixed_exp_routes(self):
         from gui_app import config_store
         self._write_config(_cfg())
         config_store.save_config({
-            "experimental": {"tagger_threshold": 0.8, "whisper_batch": True},
+            "experimental": {"tagger_threshold": 0.8, "transcribe_language": "ja"},
         })
         self.assertEqual(self._read("tagger")["threshold"], 0.8)
-        self.assertEqual(self._read("whisper")["batch"], True)
+        self.assertEqual(self._read("transcribe")["language"], "ja")
         self.assertEqual(self._disk_cfg().get("experimental", {}), {})
 
     def test_rest_keys_stay_in_config(self):
@@ -299,36 +299,36 @@ class TestSetEnabled(unittest.TestCase):
             st = api.get_tagger_status()
         self.assertIs(st["enabled"], True)
 
-    # ── whisper ──
+    # ── 语音转录 ──
 
-    def test_whisper_enabled_writes_module_config(self):
+    def test_transcribe_enabled_writes_module_config(self):
         api = self._api()
-        with mock.patch("gui_app.faster_whisper.WHISPER_DIR",
+        with mock.patch("gui_app.transcribe_cpp.TRANSCRIBE_DIR",
                         self._tmp_dir()), \
-             mock.patch("gui_app.api_mixins.experimental.update_whisper_config") as uw:
-            r = api.set_whisper_enabled(True)
+             mock.patch("gui_app.api_mixins.experimental.update_transcribe_config") as uw:
+            r = api.set_transcribe_enabled(True)
         self.assertEqual(r, {"ok": True, "enabled": True})
         uw.assert_called_once()
-        cfg = {"enabled": False, "vad": True}
+        cfg = {"enabled": False, "language": ""}
         self.assertIsNone(uw.call_args[0][0](cfg))  # 原地修改，返回 None
         self.assertIs(cfg["enabled"], True)
 
-    def test_whisper_enabled_noop_when_not_installed(self):
+    def test_transcribe_enabled_noop_when_not_installed(self):
         api = self._api()
-        with mock.patch("gui_app.faster_whisper.WHISPER_DIR",
+        with mock.patch("gui_app.transcribe_cpp.TRANSCRIBE_DIR",
                         Path("C:/definitely/not/exists")), \
-             mock.patch("gui_app.api_mixins.experimental.update_whisper_config") as uw:
-            r = api.set_whisper_enabled(False)
+             mock.patch("gui_app.api_mixins.experimental.update_transcribe_config") as uw:
+            r = api.set_transcribe_enabled(False)
         self.assertEqual(r, {"ok": True, "enabled": False})
         uw.assert_not_called()
 
-    def test_get_whisper_status_reads_module_config(self):
+    def test_get_transcribe_status_reads_module_config(self):
         api = self._api()
-        with mock.patch("gui_app.faster_whisper.get_status",
+        with mock.patch("gui_app.transcribe_cpp.get_status",
                         return_value={"ready": True}), \
-             mock.patch("gui_app.api_mixins.experimental.load_whisper_config",
-                        return_value={"enabled": True, "vad": True}):
-            st = api.get_whisper_status()
+             mock.patch("gui_app.api_mixins.experimental.load_transcribe_config",
+                        return_value={"enabled": True, "language": ""}):
+            st = api.get_transcribe_status()
         self.assertIs(st["enabled"], True)
 
     # ── llama ──
@@ -412,53 +412,53 @@ class TestRemove(unittest.TestCase):
         self.assertTrue(inst.exists())
         self.assertTrue(mod.exists())  # 删除失败 → 模块文件夹不动
 
-    def test_remove_whisper_deletes_install_and_module_dir(self):
-        from gui_app.faster_whisper import remove_faster_whisper
+    def test_remove_transcribe_deletes_install_and_module_dir(self):
+        from gui_app.transcribe_cpp import remove_transcribe
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         base = Path(tmp.name)
-        inst = base / "faster-whisper"
+        inst = base / "transcribe"
         inst.mkdir()
-        mod = base / "whisper"
+        mod = base / "transcribe-ws"
         mod.mkdir()
-        with mock.patch("gui_app.faster_whisper.WHISPER_DIR", inst), \
-             mock.patch("gui_app.workspace_paths.WHISPER_CONFIG_FILE",
+        with mock.patch("gui_app.transcribe_cpp.TRANSCRIBE_DIR", inst), \
+             mock.patch("gui_app.workspace_paths.TRANSCRIBE_CONFIG_FILE",
                         mod / "config.json"):
-            r = remove_faster_whisper()
+            r = remove_transcribe()
         self.assertTrue(r["ok"])
         self.assertFalse(inst.exists())
         self.assertFalse(mod.exists())
 
-    def test_remove_whisper_not_installed_still_cleans_module_dir(self):
-        from gui_app.faster_whisper import remove_faster_whisper
+    def test_remove_transcribe_not_installed_still_cleans_module_dir(self):
+        from gui_app.transcribe_cpp import remove_transcribe
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         base = Path(tmp.name)
-        mod = base / "whisper"
+        mod = base / "transcribe-ws"
         mod.mkdir()
-        with mock.patch("gui_app.faster_whisper.WHISPER_DIR",
-                        base / "faster-whisper"), \
-             mock.patch("gui_app.workspace_paths.WHISPER_CONFIG_FILE",
+        with mock.patch("gui_app.transcribe_cpp.TRANSCRIBE_DIR",
+                        base / "transcribe"), \
+             mock.patch("gui_app.workspace_paths.TRANSCRIBE_CONFIG_FILE",
                         mod / "config.json"):
-            r = remove_faster_whisper()
+            r = remove_transcribe()
         self.assertTrue(r["ok"])
         self.assertFalse(mod.exists())
 
-    def test_remove_whisper_failure_keeps_module_dir(self):
-        from gui_app.faster_whisper import remove_faster_whisper
+    def test_remove_transcribe_failure_keeps_module_dir(self):
+        from gui_app.transcribe_cpp import remove_transcribe
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         base = Path(tmp.name)
-        inst = base / "faster-whisper"
+        inst = base / "transcribe"
         inst.mkdir()
-        mod = base / "whisper"
+        mod = base / "transcribe-ws"
         mod.mkdir()
-        with mock.patch("gui_app.faster_whisper.WHISPER_DIR", inst), \
-             mock.patch("gui_app.faster_whisper.shutil.rmtree",
+        with mock.patch("gui_app.transcribe_cpp.TRANSCRIBE_DIR", inst), \
+             mock.patch("gui_app.transcribe_cpp.shutil.rmtree",
                         side_effect=OSError("拒绝访问")), \
-             mock.patch("gui_app.workspace_paths.WHISPER_CONFIG_FILE",
+             mock.patch("gui_app.workspace_paths.TRANSCRIBE_CONFIG_FILE",
                         mod / "config.json"):
-            r = remove_faster_whisper()
+            r = remove_transcribe()
         self.assertFalse(r["ok"])
         self.assertTrue(inst.exists())
         self.assertTrue(mod.exists())  # 删除失败 → 模块文件夹不动
@@ -487,11 +487,11 @@ class TestRemove(unittest.TestCase):
 
 
 # ═══════════════════════════════════════════════════════════════
-# 模块配置存储（tagger / whisper config.json）
+# 模块配置存储（tagger / 语音转录 config.json）
 # ═══════════════════════════════════════════════════════════════
 
 class TestModuleConfigStore(_WorkspaceTestCase):
-    """load/update_tagger_config、load/update_whisper_config：roundtrip + 容错。"""
+    """load/update_tagger_config、load/update_transcribe_config：roundtrip + 容错。"""
 
     def test_tagger_defaults_when_missing(self):
         from gui_app.config_store import load_tagger_config
@@ -531,12 +531,12 @@ class TestModuleConfigStore(_WorkspaceTestCase):
         self.paths["tagger"].write_text(json.dumps([1, 2]), encoding="utf-8")
         self.assertEqual(load_tagger_config(), _tagger_defaults())
 
-    def test_whisper_defaults_when_missing(self):
-        from gui_app.config_store import load_whisper_config
-        self.assertEqual(load_whisper_config(), _whisper_defaults())
+    def test_transcribe_defaults_when_missing(self):
+        from gui_app.config_store import load_transcribe_config
+        self.assertEqual(load_transcribe_config(), _transcribe_defaults())
 
-    def test_whisper_roundtrip(self):
-        from gui_app.config_store import load_whisper_config, update_whisper_config
+    def test_transcribe_roundtrip(self):
+        from gui_app.config_store import load_transcribe_config, update_transcribe_config
 
         def _seed(c):
             c["enabled"] = True
@@ -547,25 +547,25 @@ class TestModuleConfigStore(_WorkspaceTestCase):
             c["max_chars"] = 1200
             return c
 
-        update_whisper_config(_seed)
-        update_whisper_config(_bump)
-        cfg = load_whisper_config()
+        update_transcribe_config(_seed)
+        update_transcribe_config(_bump)
+        cfg = load_transcribe_config()
         self.assertIs(cfg["enabled"], True)
         self.assertEqual(cfg["language"], "zh")
         self.assertEqual(cfg["max_chars"], 1200)
-        self.assertIs(cfg["batch"], False)   # 未覆盖键保留默认
+        self.assertIs(cfg["inject_timestamps"], False)   # 未覆盖键保留默认
 
-    def test_whisper_corrupt_tolerated(self):
-        from gui_app.config_store import load_whisper_config
-        self.paths["whisper"].parent.mkdir(parents=True, exist_ok=True)
-        self.paths["whisper"].write_text("{broken", encoding="utf-8")
-        self.assertEqual(load_whisper_config(), _whisper_defaults())
+    def test_transcribe_corrupt_tolerated(self):
+        from gui_app.config_store import load_transcribe_config
+        self.paths["transcribe"].parent.mkdir(parents=True, exist_ok=True)
+        self.paths["transcribe"].write_text("{broken", encoding="utf-8")
+        self.assertEqual(load_transcribe_config(), _transcribe_defaults())
 
-    def test_whisper_non_dict_tolerated(self):
-        from gui_app.config_store import load_whisper_config
-        self.paths["whisper"].parent.mkdir(parents=True, exist_ok=True)
-        self.paths["whisper"].write_text(json.dumps("x"), encoding="utf-8")
-        self.assertEqual(load_whisper_config(), _whisper_defaults())
+    def test_transcribe_non_dict_tolerated(self):
+        from gui_app.config_store import load_transcribe_config
+        self.paths["transcribe"].parent.mkdir(parents=True, exist_ok=True)
+        self.paths["transcribe"].write_text(json.dumps("x"), encoding="utf-8")
+        self.assertEqual(load_transcribe_config(), _transcribe_defaults())
 
 
 if __name__ == "__main__":

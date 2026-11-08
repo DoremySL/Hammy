@@ -128,11 +128,11 @@ class TestTaskHooks(unittest.TestCase):
 
     def test_detect_speech_pauses(self):
         api = self._api()
-        with mock.patch("gui_app.faster_whisper.get_status",
+        with mock.patch("gui_app.transcribe_cpp.get_status",
                         return_value={"ready": True}), \
              mock.patch("gui_app.api_mixins.experimental.load_config",
                         return_value=_default_config()), \
-             mock.patch("gui_app.faster_whisper.run_transcription_batch",
+             mock.patch("gui_app.transcribe_cpp.run_transcription_batch",
                         return_value={"ok": False, "per_video": [],
                                       "error": "x"}), \
              mock.patch("gui_app.llama_cpp.pause_for_task") as pause_mock:
