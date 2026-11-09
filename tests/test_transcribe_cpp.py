@@ -206,7 +206,7 @@ class TestInstallSyncsModel(unittest.TestCase):
                                   return_value=(0, ["ok"])),
                 mock.patch.object(tc, "venv_python_path",
                                   return_value=base / "venv" / "python"),
-                mock.patch.object(tc, "detect_gpu",
+                mock.patch.object(tc, "detect_gpu_cached",
                                   return_value={"has_nvidia": has_nvidia}),
                 mock.patch.object(tc, "_download_model", side_effect=_fake_download),
             ]
@@ -259,7 +259,7 @@ class TestInstallSyncsModel(unittest.TestCase):
                                    return_value=(0, ["ok"])), \
                  mock.patch.object(tc, "venv_python_path",
                                    return_value=base / "venv" / "python"), \
-                 mock.patch.object(tc, "detect_gpu",
+                 mock.patch.object(tc, "detect_gpu_cached",
                                    return_value={"has_nvidia": False}), \
                  mock.patch.object(tc, "_download_model", side_effect=_fail), \
                  mock.patch("gui_app.config_store.update_transcribe_config") as uwc:
@@ -285,7 +285,7 @@ class TestInstallSyncsModel(unittest.TestCase):
                                    return_value=(0, ["ok"])), \
                  mock.patch.object(tc, "venv_python_path",
                                    return_value=base / "venv" / "python"), \
-                 mock.patch.object(tc, "detect_gpu",
+                 mock.patch.object(tc, "detect_gpu_cached",
                                    return_value={"has_nvidia": False}), \
                  mock.patch.object(tc, "_download_model") as dl, \
                  mock.patch("gui_app.config_store.update_transcribe_config"):
@@ -310,7 +310,7 @@ class TestInstallSyncsModel(unittest.TestCase):
                  mock.patch.object(tc, "venv_python_path", return_value=vpy), \
                  mock.patch("gui_app.config_store.load_transcribe_config",
                             return_value={"model": "moss"}), \
-                 mock.patch.object(tc, "detect_gpu",
+                 mock.patch.object(tc, "detect_gpu_cached",
                                    return_value={"has_nvidia": False}), \
                  mock.patch.object(tc, "FFMPEG_EXE", ""), \
                  mock.patch.object(tc, "MODEL_DIR", base / "models"):
