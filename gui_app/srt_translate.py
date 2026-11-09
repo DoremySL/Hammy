@@ -18,14 +18,18 @@ _RETRY_SIZES = {16, 8}   # 这些批次大小有 1 次重试机会，其余失�
 # 翻译任务专用请求参数（不读取设置页的 ai_timeout / max_tokens /
 # temperature / top_p / response_format —— 那些面向视频重命名场景）：
 _REQUEST_TIMEOUT = 60    # 单次请求超时（秒）：整批 64 行翻译响应可能较慢
+_TEMPERATURE = 0.2       # 翻译用低温：输出更稳定、措辞更一致
 
-_SYSTEM_PROMPT = """你是一个字幕翻译专家。用户会提供带编号的字幕文本，你必须逐行翻译为简体中文（必须使用简体字，禁止使用繁体字）。
-规则：
-1. 忠实准确地进行翻译，允许使用直白或粗俗的描述，不应随意删减或篡改，不应回避或淡化，以保持作品的原貌。
-2. 每行输入对应一行输出，保持编号和行数完全一致
-3. 将翻译结果包裹在 <textarea> 标签内输出
-4. 标签内只输出“编号. 翻译”格式，不要添加解释或注释
-5. 即使某行很短或是语气词，也必须翻译，不得跳过"""
+_SYSTEM_PROMPT = """你是一个字幕翻译专家。用户会提供语音转录生成的带编号字幕文本，你必须逐行翻译为简体中文（必须使用简体字，禁止使用繁体字）。
+翻译要求：
+1. 忠实准确，允许直白或粗俗的描述，不删减、不回避，保持作品原貌。
+2. 修正转录错误的部分，译文口语自然、简短，适合屏幕显示，符合中文表达习惯。
+3. 人名、地名等专有名词前后译法保持一致。
+4. 每行独立翻译，不合并、不拆分、不调换顺序；即使某行很短或只是语气词，也必须翻译，不得跳过。
+输出格式：
+1. 每行输入对应一行输出，保持编号和行数完全一致
+2. 将翻译结果包裹在 <textarea> 标签内输出
+3. 标签内只输出“编号. 翻译”格式，不要添加解释或注释"""
 
 
 class TranslationCancelled(Exception):
@@ -102,6 +106,7 @@ def _call_ai(prompt: str, api_key: str, base_url: str, model: str) -> str:
             {'role': 'user', 'content': prompt},
         ],
         timeout=_REQUEST_TIMEOUT,
+        temperature=_TEMPERATURE,
     )
     if not (resp.choices and resp.choices[0].message):
         raise ValueError("AI 返回空内容")
@@ -183,10 +188,12 @@ def translate_srt_file(src_path: str, dest_path: str,
 
     def _translate_chunk(chunk: List[dict]) -> None:
         """翻译一个分片内的所有批次（带校验、重试；每批前检查取消）。"""
+        prev_ctx = None
         for i in range(0, len(chunk), _BATCH_SIZE):
             _check_stop()
-            _translate_batch_with_retry(chunk[i:i + _BATCH_SIZE],
-                                        api_key, base_url, model, log_fn)
+            prev_ctx = _translate_batch_with_retry(chunk[i:i + _BATCH_SIZE],
+                                                   api_key, base_url, model, log_fn,
+                                                   prev_ctx=prev_ctx)
 
     if chunk_count <= 1:
         _translate_chunk(segments)
@@ -204,24 +211,31 @@ def _translate_batch_with_retry(
     batch: List[dict],
     api_key: str, base_url: str, model: str,
     log_fn: Callable[[str], None],
-) -> None:
-    """翻译单个批次，带行数校验 + 分级重试/拆分。"""
+    prev_ctx: Optional[list] = None,
+) -> Optional[list]:
+    """翻译单个批次，带行数校验 + 分级重试/拆分。
+
+    成功返回本批最后两行的 (原文, 译文)，供下一批作上文参考；失败/保留原文返回 None。
+    """
     size = len(batch)
     if size == 0:
-        return
+        return None
 
     has_retry = size in _RETRY_SIZES
     max_attempts = 2 if has_retry else 1
 
     for attempt in range(max_attempts):
         try:
-            prompt = _build_prompt(batch)
+            prompt = _build_prompt(batch, prev_ctx)
             raw_response = _call_ai(prompt, api_key, base_url, model)
             trans_map = _extract_translation(raw_response)
 
             if len(trans_map) == size:
+                ctx = [(' '.join(seg['text'].split()),
+                        ' '.join(trans_map.get(j + 1, seg['text']).split()))
+                       for j, seg in enumerate(batch)][-2:]
                 _apply_map(batch, trans_map)
-                return
+                return ctx
 
             if attempt < max_attempts - 1:
                 continue
@@ -232,27 +246,34 @@ def _translate_batch_with_retry(
             if fatal:
                 # 认证/端点/配置类错误：重试与拆分均无意义，直接保留原文
                 log_fn(f"  片段 {batch[0]['idx']}~{batch[-1]['idx']} 因 {desc} 保留原文")
-                return
+                return None
             if attempt < max_attempts - 1:
                 continue
 
     # 所有尝试失败：拆分或放弃
     if size > 8:
         mid = size // 2
-        _translate_batch_with_retry(batch[:mid], api_key, base_url, model, log_fn)
-        _translate_batch_with_retry(batch[mid:], api_key, base_url, model, log_fn)
-    else:
-        log_fn(f"  片段 {batch[0]['idx']}~{batch[-1]['idx']} 翻译失败（重试耗尽），保留原文")
+        ctx1 = _translate_batch_with_retry(batch[:mid], api_key, base_url, model,
+                                           log_fn, prev_ctx)
+        ctx2 = _translate_batch_with_retry(batch[mid:], api_key, base_url, model,
+                                           log_fn, ctx1)
+        return ctx2 or ctx1
+    log_fn(f"  片段 {batch[0]['idx']}~{batch[-1]['idx']} 翻译失败（重试耗尽），保留原文")
+    return None
 
 
 # ── 提示词构建 & 响应解析 ──
 
-def _build_prompt(batch: List[dict]) -> str:
-    """构建翻译提示词（textarea 包裹要求）。"""
-    parts = [
-        "###请翻译以下内容（保持编号对齐，结果用 <textarea> 包裹）",
-        "<textarea>",
-    ]
+def _build_prompt(batch: List[dict], prev_ctx: Optional[list] = None) -> str:
+    """构建翻译提示词；prev_ctx 为上一批结尾的 (原文, 译文) 参考，用于延续语境与译名。"""
+    parts = []
+    if prev_ctx:
+        parts.append("###上文参考（仅供理解语境与统一译名，不要翻译，不要输出）：")
+        for src, dst in prev_ctx:
+            parts.append(f"{src} → {dst}")
+    n = len(batch)
+    parts.append(f"###请翻译以下内容（共 {n} 行，编号 1~{n}；保持编号对齐，结果用 <textarea> 包裹）")
+    parts.append("<textarea>")
     for j, seg in enumerate(batch):
         parts.append(f"{j+1}. {seg['text']}")
     parts.append("</textarea>")

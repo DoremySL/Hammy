@@ -13,7 +13,7 @@ from .env import APP_ROOT, PYTHON_EXE, FFMPEG_EXE, make_logger
 from .installer import (
     PYPI_MIRRORS, DEFAULT_PYPI_MIRROR, UV_TIMEOUT_SEC,
     RC_CANCEL, RC_TIMEOUT,
-    detect_gpu,
+    detect_gpu_cached,
     ensure_uv as _ensure_uv,
     venv_python_path,
     run_subprocess_streaming as _run_subprocess_streaming,
@@ -306,8 +306,10 @@ def install_dependencies(pypi_mirror: str = DEFAULT_PYPI_MIRROR,
 
     # ── 步骤 3：安装引擎 ──
     steps.push(3)
-    has_nvidia = bool(detect_gpu().get("has_nvidia"))
+    has_nvidia = bool(detect_gpu_cached().get("has_nvidia"))
     _lf = (lambda m: _log(m, log_fn)) if log_fn else _log
+    # 手动投放的本地 wheel 名单，安装后的清理需跳过
+    local_wheel_names = {p.name for p in (_local_wheels() or [])}
     if has_nvidia:
         _log("━━ 步骤 3/4：安装引擎（CUDA，GitHub release）━━", log_fn)
 
@@ -341,8 +343,14 @@ def install_dependencies(pypi_mirror: str = DEFAULT_PYPI_MIRROR,
         return r
     if rc != 0:
         return {"ok": False, "error": f"安装引擎失败: {out[-500:]}"}
-    # 安装成功后清理临时 wheel 目录
-    shutil.rmtree(WHEELS_DIR, ignore_errors=True)
+    # 安装成功后清理下载的临时 wheel（保留手动投放的本地 wheel）
+    if WHEELS_DIR.is_dir():
+        for whl in WHEELS_DIR.glob("*.whl"):
+            if whl.name not in local_wheel_names:
+                try:
+                    whl.unlink()
+                except OSError:
+                    pass
 
     # ── 步骤 4：下载模型 ──
     steps.push(4)
@@ -424,10 +432,9 @@ def run_transcription_batch(video_paths: List[str],
     if TRANSCRIBE_MODELS[current].get("family") not in ("whisper", "moss"):
         return {"ok": False, "per_video": [],
                 "error": "当前模型不支持字幕转录（仅 whisper-turbo / MOSS 可用）"}
-    status = get_status()
-    if not status["ready"]:
+    venv_python = venv_python_path(VENV_DIR)
+    if not (VENV_DIR.is_dir() and venv_python.exists()):
         return {"ok": False, "per_video": [], "error": "语音转录未安装或未就绪"}
-
     model_path = _model_path(current)
     if not model_path:
         return {"ok": False, "per_video": [],
@@ -435,7 +442,7 @@ def run_transcription_batch(video_paths: List[str],
     if not FFMPEG_EXE:
         return {"ok": False, "per_video": [], "error": "未找到 ffmpeg，无法提取音频"}
 
-    backend = "cuda" if detect_gpu().get("has_nvidia") else "cpu"
+    backend = "cuda" if detect_gpu_cached().get("has_nvidia") else "cpu"
     params = {
         "video_paths": video_paths,
         "model_path": str(model_path),
@@ -508,7 +515,7 @@ def run_inject_batch(video_paths: List[str],
         return {"ok": False, "texts": {}, "error": "未找到 ffmpeg，无法提取音频"}
 
     inject_key = get_inject_model()
-    backend = "cuda" if detect_gpu().get("has_nvidia") else "cpu"
+    backend = "cuda" if detect_gpu_cached().get("has_nvidia") else "cpu"
     params = {
         "video_paths": video_paths,
         "model_path": str(_model_path(inject_key)),
@@ -518,6 +525,7 @@ def run_inject_batch(video_paths: List[str],
         "ffmpeg": FFMPEG_EXE,
         "venv_site_packages": str(VENV_DIR / "Lib" / "site-packages"),
         "max_chars": max(0, int(max_chars or 0)),
+        "inject_win_sec": INJECT_WIN_SEC.get(TRANSCRIBE_MODELS[inject_key]["family"], 30.0),
         "mode": "text",
     }
 
@@ -586,7 +594,6 @@ max_chars = int(params.get('max_chars', 0) or 0)  # 注入模式的提前停止�
 mode = params.get('mode', 'srt')  # srt=字幕转录 / text=注入文本
 
 FAMILY_CHUNK_SEC = {'moss': 1800}
-INJECT_WIN_SEC = {'sensevoice': 30.0, 'whisper': 60.0, 'moss': 300.0}
 
 def plog(msg):
     print(json.dumps({'log': msg}, ensure_ascii=False), flush=True)
@@ -631,9 +638,8 @@ def _srt_ts(ms):
     return f'{h:02d}:{m:02d}:{s:02d},{int(ms) % 1000:03d}'
 
 
-def _to_srt(segments, offset_ms=0):
+def _to_srt(segments, offset_ms=0, idx=1):
     lines = []
-    idx = 1
     for seg in segments:
         t = (getattr(seg, 'text', '') or '').strip()
         if not t:
@@ -643,7 +649,7 @@ def _to_srt(segments, offset_ms=0):
         lines.append(t)
         lines.append('')
         idx += 1
-    return '\n'.join(lines)
+    return '\n'.join(lines), idx
 
 
 def _extract_wav(vp, out_wav):
@@ -665,7 +671,7 @@ def transcribe_one(i, vp):
             dur = len(audio) / sr
             if mode == 'text':
                 # 注入模式：分窗推理，达标即停
-                win = INJECT_WIN_SEC.get(family, 30.0)
+                win = float(params.get('inject_win_sec', 30.0) or 30.0)
                 texts = []
                 acc = 0
                 pos = 0.0
@@ -688,16 +694,18 @@ def transcribe_one(i, vp):
                     chunk = 0
                 if not chunk:
                     res = sess.run(audio, **run_kw)
-                    srt = _to_srt(res.segments)
+                    srt, _ = _to_srt(res.segments)
                     lang = getattr(res, 'language', '') or ''
                 else:
                     parts = []
                     lang = ''
                     pos = 0.0
+                    idx = 1
                     while pos < dur - 0.1:
                         seg_audio = audio[int(pos * sr): int((pos + chunk) * sr)]
                         res = sess.run(seg_audio, **run_kw)
-                        parts.append(_to_srt(res.segments, offset_ms=int(pos * 1000)))
+                        part, idx = _to_srt(res.segments, offset_ms=int(pos * 1000), idx=idx)
+                        parts.append(part)
                         lang = lang or (getattr(res, 'language', '') or '')
                         pos += chunk
                     srt = '\n'.join(parts)

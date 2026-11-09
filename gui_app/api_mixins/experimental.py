@@ -283,9 +283,6 @@ class ExperimentalMixin:
         if not _gpu_task_lock.acquire(blocking=False):
             return {"ok": False, "results": {}, "error": "已有 GPU 任务在运行，请等待完成后再试"}
         _gpu_stop_event.clear()
-        if _gpu_stop_event.is_set():
-            _gpu_task_lock.release()
-            return {"ok": False, "results": {}, "error": "已停止"}
 
         vid_list = [item[0] for item in items]
         video_paths = [item[1] for item in items]
@@ -653,9 +650,6 @@ class ExperimentalMixin:
         if not _gpu_task_lock.acquire(blocking=False):
             return {"ok": False, "results": {}, "error": "已有 GPU 任务在运行，请等待完成后再试"}
         _gpu_stop_event.clear()
-        if _gpu_stop_event.is_set():
-            _gpu_task_lock.release()
-            return {"ok": False, "results": {}, "error": "已停止"}
 
         vid_list = [item[0] for item in items]
         video_paths = [item[1] for item in items]
@@ -807,9 +801,6 @@ class ExperimentalMixin:
         if not _gpu_task_lock.acquire(blocking=False):
             return {"ok": False, "exported": 0, "errors": ["已有 GPU 任务在运行，请等待完成后再试"]}
         _gpu_stop_event.clear()
-        if _gpu_stop_event.is_set():
-            _gpu_task_lock.release()
-            return {"ok": False, "exported": 0, "errors": ["已停止"]}
 
         try:
             cfg = load_config()

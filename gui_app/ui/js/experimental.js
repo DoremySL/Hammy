@@ -233,8 +233,8 @@ function _bindManageButtons(uvStatus, llamaStatus, pStatus, wStatus, rvStatus) {
   const wInstallBtn = $('#btn-transcribe-install');
   if (wInstallBtn && !wStatus.ready) wInstallBtn.addEventListener('click', async () => {
     const bundles = [
-      { value: 'whisper+sv', name: 'whisper-turbo + SenseVoice', desc: '多语言快速字幕 + 重命名语音辅助（推荐，约 1.1GB）', recommended: true },
-      { value: 'moss+sv', name: 'MOSS-Diarize + SenseVoice', desc: '中日影视字幕（说话人/热词）+ 重命名语音辅助（约 1.2GB）' },
+      { value: 'whisper+sv', name: 'whisper-turbo + SenseVoice', desc: '速度快，显存占用低', recommended: true },
+      { value: 'moss+sv', name: 'MOSS-Diarize + SenseVoice', desc: '字幕质量更好，显存不够时速度慢' },
     ];
     const sel = await showMirrorSelectDialog({
       api: 'get_transcribe_mirrors',
@@ -386,7 +386,8 @@ async function showMirrorSelectDialog(opts) {
   if (opts.showModelSelect && Array.isArray(opts.models) && opts.models.length) {
     sections.push(mirrorSection({
       title: '模型选择', hint: '安装时下载所选模型，其余模型可在安装后下载切换', name: 'model-select',
-      items: opts.models.map(m => ({ value: m.key, name: m.title, desc: m.desc || '', recommended: !!m.recommended })),
+      items: opts.models.map(m => ({ value: m.value ?? m.key, name: m.name ?? m.title,
+                                     desc: m.desc || '', recommended: !!m.recommended })),
     }));
   }
   if (Array.isArray(mirrors.pypi) && mirrors.pypi.length) {
@@ -783,7 +784,7 @@ function _renderTranscribeSection(exp, wStatus) {
           <input type="checkbox" id="transcribe-enable-toggle" ${enabled ? 'checked' : ''} ${!ready ? 'disabled' : ''}/>
         </label>
         <div class="exp-head-main">
-          <div class="exp-title-row"><strong>语音转录（transcribe.cpp）</strong>${_statusBadge(wStatus || {})}</div>
+          <div class="exp-title-row"><strong>Transcribe.cpp 语音转录</strong>${_statusBadge(wStatus || {})}</div>
           <div class="exp-desc">转录视频语音为字幕，辅助 AI 重命名，支持导出与翻译。</div>
         </div>
         <div class="exp-head-actions">
@@ -794,15 +795,15 @@ function _renderTranscribeSection(exp, wStatus) {
       <div id="transcribe-cfg-panel" class="exp-cfg-panel" style="display:${state.settingsOpen.has('transcribe-cfg') ? 'block' : 'none'}">
         <div class="exp-input-row">
           <div class="field">
-            <label data-tip="右键转录 / 导出字幕使用的模型；点击未下载的模型可直接下载">字幕模型</label>
+            <label data-tip="右键转录/导出字幕时使用，如需提高输入llm的文本质量可先右键转录">字幕模型</label>
             ${modelSel}
           </div>
           <div class="field">
-            <label data-tip="集成到自动重命名后，为未转录视频生成参考文本的模型（SenseVoice 最快；高配用户可选 whisper-turbo / MOSS）">辅助重命名模型</label>
+            <label data-tip="优先使用右键转录的文本，未转录视频在自动重命名时使用该模型生成参考文本">辅助重命名模型</label>
             ${injectSel}
           </div>
           <div class="field">
-            <label data-tip="开启后，自动重命名时对未转录过的视频自动用辅助重命名模型生成语音参考（仅供 AI 参考，不产生字幕、不显示角标）">集成到自动重命名</label>
+            <label data-tip="开启后，自动重命名时对未转录过的视频自动用辅助重命名模型生成语音参考">集成到自动重命名</label>
             ${_boolDd('transcribe-integration-dd', exp.transcribe_integration !== false)}
           </div>
         </div>
