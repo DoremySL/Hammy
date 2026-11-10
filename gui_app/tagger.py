@@ -42,10 +42,11 @@ MODEL_DIR = TAGGER_DIR / "models"  # 模型根目录（魔搭 作者/仓库 布�
 REPO_ID = "DoremySL/Hammy-tagger-dual"  # 双模型仓库：H 504×336 横 / V 336×504 竖
 
 TAG_THRESHOLD = 0.75
-TAG_ZH_FILE = "tag_zh.json"  # 标签中文翻译表
+PRESET_TAGS_FILE = "preset_tags.json"  # 模型仓库预设标签包（安装时导入标签检索）
+TAGGER_GROUP = "Hammy-tagger"  # 导入条目固定分组
 
 # 仓库文件：ONNX 仅安装期需要，共享文件长期保留
-SHARED_FILES = ("config.json", "char_ip_map.json", "tag_zh.json", "manifest.json",
+SHARED_FILES = ("config.json", "char_ip_map.json", PRESET_TAGS_FILE, "manifest.json",
                 "hammy_tagger.py", "hammy_server.py", "build_trt.py")
 _CRITICAL_SHARED = ("config.json", "char_ip_map.json", "hammy_tagger.py", "hammy_server.py")
 _ENGINES = ("tagger-H.trt", "tagger-V.trt")
@@ -111,27 +112,104 @@ def resolve_precision(setting: str = "auto", gpu: Optional[Dict[str, Any]] = Non
     return "fp32"
 
 
-_zh_cache: Dict[str, Any] = {"mtime": None, "map": {}}
+_lib_cache: Dict[str, Any] = {"mtime": None, "map": None}
 
 
-def load_tag_zh() -> Dict[str, str]:
-    """标签中文翻译表（danbooru 标签 → 中文名）。"""
-    global _zh_cache
-    path = _repo_dir() / TAG_ZH_FILE
+def load_tag_library_map() -> Optional[Dict[str, str]]:
+    """Hammy-tagger 组 英文标签名→中文名 映射（mtime 缓存）。
+
+    返回 None = 库缺失/损坏/无该组条目（不加过滤）；同 related 重复取首见。
+    """
+    from .workspace_paths import TAG_LIBRARY_FILE
+    from .workspace_store import read_json
+    global _lib_cache
     try:
-        mtime = path.stat().st_mtime
+        mtime = TAG_LIBRARY_FILE.stat().st_mtime
     except OSError:
-        _zh_cache = {"mtime": None, "map": {}}
-        return {}
-    if _zh_cache["mtime"] != mtime:
+        _lib_cache = {"mtime": None, "map": None}
+        return None
+    if _lib_cache["mtime"] == mtime:
+        return _lib_cache["map"]
+    mapping: Optional[Dict[str, str]] = None
+    try:
+        data = read_json(TAG_LIBRARY_FILE, None)
+        items = data.get("items") if isinstance(data, dict) else None
+        if isinstance(items, list):
+            lib: Dict[str, str] = {}
+            dup: List[str] = []
+            for it in items:
+                if not isinstance(it, dict) or str(it.get("group") or "") != TAGGER_GROUP:
+                    continue
+                en = str(it.get("related") or "").strip()
+                zh = str(it.get("keyword") or "").strip()
+                if not en or not zh:
+                    continue
+                if en in lib:
+                    dup.append(en)
+                    continue  # 首见为准
+                lib[en] = zh
+            if lib:
+                mapping = lib
+            if dup:
+                _log(f"[标签检索] Hammy-tagger 组存在重复英文名（取首见为准，请清理）: "
+                     + ", ".join(sorted(set(dup))))
+    except Exception as e:
+        _log(f"[标签检索] 标签库解析失败，本次不过滤降级为仅英文: {e}")
+        mapping = None
+    _lib_cache = {"mtime": mtime, "map": mapping}
+    return mapping
+
+
+def import_preset_tags(log_fn: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
+    """安装尾部导入预设标签包到标签检索库（幂等，按英文名去重）；关闭态顺带切换为开启。"""
+    from .prompts import load_tag_library, save_tag_library
+    from .workspace_store import read_json
+    src = _repo_dir() / PRESET_TAGS_FILE
+    if not src.is_file():
+        _log("[标签检索] 预设标签包缺失，跳过导入", log_fn)
+        return {"imported": 0, "skipped": 0, "missing": True}
+    data = read_json(src, None)
+    entries = data if isinstance(data, list) else None
+    if entries is None:
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            m = data.get("map") if isinstance(data, dict) else None
-            zh = {str(k): str(v) for k, v in m.items() if v} if isinstance(m, dict) else {}
+            d = data.get("items") if isinstance(data, dict) else None
+            entries = d if isinstance(d, list) else None
         except Exception:
-            zh = {}
-        _zh_cache = {"mtime": mtime, "map": zh}
-    return _zh_cache["map"]
+            entries = None
+    if not entries:
+        _log("[标签检索] 预设标签包格式无效，跳过导入", log_fn)
+        return {"imported": 0, "skipped": 0}
+    lib = load_tag_library()  # {mode, disabled_groups, items}
+    items = lib["items"]
+    lib_en = {it["related"] for it in items if it["group"] == TAGGER_GROUP}
+    lib_kw = {it["keyword"] for it in items}
+    fresh, skipped = [], 0
+    for it in entries:
+        if not isinstance(it, dict):
+            continue
+        en = str(it.get("related") or "").strip()
+        zh = str(it.get("keyword") or "").strip()
+        if not en or not zh:
+            continue
+        if en in lib_en or zh in lib_kw:
+            skipped += 1
+            continue
+        entry = {"keyword": zh,
+                 "description": str(it.get("description") or "").strip(),
+                 "related": en,
+                 "group": TAGGER_GROUP}
+        items.append(entry)
+        lib_en.add(en)
+        lib_kw.add(zh)
+        fresh.append(entry)
+    # 缺省开功能：off 档切换为 on，on/enhanced 不动
+    mode = "on" if lib["mode"] == "off" else lib["mode"]
+    mode_changed = mode != lib["mode"]
+    if fresh or mode_changed:
+        save_tag_library(items, mode, lib["disabled_groups"])
+    _log(f"[标签检索] 预设标签导入完成: 新增 {len(fresh)} 条，跳过 {skipped} 条（已存在）"
+         + ("，标签检索已自动开启" if mode_changed else ""), log_fn)
+    return {"imported": len(fresh), "skipped": skipped, "mode": mode}
 
 
 def get_status() -> Dict[str, Any]:
@@ -256,11 +334,11 @@ def install_dependencies(
         if dl.get("cancelled"):
             return {"ok": False, "cancelled": True, "error": "模型下载已取消"}
         if not dl.get("ok"):
-            core_failed = [f for f in dl.get("failed") or [] if f.get("file") != TAG_ZH_FILE]
+            core_failed = [f for f in dl.get("failed") or [] if f.get("file") != PRESET_TAGS_FILE]
             if dl.get("error") or core_failed:
                 err = dl.get("error") or str(core_failed[0].get("error", ""))[:200]
                 return {"ok": False, "error": f"模型下载失败: {err}"}
-            _log("标签翻译表下载失败（不影响标签生成，中文显示将回退英文）", log_fn)
+            _log("预设标签包下载失败（不影响标签生成，下次分析前会自动补下载）", log_fn)
     finally:
         models_downloader.end_download()
 

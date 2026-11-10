@@ -141,7 +141,6 @@ _TAGGER_KEY_MAP = {
     "enabled": "tagger_enabled",
     "frames": "tagger_frames",
     "threshold": "tagger_threshold",
-    "output_zh": "tagger_output_zh",
 }
 _TRANSCRIBE_KEY_MAP = {
     "enabled": "transcribe_enabled",
@@ -162,8 +161,7 @@ _LLAMA_KEYS = frozenset({"llama_enabled", "llama_integrate"})
 
 def _tagger_defaults() -> Dict[str, Any]:
     """tagger 模块配置默认值（文件缺失/损坏时的兜底）。"""
-    return {"enabled": False, "frames": 15, "threshold": 0.75,
-            "output_zh": True, "precision": ""}
+    return {"enabled": False, "frames": 15, "threshold": 0.75, "precision": ""}
 
 
 def _transcribe_defaults() -> Dict[str, Any]:

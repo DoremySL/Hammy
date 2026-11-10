@@ -31,7 +31,7 @@ function _resetModalAnchor() {
   const bg = $('#modal'), m = bg.querySelector('.modal');
   bg.style.alignItems = '';
   bg.style.paddingTop = '';
-  if (m) m.style.marginTop = '';
+  if (m) { m.style.marginTop = ''; m.style.maxHeight = ''; }
 }
 async function _pinModalAnchor() {
   const bg = $('#modal'), m = bg.querySelector('.modal');
@@ -41,6 +41,7 @@ async function _pinModalAnchor() {
   bg.style.paddingTop = '0px';
   bg.style.alignItems = 'flex-start';
   m.style.marginTop = top + 'px';
+  m.style.maxHeight = `calc(100vh - ${top + 50}px)`;
 }
 async function settingsLeaveGuard() {
   if (state.settings_tab === 'tags' && !await ptLeaveGuard()) return false;
@@ -420,7 +421,7 @@ async function renderWorkspaceTabWrapper() {
 async function renderTagsTabWrapper() {
   const body = $('#modal-body');
   await renderTabWithLoading(body,
-    () => apiCall('get_priority_tags'),
+    () => apiCall('get_tag_library'),
     (pt) => renderTagsTab(pt),
     () => renderSettings()
   );

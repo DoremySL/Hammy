@@ -132,9 +132,9 @@ def _extract_first_json(text: str, require_key: Optional[str] = "title") -> Opti
 class AnalyzeResult(NamedTuple):
     """analyze_frames 的返回值。
 
-    recalled：增强模式下词面+向量去重后的候选关键词数（-1 = 非增强模式，
-    供管线完成日志决定是否追加「召回N个关键词」）。
-    recalled_keywords：与 recalled 对应的关键词列表（调试日志用，仅增强模式填充）。
+    recalled：增强档=第二轮向量候选数，供管线完成日志追加「召回N个关键词」
+    （-1 = 未发生向量召回：开启档首轮字面注入 / 降级 / 关闭 均不追加）。
+    recalled_keywords：与 recalled 对应的关键词列表（调试日志用）。
     """
     title: str
     plot: str
@@ -162,8 +162,8 @@ _THUMB_TIME_RE = re.compile(r"\d{1,3}:\d{2}:\d{2}")
 
 def _build_messages(frames: List[Frame], config: Config, video_path: str,
                     duration: float, container_title: str = "",
-                    extra_meta: str = "", priority_section: str = "") -> list:
-    """构建 API 请求消息；priority_section 为单轮全量注入的标签段落（RAG 首轮传空）。"""
+                    extra_meta: str = "", recall_section: str = "") -> list:
+    """构建 API 请求消息；recall_section 为首轮注入的字面召回标签段落（无命中传空）。"""
     vid_name = Path(video_path).name
     dur_str = _fmt_hms(duration) if duration > 0 else "未知"
     meta_parts = [f"- 原始文件名: {vid_name}", f"- 视频总时长: {dur_str}"]
@@ -185,7 +185,7 @@ def _build_messages(frames: List[Frame], config: Config, video_path: str,
                              "image_url": {"url": f"data:image/jpeg;base64,{frame.b64}"}})
     user_content.append({"type": "text", "text": meta_info})
     user_content.append({"type": "text",
-                         "text": config.prompt + ("\n\n" + priority_section if priority_section else "")})
+                         "text": config.prompt + ("\n\n" + recall_section if recall_section else "")})
     messages.append({"role": "user", "content": user_content})
     return messages
 
@@ -372,17 +372,16 @@ _REFINE_TAIL = "输出修订后的完整 JSON（结构、字段顺序与首轮�
 def _refine_round(client: OpenAIClient, model: str, messages: list,
                   result: AnalyzeResult, config: Config,
                   stop_event: threading.Event, video_path: str,
-                  container_title: str, extra_meta: str, recall_meta: Optional[str],
+                  container_title: str, extra_meta: str,
                   slot_id: Optional[int], tag_recall) -> AnalyzeResult:
-    """第二轮：召回候选 → assistant(首轮原文)+user(候选) 追加请求修订，失败沿用首轮。"""
+    """第二轮：纯向量召回 → assistant(首轮原文)+user(候选) 追加请求修订，失败沿用首轮。"""
     parts = {
         "plot": result.plot,
         "tags": " ".join([*result.tags, result.title]),
         "filename": " ".join(x for x in (Path(video_path).stem, container_title) if x),
-        # recall_meta 为 None 时回退提示词 meta（旧调用方兼容），有值则按其独立 scope
-        "aux": extra_meta if recall_meta is None else recall_meta,
+        "aux": extra_meta,
     }
-    candidates = tag_recall.recall(parts)
+    candidates = tag_recall.recall_dense(parts)
     if stop_event.is_set():
         return AnalyzeResult("", "", [], 0, "已取消", "cancel")
     if not candidates:
@@ -425,18 +424,24 @@ def analyze_frames(
     client: OpenAIClient, model: str, frames: List[Frame], config: Config,
     stop_event: threading.Event, video_path: str, duration: float,
     container_title: str = "", extra_meta: str = "",
-    recall_meta: Optional[str] = None,
-    slot_id: Optional[int] = None, priority_section: str = "",
-    tag_recall=None,
+    literal_meta: Optional[str] = None,
+    slot_id: Optional[int] = None, tag_recall=None,
 ) -> AnalyzeResult:
-    """调用 AI 分析关键帧；tag_recall 非 None 时走两轮 RAG（失败回退首轮）。"""
+    """调用 AI 分析关键帧；literal_meta（tagger 名单）仅作检索查询词不注入，
+    enhanced 且向量可用时追加第二轮向量召回修订（失败沿用首轮）。"""
     if not frames:
         logger.warning("无有效帧可发送")
         return AnalyzeResult("", "", [], 0, "无有效帧", "other")
 
+    recall_section = ""
+    if tag_recall is not None:
+        recall_section, _ = tag_recall.literal_injection({
+            "filename": " ".join(x for x in (Path(video_path).stem, container_title) if x),
+            "aux": literal_meta or "",
+        })
     messages = _build_messages(frames, config, video_path, duration,
                                container_title, extra_meta,
-                               priority_section=priority_section)
+                               recall_section=recall_section)
     max_attempts = config.retry_times + 1
     last_error = "未知错误"
     last_error_kind = "other"
@@ -466,8 +471,10 @@ def analyze_frames(
     if result is None:
         return AnalyzeResult("", "", [], config.retry_times, last_error, last_error_kind)
 
-    if tag_recall is not None and result.title and not stop_event.is_set():
+    if tag_recall is not None and tag_recall.has_dense \
+            and result.title and not stop_event.is_set():
         result = _refine_round(client, model, messages, result, config, stop_event,
-                               video_path, container_title, extra_meta, recall_meta,
+                               video_path, container_title, extra_meta,
                                slot_id, tag_recall)
+    # 首轮字面注入不计入 recalled（完成日志不追加召回后缀）
     return result._replace(retries=attempt)

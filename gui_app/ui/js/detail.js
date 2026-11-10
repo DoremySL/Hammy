@@ -67,9 +67,9 @@ async function showPendingDetail(v, quiet) {
 
   let html = '';
   if (showTagger) {
-    // 输出中文开启时后端附带 zh 字段：显示「英文 / 中文名」；点击搜索仍用英文 name
+    // data-tagger-tag=英文映射键；data-zh=库中文名
     const tagChip = t =>
-      `<button class="chip" data-web-tag="${esc(t.name)}">${esc(t.zh ? `${t.name} / ${t.zh}` : t.name)} <small>${t.score != null ? (t.score * 100).toFixed(0) : '—'}%</small></button>`;
+      `<button class="chip" data-tagger-tag="${esc(t.name)}"${t.zh ? ` data-zh="${esc(t.zh)}"` : ''}>${esc(t.zh ? `${t.zh} / ${t.name}` : t.name)} <small>${t.score != null ? (t.score * 100).toFixed(0) : '—'}%</small></button>`;
     const charTags = (tagger.character_tags || []).map(tagChip).join('')
       || '<span class="filemeta">未识别到角色</span>';
     const ipTags = (tagger.ip_tags || []).map(tagChip).join('')
@@ -93,14 +93,17 @@ async function showPendingDetail(v, quiet) {
     </div>`;
   }
   d.innerHTML = html;
-  d.querySelectorAll('.chip[data-web-tag]').forEach(ch => {
-    ch.addEventListener('click', () => onWebTagClick(ch.dataset.webTag));
-    ch.addEventListener('contextmenu', e => showChipMenu(e, ch.dataset.webTag, true));
+  d.querySelectorAll('.chip[data-tagger-tag]').forEach(ch => {
+    ch.addEventListener('click', () => onTaggerTagClick(ch.dataset.taggerTag));
+    // 右键：映射态=编辑标签；降级态=加入标签检索（related 预填英文名）
+    const mapped = !!ch.dataset.zh;
+    ch.addEventListener('contextmenu', e => showChipMenu(e, ch.dataset.taggerTag,
+      { webSearch: true, edit: mapped, asRelated: !mapped,
+        group: mapped ? '' : 'Hammy-tagger' }));
   });
 }
 
-async function onWebTagClick(name) {
-  if (!await showConfirm(`使用搜索引擎搜索「${name}」？`)) return;
+async function webSearchTag(name) {
   try {
     const r = await apiCall('open_bing_search', name);
     if (!r || !r.ok) toast('打开浏览器失败: ' + ((r && r.error) || '未知错误'), 'err');
@@ -125,9 +128,43 @@ function onTagClick(tag) {
   }
 }
 
+function onTaggerTagClick(name) {
+  setDropdownValue($('#searchMode'), 'tagger');
+  expandSearch();
+  $('#searchInput').value = name;
+  $('#searchInput').placeholder = '空格分隔多关键词';
+  state.search = name;
+  state.searchMode = 'tagger';
+  $('#searchWidget').classList.add('has-text');
+  $('#searchInput').focus();
+  if (state.view !== 'pending') {
+    switchView('pending');
+  } else {
+    renderGrid();
+  }
+}
+
 /* ════════════════════════════════════════════════════════════
    搜索栏交互
    ════════════════════════════════════════════════════════════ */
+/* 搜索模式按视图启停：标签/标题/简介仅已处理视图；角色/IP 仅待处理视图且启用 tagger */
+function syncSearchModes() {
+  const dd = $('#searchMode');
+  if (!dd) return;
+  const inProcessed = state.view === 'processed';
+  const showTagger = state.view === 'pending' && state.taggerEnabled;
+  ['tags', 'title', 'plot'].forEach(m => setDropdownDisabled(dd, m, !inProcessed));
+  setDropdownDisabled(dd, 'tagger', !showTagger);
+  const mode = state.searchMode || 'all';
+  const ok = mode === 'all' || mode === 'filename'
+    || (inProcessed && ['tags', 'title', 'plot'].includes(mode))
+    || (showTagger && mode === 'tagger');
+  if (!ok) {
+    state.searchMode = 'all';
+    setDropdownValue(dd, 'all');
+  }
+}
+
 function expandSearch() {
   const w = $('#searchWidget');
   if (!w) return;

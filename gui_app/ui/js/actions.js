@@ -272,6 +272,7 @@ async function detectTags(ids) {
         state.taggerTaggedIds.add(vid);
       }
     }
+    apiCall('get_tagger_all_tags').then(m => { if (m) state.taggerTagNames = m; }).catch(() => {});
   }
   const stopped = r.error === '已停止';
   if (r.ok || stopped) {

@@ -59,14 +59,14 @@ class ConfigPresetMixin:
 
     # ── 标签检索 ──
 
-    def get_priority_tags(self) -> Dict[str, Any]:
-        return prompts.load_priority_tags()
+    def get_tag_library(self) -> Dict[str, Any]:
+        return prompts.load_tag_library()
 
-    def save_priority_tags(self, items: Any, mode: Any,
+    def save_tag_library(self, items: Any, mode: Any,
                            disabled_groups: Any = None) -> Dict[str, Any]:
-        return prompts.save_priority_tags(items, mode, disabled_groups)
+        return prompts.save_tag_library(items, mode, disabled_groups)
 
-    def import_priority_tags(self) -> Dict[str, Any]:
+    def import_tag_library(self) -> Dict[str, Any]:
         """弹出文件选择对话框导入标签检索 JSON（不落地，返回给前端载入页面）。"""
         import webview
         from ..mainthread import run_on_ui_thread
@@ -100,13 +100,13 @@ class ConfigPresetMixin:
             items = data.get("items", [])
         else:
             return {"ok": False, "error": "JSON 结构不符合预期"}
-        items = prompts.normalize_priority_items(items)
+        items = prompts.normalize_tag_library_items(items)
         if not items:
             return {"ok": False, "error": "文件中没有有效标签"}
         self._remember_dir([path])
         return {"ok": True, "items": items}
 
-    def export_priority_tags(self, items: Any) -> Dict[str, Any]:
+    def export_tag_library(self, items: Any) -> Dict[str, Any]:
         """弹出保存对话框，把当前标签检索导出为 JSON 文件。"""
         import webview
         from ..mainthread import run_on_ui_thread
@@ -118,7 +118,7 @@ class ConfigPresetMixin:
             return self._window.create_file_dialog(
                 save_type,
                 directory=self._initial_dir(),
-                save_filename="priority_tags.json",
+                save_filename="tag_library.json",
                 file_types=("JSON 文件 (*.json)",),
             )
 
@@ -129,7 +129,7 @@ class ConfigPresetMixin:
         if not result:
             return {"ok": False, "cancelled": True}
         path = result[0] if isinstance(result, (list, tuple)) else result
-        data = prompts.normalize_priority_items(items)
+        data = prompts.normalize_tag_library_items(items)
         try:
             Path(path).write_text(
                 json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")

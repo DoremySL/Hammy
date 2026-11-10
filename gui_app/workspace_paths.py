@@ -28,7 +28,7 @@ TAGGER_TAGS_FILE = WORKSPACE_DIR / "tagger" / "tags.json"
 TRANSCRIBE_CONFIG_FILE = WORKSPACE_DIR / "transcribe" / "config.json"
 TRANSCRIBE_TRANSCRIPTS_FILE = WORKSPACE_DIR / "transcribe" / "transcripts.json"
 TRANSCRIBE_SRT_DIR = WORKSPACE_DIR / "transcribe" / "srt"
-PRIORITY_TAGS_FILE = WORKSPACE_DIR / "priority_tags.json"
+TAG_LIBRARY_FILE = WORKSPACE_DIR / "tag_library.json"
 
 
 def stable_id(path: str) -> str:

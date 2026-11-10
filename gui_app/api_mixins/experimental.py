@@ -243,6 +243,14 @@ class ExperimentalMixin:
                                      stop_event=_install_stop_event)
             if r.get("ok"):
                 self._auto_clean_uv_cache()
+                try:
+                    from ..tagger import import_preset_tags
+                    imp = import_preset_tags(log_fn=_push_log)
+                    r["import"] = imp
+                except Exception as e:
+                    msg = f"预设标签导入失败（不影响标签生成，可卸载重装重试）: {e}"
+                    _push_log(msg, "err")
+                    r["import"] = {"imported": 0, "skipped": 0, "error": str(e)}
             return r
         finally:
             _install_stop_event.clear()
@@ -508,20 +516,20 @@ class ExperimentalMixin:
                 "total": total, "error": "分析引擎启动失败"}
 
     def get_tagger_tags(self, video_id: str) -> Dict[str, Any]:
-        """获取指定视频的已保存 tagger 标签（附带 zh 中文翻译）。"""
+        """获取指定视频的可展示 tagger 标签（仅映射命中，附中文=库 keyword）。"""
         entry = _load_tags().get(video_id)
         if not entry:
             return {"ok": False, "character_tags": [], "ip_tags": []}
+        from ..tagger import load_tag_library_map
+        lib = load_tag_library_map()
         data = {"ok": True, **entry}
-        if load_tagger_config().get("output_zh", True):
-            from ..tagger import load_tag_zh
-            zh = load_tag_zh()
-            if zh:
-                for group in ("character_tags", "ip_tags"):
-                    for t in data.get(group) or []:
-                        z = zh.get(str(t.get("name") or ""))
-                        if z:
-                            t["zh"] = z
+        for group in ("character_tags", "ip_tags"):
+            tags = list(data.get(group) or [])
+            if lib is not None:
+                tags = [t for t in tags if str(t.get("name") or "") in lib]
+                for t in tags:
+                    t["zh"] = lib[str(t.get("name") or "")]
+            data[group] = tags
         return data
 
     def clear_tagger_tags(self) -> Dict[str, Any]:
@@ -533,6 +541,30 @@ class ExperimentalMixin:
         """返回已有 IP 标签数据的视频 ID 列表（供前端 IP 角标显示）。"""
         return [vid for vid, data in _load_tags().items()
                 if data.get("character_tags") or data.get("ip_tags")]
+
+    def get_tagger_all_tags(self) -> Dict[str, List[str]]:
+        """视频 ID → 可展示标签名列表（resolver 过滤未映射；英文名+中文名，供待处理搜索）。"""
+        from ..tagger import load_tag_library_map
+        lib = load_tag_library_map()
+        out: Dict[str, List[str]] = {}
+        for vid, data in _load_tags().items():
+            names: List[str] = []
+            for group in ("character_tags", "ip_tags"):
+                for t in data.get(group) or []:
+                    n = str(t.get("name") or "")
+                    if not n:
+                        continue
+                    if lib is not None and n not in lib:
+                        continue
+                    if n not in names:
+                        names.append(n)
+                    if lib is not None:
+                        z = lib[n]
+                        if z and z not in names:
+                            names.append(z)
+            if names:
+                out[str(vid)] = names
+        return out
 
     def get_tagger_category_ids(self) -> Dict[str, str]:
         """返回视频 ID → 分类（2d/3d/real/cos/unk，供前端角标显示）。"""

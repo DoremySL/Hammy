@@ -194,25 +194,15 @@ class PipelineRunner:
     # ── 扩展功能上下文注入 ──
 
     def _build_tagger_meta_map(self, paths: List[str], exp_cfg: Dict[str, Any]) -> Dict[str, str]:
-        """构建 tagger 标签上下文映射（角色/IP → 提示词文本）。"""
+        """构建 tagger 标签查询上下文（作为标签检索首轮字面召回的查询词）。"""
         if not exp_cfg.get("tagger_enabled", False):
             return {}
         from .workspace_paths import TAGGER_TAGS_FILE
         tags_store = read_json(TAGGER_TAGS_FILE, {})
         if not tags_store:
             return {}
-        zh_map = {}
-        if exp_cfg.get("tagger_output_zh", True):
-            from .tagger import load_tag_zh
-            zh_map = load_tag_zh()
-        tail = ("生成 tags 与plot时，上述角色/IP 名称请统一改用「英文/中文名」中的常用中文名"
-                if zh_map else
-                "生成 tags 与plot时，上述角色/IP 名称请统一改用常用中文名")
-
-        def _fmt(t: Dict[str, Any]) -> str:
-            name = str(t.get("name") or "")
-            z = zh_map.get(name)
-            return f"{name} / {z}" if z else name
+        from .tagger import load_tag_library_map
+        lib = load_tag_library_map()
 
         result: Dict[str, str] = {}
         for vp in paths:
@@ -220,22 +210,20 @@ class PipelineRunner:
             entry = tags_store.get(vid)
             if not entry:
                 continue
-            char_tags = entry.get("character_tags", [])
-            ip_tags = entry.get("ip_tags", [])
-            rows = []
-            if char_tags:
-                rows.append("- 疑似角色: " + ", ".join(_fmt(t) for t in char_tags))
-            if ip_tags:
-                rows.append("- 疑似IP/作品: " + ", ".join(_fmt(t) for t in ip_tags))
-            if not rows:
-                continue
-            result[vp] = "\n".join([
-                "【IP辅助参考】",
-                "以下为自动识别结果，可能存在误判（如相似角色混淆），仅供参考。",
-                "请结合视频画面自行判断，若与画面明显矛盾则忽略：",
-                *rows,
-                tail,
-            ])
+            names: List[str] = []
+            for group in ("character_tags", "ip_tags"):
+                for t in entry.get(group) or []:
+                    name = str(t.get("name") or "")
+                    if not name:
+                        continue
+                    if lib is not None and name not in lib:
+                        continue
+                    names.append(name)
+                    z = lib.get(name) if lib is not None else None
+                    if z and z not in names:
+                        names.append(z)
+            if names:
+                result[vp] = " ".join(names)
         return result
 
     def _build_transcribe_meta_map(self, paths: List[str], exp_cfg: Dict[str, Any],
@@ -445,7 +433,8 @@ class PipelineRunner:
                 begin_batch()  # history 变更累积到内存，结束时一次性落盘
                 # 扩展功能上下文
                 exp_cfg = cfg_dict.get("experimental", {})
-                extra_meta_map = self._build_tagger_meta_map(paths, exp_cfg)
+                # tagger 上下文单独成 map：作为首轮字面召回的查询 scope
+                tagger_meta_map = self._build_tagger_meta_map(paths, exp_cfg)
                 # 注入文本；None 表示用户已停止
                 _log_cb = on_log or (lambda lv, msg: None)
                 inject_texts = self._run_rename_injection(paths, exp_cfg, _log_cb)
@@ -454,15 +443,12 @@ class PipelineRunner:
                         on_done({"ok": False, "error": "已停止", "ok_count": 0,
                                   "error_count": 0, "skipped_count": 0})
                     return
-                recall_meta_map = dict(extra_meta_map)
+                # 提示词 aux 仅转录（tagger 名单只作为字面查询词，见 literal_meta_map）
+                extra_meta_map = {}
                 for vp, txt in self._build_transcribe_meta_map(
                         paths, exp_cfg, inject_texts=inject_texts).items():
-                    for m in (extra_meta_map, recall_meta_map):
-                        if vp in m:
-                            m[vp] += "\n\n" + txt
-                        else:
-                            m[vp] = txt
-                pt = prompts.load_priority_tags()
+                    extra_meta_map[vp] = txt
+                pt = prompts.load_tag_library()
                 # 停用组过滤：黑名单命中组的条目不进入检索（"" 为默认分组）
                 pt_disabled = set(pt["disabled_groups"])
                 pt_items = [it for it in pt["items"] if it["group"] not in pt_disabled]
@@ -477,11 +463,11 @@ class PipelineRunner:
                             log_fn=lambda m: engine_logger.info(f"[RAG] {m}"))
                     else:
                         engine_logger.info("[RAG] 向量检索已启用但 ort-embedding 未就绪，"
-                                           "本次仅词面召回")
+                                           "增强档本次降级为开启（仅首轮字面召回）")
                 tag_recall = TagRecall(items=pt_items,
-                                       # GUI 三档值 → TagRecall 内部模式（on=全量注入，enhanced=两轮召回）
-                                       mode={"off": "off", "on": "full",
-                                             "enhanced": "rag"}[pt_mode],
+                                       # GUI 三档值与内部模式同名直传
+                                       #（on=首轮字面召回注入，enhanced=字面+第二轮向量召回）
+                                       mode=pt_mode,
                                        top_k=engine_cfg.rag_top_k,
                                        dense=dense,
                                        vec_threshold=engine_cfg.rag_vec_threshold,
@@ -492,10 +478,13 @@ class PipelineRunner:
                     try:
                         tag_recall.warmup_dense()  # 预构建索引，首个视频不承担耗时
                     except Exception as e:
-                        engine_logger.info(f"[RAG] 向量索引构建失败，本次仅词面召回: {e}")
+                        engine_logger.info(f"[RAG] 向量索引构建失败，增强档本次降级为开启: {e}")
                 if tag_recall.mode != "off":
-                    mode_label = {"full": "开启（单轮全量注入）",
-                                  "rag": "增强（两轮+召回）"}[tag_recall.mode]
+                    if tag_recall.mode == "enhanced" and not tag_recall.has_dense:
+                        mode_label = "增强（向量不可用，本次降级为开启）"
+                    else:
+                        mode_label = {"on": "开启（单轮·字面召回注入）",
+                                      "enhanced": "增强（首轮字面注入+第二轮向量召回）"}[tag_recall.mode]
                     skip_note = f"（停用组跳过 {pt_skipped} 条）" if pt_skipped else ""
                     engine_logger.info(
                         f"[RAG] 标签检索模式: {mode_label} | 标签库 {tag_recall.total_items} 条{skip_note}")
@@ -508,7 +497,7 @@ class PipelineRunner:
                     # 避免不同目录下同 stem 视频映射到同一文件互相覆盖
                     nfo_namer=lambda vp: f"{stable_id(vp)}.nfo",
                     extra_meta_map=extra_meta_map,
-                    recall_meta_map=recall_meta_map,
+                    literal_meta_map=tagger_meta_map,
                     tag_recall=tag_recall,
                 )
                 pipeline.run()

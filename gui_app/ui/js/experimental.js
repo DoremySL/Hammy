@@ -66,8 +66,6 @@ function _collectExperimentalData() {
   let thr = num('#tagger-threshold');
   if (thr !== null) thr = Math.min(1, Math.max(0.1, thr));
   put('tagger_threshold', thr);
-  const zhDd = ddl('#tagger-output-zh-dd');
-  put('tagger_output_zh', zhDd === null ? null : zhDd === '1');
   put('tagger_enabled', chk('#tagger-enable-toggle'));
   const lang = $('#transcribe-language');
   put('transcribe_language', lang ? lang.value.trim() : null);
@@ -225,6 +223,7 @@ function _bindManageButtons(uvStatus, llamaStatus, pStatus, wStatus, rvStatus) {
     const r = await apiCall('remove_tagger');
     if (r && r.ok) {
       state.taggerEnabled = false; state.taggerTaggedIds.clear(); state.taggerCategories = {};
+      state.taggerTagNames = {};
       state.settingsOpen.delete('tagger-cfg');
       refreshGridData(); toast(r.message || '已删除', 'ok'); renderSettings();
     } else { toast('删除失败: ' + ((r && r.error) || ''), 'err'); pRemoveBtn.disabled = false; pRemoveBtn.textContent = '卸载'; }
@@ -609,7 +608,6 @@ function _renderTaggerSection(exp, pStatus) {
   const ready = !!(pStatus && pStatus.ready);
   const specBadge = ready && pStatus.precision
     ? String(pStatus.precision).toUpperCase() : '';
-  const zhOn = exp.tagger_output_zh !== false;
   return `
     <div class="exp-card ${!enabled ? 'is-disabled' : ''}">
       <div class="exp-card-head">
@@ -635,16 +633,6 @@ function _renderTaggerSection(exp, pStatus) {
             <label data-tip="两者均按出现次数加权；角色超过该值输出，IP 需超过 2 倍该值">角色/IP阈值</label>
             <input type="number" id="tagger-threshold" min="0.1" max="1" step="0.01" value="${exp.tagger_threshold || 0.75}"/>
           </div>
-          <div class="field">
-            <label data-tip="显示与注入提示词时使用预先翻译的文本，可能存在错误翻译">显示中文</label>
-            <div class="dd" id="tagger-output-zh-dd">
-              <button class="dd-btn" type="button"><span class="dd-label">${zhOn ? '开启' : '关闭'}</span>${ddArrow()}</button>
-              <div class="dd-panel">
-                <div class="dd-opt${zhOn ? ' active' : ''}" data-value="1">开启</div>
-                <div class="dd-opt${zhOn ? '' : ' active'}" data-value="0">关闭</div>
-              </div>
-            </div>
-          </div>
         </div>
       </div>
     </div>`;
@@ -660,6 +648,7 @@ function _bindTaggerEvents() {
     if (clearBtn) clearBtn.style.display = toggle.checked ? '' : 'none';
     scheduleExperimentalSave(true);
     updateSortDropdown();
+    syncSearchModes();
   });
 
   _bindCardToggle('tagger');
@@ -668,15 +657,13 @@ function _bindTaggerEvents() {
     const el = $(sel);
     if (el) el.addEventListener('input', () => scheduleExperimentalSave());
   });
-  const zhDd = $('#tagger-output-zh-dd');
-  if (zhDd) initDropdown(zhDd, () => scheduleExperimentalSave(true));
 
   const clearBtn = $('#btn-tagger-clear-tags');
   if (clearBtn) clearBtn.addEventListener('click', async () => {
     if (!await showConfirm('确定清除所有已保存的标签数据吗？')) return;
     const r = await apiCall('clear_tagger_tags');
     if (r && r.ok) {
-      state.taggerTaggedIds.clear(); state.taggerCategories = {};
+      state.taggerTaggedIds.clear(); state.taggerCategories = {}; state.taggerTagNames = {};
       refreshGridData(); toast(r.message || '已清除', 'ok');
     } else toast('清除失败', 'err');
   });
@@ -2603,7 +2590,7 @@ function _renderRagVecSection(exp, rvStatus) {
         </label>
         <div class="exp-head-main">
           <div class="exp-title-row"><strong>EmbeddingGemma 向量检索</strong>${deviceBadge}</div>
-          <div class="exp-desc">使用嵌入模型进行语义召回，补充关键词匹配；仅在标签检索=「增强」时生效。</div>
+          <div class="exp-desc">增强档第二轮用嵌入模型按语义检索候选标签；未就绪时增强档自动降级为开启档（仅字面检索）。</div>
         </div>
         <div class="exp-head-actions">
           ${stopBtn}

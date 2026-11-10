@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from .workspace_paths import PRIORITY_TAGS_FILE, PROMPTS_FILE
+from .workspace_paths import TAG_LIBRARY_FILE, PROMPTS_FILE
 from .workspace_store import NO_WRITE, read_json, read_json_cached, update_json, write_json
 
 
@@ -235,15 +235,11 @@ def build_prompt(preset: Dict[str, Any], include_header: bool = True,
     return "\n".join(parts)
 
 
-# ── 标签检索（全局，独立存储于 _workspace/priority_tags.json） ──
+# ── 标签检索（全局，独立存储于 _workspace/tag_library.json） ──
 
 
-def normalize_priority_items(items: Any) -> List[Dict[str, str]]:
-    """规范化标签检索列表：剔除非 dict 与空关键词；其余字段去首尾空格。
-
-    related 为逗号分隔的关联词字符串（供字面与向量检索，不注入提示词）；
-    group 为显示分组（仅供展示与筛选；停用组的过滤在 runner 层做）。
-    """
+def normalize_tag_library_items(items: Any) -> List[Dict[str, str]]:
+    """规范化标签检索列表：剔除空关键词，字段去首尾空格；related 为单值关联词。"""
     out: List[Dict[str, str]] = []
     if not isinstance(items, list):
         return out
@@ -274,39 +270,40 @@ def normalize_disabled_groups(value: Any) -> List[str]:
     return out
 
 
-def load_priority_tags() -> Dict[str, Any]:
-    """读取 _workspace/priority_tags.json；不存在/结构非法返回默认。
+def load_tag_library() -> Dict[str, Any]:
+    """读取 _workspace/tag_library.json；不存在/结构非法返回默认。
 
-    mode ∈ off/on/enhanced（关闭 / 开启=单轮全量注入 / 增强=两轮召回）；
+    mode ∈ off/on/enhanced（关闭 / 开启=首轮字面召回注入（单轮） /
+    增强=字面注入+第二轮向量召回，嵌入模型不可用时等同开启）；
     disabled_groups 为停用分组黑名单（命中组的条目不参与检索）。
     """
-    data = read_json(PRIORITY_TAGS_FILE, None)
+    data = read_json(TAG_LIBRARY_FILE, None)
     mode = ""
     items: List[Dict[str, str]] = []
     disabled_groups: List[str] = []
     if isinstance(data, dict):
         mode = str(data.get("mode") or "").strip().lower()
-        items = normalize_priority_items(data.get("items", []))
+        items = normalize_tag_library_items(data.get("items", []))
         disabled_groups = normalize_disabled_groups(data.get("disabled_groups", []))
     if mode not in ("off", "on", "enhanced"):
         mode = "off"
     return {"mode": mode, "disabled_groups": disabled_groups, "items": items}
 
 
-def save_priority_tags(items: Any, mode: Any,
-                       disabled_groups: Any = None) -> Dict[str, Any]:
-    """保存标签检索到 _workspace/priority_tags.json（mode ∈ off/on/enhanced）。
+def save_tag_library(items: Any, mode: Any,
+                     disabled_groups: Any = None) -> Dict[str, Any]:
+    """保存标签检索到 _workspace/tag_library.json（mode ∈ off/on/enhanced）。
 
     黑名单只保留现存分组（含默认分组 ""），组被删空/改名后的残留条目顺手清理。
     """
     m = str(mode or "").strip().lower()
-    norm_items = normalize_priority_items(items)
+    norm_items = normalize_tag_library_items(items)
     live = {it["group"] for it in norm_items}
     dg = [g for g in normalize_disabled_groups(disabled_groups) if g in live]
     data = {"mode": m if m in ("off", "on", "enhanced") else "off",
             "disabled_groups": dg,
             "items": norm_items}
-    write_json(PRIORITY_TAGS_FILE, data)
+    write_json(TAG_LIBRARY_FILE, data)
     return {"ok": True}
 
 

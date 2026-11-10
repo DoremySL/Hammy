@@ -58,6 +58,11 @@ function currentList() {
           const tags = (v.tags || []).map(t => t.toLowerCase());
           return kws.every(k => tags.includes(k));
         }
+        if (mode === 'tagger') {
+          /* 按角色/IP 标签名（含中文）子串匹配 */
+          const names = (state.taggerTagNames[v.id] || []).map(n => (n || '').toLowerCase());
+          return names.length > 0 && kws.every(k => names.some(n => n.includes(k)));
+        }
         let hay;
         if (mode === 'filename') {
           hay = (v.name || '').toLowerCase();
@@ -782,14 +787,7 @@ function switchView(view) {
     p.classList.toggle('active', on);
     p.setAttribute('aria-pressed', String(on));
   });
-  const noMeta = view !== 'processed';
-  ['tags', 'title', 'plot'].forEach(m => {
-    setDropdownDisabled($('#searchMode'), m, noMeta);
-  });
-  if (noMeta && ['tags', 'title', 'plot'].includes(state.searchMode)) {
-    state.searchMode = 'all';
-    setDropdownValue($('#searchMode'), 'all');
-  }
+  syncSearchModes();
   renderGrid();
   renderSources();
   updateStats();

@@ -119,47 +119,6 @@ WINDOW_HEIGHT = 860
 HTML_PATH = SCRIPT_DIR / "ui" / "index.html"
 
 
-# ── 窗口尺寸记忆 ──
-
-
-def _load_window_geometry() -> dict:
-    """从 _workspace/config.json 读取窗口几何。"""
-    try:
-        from gui_app import config_store
-        cfg = config_store.load_config()
-        return cfg.get("window_geometry") or {}
-    except Exception:
-        return {}
-
-
-def _save_window_geometry(geo: dict) -> None:
-    """保存窗口几何到 _workspace/config.json（原子读-改-写，不与设置保存互覆盖）。"""
-    try:
-        from gui_app import config_store
-        config_store.update_config(lambda cfg: cfg.update(window_geometry=geo))
-    except Exception as e:
-        sys.stderr.write(f"[app] 窗口几何保存失败: {e}\n")
-
-
-def _is_visible_position(x: int, y: int, w: int, h: int) -> bool:
-    """判断窗口左上角是否落在可见屏幕区域内。"""
-    # 最小化哨兵（-32000）直接判定不可见
-    if x <= -30000 or y <= -30000:
-        return False
-    try:
-        import ctypes
-        # 虚拟屏幕（覆盖所有显示器）的范围
-        vx = ctypes.windll.user32.GetSystemMetrics(76)  # SM_XVIRTUALSCREEN
-        vy = ctypes.windll.user32.GetSystemMetrics(77)  # SM_YVIRTUALSCREEN
-        vw = ctypes.windll.user32.GetSystemMetrics(78)  # SM_CXVIRTUALSCREEN
-        vh = ctypes.windll.user32.GetSystemMetrics(79)  # SM_CYVIRTUALSCREEN
-        # 窗口需至少有一部分落在虚拟屏幕范围内
-        return (vx - w < x < vx + vw) and (vy - h < y < vy + vh)
-    except Exception:
-        # 获取屏幕范围失败时不拦截，沿用保存的坐标
-        return True
-
-
 # ── 启动期依赖检测 ──
 
 
@@ -286,87 +245,24 @@ def _init_workspace() -> str:
 
 
 def _create_window(api: "Api", html_content: str):
-    """创建 pywebview 窗口并从 config 恢复几何。返回 window。"""
-    geo = _load_window_geometry()
-    init_w = geo.get("width") or WINDOW_WIDTH
-    init_h = geo.get("height") or WINDOW_HEIGHT
-    init_x = geo.get("x")
-    init_y = geo.get("y")
-    # 坐标不可见（最小化哨兵/拔副屏残留）则放弃保存值，走默认居中
-    if init_x is not None and init_y is not None and not _is_visible_position(
-            init_x, init_y, init_w, init_h):
-        init_x = init_y = None
+    """创建 pywebview 窗口（固定默认尺寸，系统默认居中）。返回 window。"""
     window_kwargs = dict(
         title=WINDOW_TITLE,
         html=html_content,
-        width=init_w,
-        height=init_h,
+        width=WINDOW_WIDTH,
+        height=WINDOW_HEIGHT,
         js_api=api,
         min_size=(900, 600),
         resizable=True,
         easy_drag=False,
     )
-    if init_x is not None and init_y is not None:
-        window_kwargs["x"] = init_x
-        window_kwargs["y"] = init_y
     window = webview.create_window(**window_kwargs)
     api.set_window(window)
     return window
 
 
 def _bind_window_events(window, api: "Api"):
-    """绑定所有窗口事件（resized/moved/closing/closed）。
-
-    返回 _geo_flush_loop 供后台线程使用。
-    """
-    # ── 几何保存节流机制 ──
-    _geo_save_lock = threading.Lock()
-    _geo_save_pending = {"data": None}
-    _geo_stop = threading.Event()  # 统一生命周期：关窗时停止几何保存线程
-
-    def _schedule_save_geo(data):
-        # Workaround: Windows 最小化时 WinForms 上报 (-32000, -32000) 哨兵坐标，
-        # 跳过保存避免下次窗口恢复到屏外
-        if data.get("x", 0) <= -30000 or data.get("y", 0) <= -30000:
-            return
-        with _geo_save_lock:
-            _geo_save_pending["data"] = data
-
-    def _geo_flush_loop():
-        while not _geo_stop.is_set():
-            _geo_stop.wait(1.0)  # 每秒检查一次，节流；stop 时立即退出
-            with _geo_save_lock:
-                data = _geo_save_pending["data"]
-                _geo_save_pending["data"] = None
-            if data:
-                _save_window_geometry(data)
-
-    # ── resized / moved 事件保存几何 ──
-    try:
-        def _capture_geo():
-            _schedule_save_geo({
-                "width": window.width,
-                "height": window.height,
-                "x": window.x,
-                "y": window.y,
-            })
-
-        def _on_resized(*_args):
-            try:
-                _capture_geo()
-            except Exception:
-                pass
-
-        def _on_moved(*_args):
-            try:
-                _capture_geo()
-            except Exception:
-                pass
-        window.events.resized += _on_resized
-        window.events.moved += _on_moved
-    except Exception as e:
-        sys.stderr.write(f"[events] resized/moved hook 注册失败: {e}\n")
-
+    """绑定窗口事件（closing/closed 清理）。"""
     # ── 关窗/退出时清理 ffmpeg 子进程（幂等：atexit + closed 只执行一次）──
     _cleaned_up = threading.Event()
 
@@ -406,16 +302,6 @@ def _bind_window_events(window, api: "Api"):
             terminate_all_subprocesses()
         except Exception as e:
             sys.stderr.write(f"[cleanup] terminate_all_subprocesses failed: {e}\n")
-        _geo_stop.set()  # 停止几何保存线程
-        # stop 后补写一次 pending：geo 线程是 daemon，进程退出时可能来不及落盘。
-        try:
-            with _geo_save_lock:
-                data = _geo_save_pending["data"]
-                _geo_save_pending["data"] = None
-            if data:
-                _save_window_geometry(data)
-        except Exception:
-            pass
 
     # atexit 兜底（崩溃/强杀时也尽量清理）
     atexit.register(_cleanup_subprocesses)
@@ -451,8 +337,6 @@ def _bind_window_events(window, api: "Api"):
         window.events.closed += _cleanup_subprocesses
     except Exception as e:
         sys.stderr.write(f"[events] closed hook 注册失败: {e}\n")
-
-    return _geo_flush_loop
 
 
 def _find_window_icon_file():
@@ -506,7 +390,7 @@ def _apply_window_icon_async() -> None:
             pass
 
 
-def _start_background_loops(geo_flush_loop, api=None) -> callable:
+def _start_background_loops(api=None) -> callable:
     """构建后台循环，返回 webview.start 的 func 回调。
 
     """
@@ -580,9 +464,6 @@ def _start_background_loops(geo_flush_loop, api=None) -> callable:
         else:
             _start_flush()
 
-        t2 = threading.Thread(target=geo_flush_loop, name="geo-save", daemon=True)
-        t2.start()
-
         # 托盘（pystray 未安装时自动降级为普通最小化）
         if window is not None:
             try:
@@ -622,8 +503,8 @@ def main() -> None:
     api = Api()
     window = _create_window(api, html_content)
 
-    geo_flush_loop = _bind_window_events(window, api)
-    on_started = _start_background_loops(geo_flush_loop, api)
+    _bind_window_events(window, api)
+    on_started = _start_background_loops(api)
 
     try:
         # Windows 上使用 winforms backend（pywebview 6.x 唯一支持），

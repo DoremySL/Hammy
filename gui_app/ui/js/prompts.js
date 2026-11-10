@@ -39,19 +39,17 @@ function renderPromptsTab(presets, activePreset) {
       <div class="field"><textarea id="preset-system_prompt" data-field="system_prompt" rows="2" style="min-height:0">${esc(activePreset.system_prompt || '')}</textarea></div>
     </div>
     <div class="group">
-      <div class="grid-2">
-        <div class="field"><label>plot 描述要求</label><textarea data-field="plot_guidance">${esc(activePreset.fields.plot_guidance)}</textarea></div>
-        <div class="field"><label>title 字数/格式要求</label><textarea data-field="title_guidance">${esc(activePreset.fields.title_guidance)}</textarea></div>
-      </div>
-      <div class="field" style="margin-top:14px"><label>tags 维度要求</label><textarea data-field="tags_dim">${esc(activePreset.fields.tags_dim)}</textarea></div>
+      <div class="field"><label>plot 描述要求</label><textarea data-field="plot_guidance">${esc(activePreset.fields.plot_guidance)}</textarea></div>
+      <div class="field" style="margin-top:14px"><label>title 字数/格式要求</label><input type="text" data-field="title_guidance" value="${esc(activePreset.fields.title_guidance)}"/></div>
+      <div class="field" style="margin-top:14px"><label>tags 维度要求</label><input type="text" data-field="tags_dim" value="${esc(activePreset.fields.tags_dim)}"/></div>
       <div class="field" id="pv-thumb-guide-field" style="margin-top:14px;${state.thumbOptimize ? '' : 'display:none'}">
         <label>thumb_time 引导</label>
-        <textarea data-field="thumb_time_guidance">${esc(activePreset.fields.thumb_time_guidance || '')}</textarea>
+        <input type="text" data-field="thumb_time_guidance" value="${esc(activePreset.fields.thumb_time_guidance || '')}"/>
       </div>
     </div>
     <div class="group" id="pv-example-group" style="${state.pvUseExample ? '' : 'display:none'}">
       <div class="field"><label>plot 示例</label><textarea data-field="plot_example" style="min-height:100px">${esc(activePreset.fields.plot_example)}</textarea></div>
-      <div class="field" style="margin-top:14px"><label>tags 示例</label><input type="text" data-field="tags_example" value="${esc(activePreset.fields.tags_example)}"/></div>
+      <div class="field" style="margin-top:14px"><label>tags 示例</label><textarea data-field="tags_example" rows="2" style="min-height:0">${esc(activePreset.fields.tags_example)}</textarea></div>
       <div class="field" style="margin-top:14px"><label>title 示例</label><input type="text" data-field="title_example" value="${esc(activePreset.fields.title_example)}"/></div>
       <div class="field" id="pv-thumb-example-field" style="margin-top:14px;${state.thumbOptimize ? '' : 'display:none'}">
         <label>thumb_time 示例</label>

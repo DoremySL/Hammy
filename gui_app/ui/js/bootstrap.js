@@ -52,6 +52,7 @@ pywebviewReady(30000).then(async () => {
       idFetches.push(
         apiCall('get_tagger_tagged_ids').then(ids => { if (ids) state.taggerTaggedIds = new Set(ids); }).catch(() => {}),
         apiCall('get_tagger_category_ids').then(m => { if (m) state.taggerCategories = m; }).catch(() => {}),
+        apiCall('get_tagger_all_tags').then(m => { if (m) state.taggerTagNames = m; }).catch(() => {}),
       );
     }
     if (exp.transcribe_enabled) {

@@ -33,10 +33,10 @@ def _max_ai_seconds_per_video(config: Config) -> float:
     return (config.ai_timeout + _TIMEOUT_GRACE_SEC) * (config.retry_times + 1)
 
 
-def _ai_seconds_per_video(config: Config, rag_mode: bool) -> float:
-    """管线背压/join 超时用的单视频最坏耗时；两轮 RAG 模式按两轮估算翻倍。"""
+def _ai_seconds_per_video(config: Config, two_round: bool) -> float:
+    """管线背压/join 超时用的单视频最坏耗时；增强档两轮按翻倍估算。"""
     secs = _max_ai_seconds_per_video(config)
-    return secs * 2 if rag_mode else secs
+    return secs * 2 if two_round else secs
 
 
 def _rag_suffix(config: Config, recalled: int, keywords=()) -> str:
@@ -154,7 +154,7 @@ class AIWorker:
                  on_file_done: Optional[OnFileDone] = None,
                  nfo_namer: Optional[Callable[[str], str]] = None,
                  extra_meta_map: Optional[Dict[str, str]] = None,
-                 recall_meta_map: Optional[Dict[str, str]] = None,
+                 literal_meta_map: Optional[Dict[str, str]] = None,
                  slot_id: Optional[int] = None,
                  tag_recall=None):
         self.client = client
@@ -165,18 +165,18 @@ class AIWorker:
         self._on_file_done = on_file_done
         # 可选 NFO 目标命名函数（缓存模式防同 stem 冲突）
         self._nfo_namer = nfo_namer
-        # 每个视频的额外上下文（扩展功能注入，key=视频路径）；
-        # recall 版仅供标签检索召回查询使用（scope 可与提示词不同）
+        # extra_meta_map：提示词 aux 与第二轮向量查询 scope（tagger+转录等）
+        # literal_meta_map：首轮字面召回查询 scope（仅 tagger 上下文，不含转录噪音）
         self.extra_meta_map = extra_meta_map or {}
-        self.recall_meta_map = recall_meta_map or {}
+        self.literal_meta_map = literal_meta_map or {}
         self.slot_id = slot_id   # llama 集成时 worker i → slot i，两轮同槽命中缓存
-        if tag_recall is not None and getattr(tag_recall, "mode", "") == "full":
-            self.priority_section = tag_recall.full_section
-        else:
-            self.priority_section = ""
-        self._rag_provider = (tag_recall
-                              if tag_recall is not None and getattr(tag_recall, "mode", "") == "rag"
-                              else None)
+        # on/enhanced 都下发给 analyze_frames；两轮耗时估算只看 enhanced+向量可用
+        self.tag_recall = (tag_recall
+                           if tag_recall is not None
+                           and getattr(tag_recall, "mode", "") in ("on", "enhanced")
+                           else None)
+        self.two_round = bool(self.tag_recall is not None
+                              and getattr(self.tag_recall, "has_dense", False))
 
     def _move_failed_hint(self) -> str:
         return "，稍后将移至 _failed"
@@ -296,10 +296,9 @@ class AIWorker:
                 self.stop_event, vp, info.get("duration", 0.0),
                 container_title=info.get("container_title", ""),
                 extra_meta=self.extra_meta_map.get(vp, ""),
-                recall_meta=self.recall_meta_map.get(vp, ""),
+                literal_meta=self.literal_meta_map.get(vp),
                 slot_id=self.slot_id,
-                priority_section=self.priority_section,
-                tag_recall=self._rag_provider,
+                tag_recall=self.tag_recall,
             )
             if result.title:
                 if result.thumb_time:
@@ -353,7 +352,7 @@ class BatchPipeline:
                  on_file_done: Optional[OnFileDone] = None,
                  nfo_namer: Optional[Callable[[str], str]] = None,
                  extra_meta_map: Optional[Dict[str, str]] = None,
-                 recall_meta_map: Optional[Dict[str, str]] = None,
+                 literal_meta_map: Optional[Dict[str, str]] = None,
                  tag_recall=None):
         self.paths = paths
         self.config = config
@@ -363,9 +362,11 @@ class BatchPipeline:
         self.nfo_namer = nfo_namer
         # 每个视频的额外上下文（扩展功能注入，key=视频路径）
         self.extra_meta_map = extra_meta_map or {}
-        self.recall_meta_map = recall_meta_map or {}
+        self.literal_meta_map = literal_meta_map or {}
         self.tag_recall = tag_recall
-        self._rag_mode = tag_recall is not None and getattr(tag_recall, "mode", "") == "rag"
+        # 两轮耗时估算：enhanced 且向量后端可用（不可用时增强档降级为单轮）
+        self._two_round = tag_recall is not None and getattr(tag_recall, "mode", "") == "enhanced" \
+            and getattr(tag_recall, "has_dense", False)
         # 暴露 stats 给外部（GUI 完成后读取真实计数）
         self.stats: Optional[PipelineStats] = None
         self._videos: List[str] = []
@@ -411,7 +412,7 @@ class BatchPipeline:
     def _run_workers(self, stats):
         """启动生产者 + 消费者线程，等待完成或超时。"""
         videos = self._videos
-        ai_max_per_video = _ai_seconds_per_video(self.config, self._rag_mode)
+        ai_max_per_video = _ai_seconds_per_video(self.config, self._two_round)
         task_queue: queue.Queue = queue.Queue(maxsize=self.config.ai_workers * _TASK_QUEUE_FACTOR)
         producer = FrameProducer(videos, task_queue, self.config, self.stop_event,
                                  ai_secs=ai_max_per_video)
@@ -426,7 +427,7 @@ class BatchPipeline:
         workers = [AIWorker(self.client, self.config, stats, task_queue, self.stop_event,
                             on_file_done=self.on_file_done, nfo_namer=self.nfo_namer,
                             extra_meta_map=self.extra_meta_map,
-                            recall_meta_map=self.recall_meta_map,
+                            literal_meta_map=self.literal_meta_map,
                             slot_id=slot_ids[i], tag_recall=self.tag_recall)
                    for i in range(self.config.ai_workers)]
         # AI worker 设为 daemon：网络调用失效时可防进程退出挂死

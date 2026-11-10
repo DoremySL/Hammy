@@ -120,7 +120,7 @@ class SystemMixin:
             return {"ok": False, "error": str(e)}
 
     def open_bing_search(self, query: str) -> Dict[str, Any]:
-        """用系统默认浏览器打开 Bing 搜索页（待处理详情页 IP 标签点击查询用）。"""
+        """用系统默认浏览器打开 Bing 搜索页（待处理详情页角色/IP 标签右键菜单搜索用）。"""
         import webbrowser
         from urllib.parse import quote
         try:

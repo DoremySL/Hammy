@@ -1,20 +1,22 @@
-"""标签检索召回：词面三级匹配（关键词+关联词）+ 可选向量融合。"""
+"""标签检索：on/enhanced 共用首轮字面召回（关键词+关联词三级匹配）；
+enhanced 追加第二轮纯向量召回（dense 不可用时自动等同 on）。"""
 from __future__ import annotations
 
 import re
 import threading
 import unicodedata
-from typing import Any, Dict, List, NamedTuple, Optional
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 KIND_SCORE = {"exact": 1.0, "compact": 0.9, "token": 0.7}
 
 _SEP_RE = re.compile(r"[\s_\-]+")
 _LATIN_RE = re.compile(r"[a-z0-9]+")
-_RELATED_SPLIT_RE = re.compile(r"[,，、;；]+")
 
 _FIELD_SEP = "\x00"
 
-_FULL_HEADER = "【标签检索】\n为视频生成 tags 时，若画面内容匹配，请优先采用以下指定标签："
+# 全分组共用注入头
+_LITERAL_HEADER = ("【标签检索】\n以下是根据视频信息（文件名等）从标签库检索到的候选标签，"
+                   "若画面内容匹配，请优先采用；角色/IP 等名称请尽量采用标签中的中文名写法：")
 _CAND_HEADER = ("【标签检索·召回候选】\n以下是根据首轮分析结果与视频信息从标签库检索到的候选标签，"
                 "可能包含与画面无关的条目：")
 
@@ -29,8 +31,9 @@ def _compact(s: Any) -> str:
     return _SEP_RE.sub("", s)
 
 def split_related(related: Any) -> List[str]:
-    """关联词字符串 → 关联词列表（按中英文逗号/顿号/分号切分）。"""
-    return [t for t in (x.strip() for x in _RELATED_SPLIT_RE.split(str(related or ""))) if t]
+    """关联词取值（单值字段，不再按逗号切分）。"""
+    t = str(related or "").strip()
+    return [t] if t else []
 
 def build_section(items: List[Dict[str, str]], header: str) -> str:
     """条目列表 → 提示词段落（- 关键词：描述；不含关联词）。"""
@@ -69,12 +72,13 @@ class _Entry:
             self.targets.append(_Target(norm, compact, latin_tokens, exact_re, compact_re))
 
 class TagRecall:
-    """标签检索提供方：显式模式路由 + 词面召回（+ 可选向量召回合并）。"""
+    """标签检索提供方：首轮字面召回注入（on/enhanced）+ enhanced 第二轮纯向量召回。"""
 
     def __init__(self, items: Any, top_k: int = 40, dense=None,
                  vec_threshold: float = 0.45, vec_top_n: int = 20,
                  mode: str = "off"):
-        """mode：off=不注入 / full=单轮全量注入 / rag=两轮召回；非法值按 off。"""
+        """mode：off=不注入 / on=首轮字面召回注入（单轮）/
+        enhanced=字面注入 + 第二轮向量召回修订（dense 不可用时等同 on）；非法值按 off。"""
         norm_items: List[Dict[str, str]] = []
         if isinstance(items, list):
             for it in items:
@@ -98,15 +102,19 @@ class TagRecall:
 
         # 空库一律不注入；模式显式给定，不做条目数自动降级
         m = str(mode or "").strip().lower()
-        self.mode = m if m in ("off", "full", "rag") and self.total_items > 0 else "off"
+        self.mode = m if m in ("off", "on", "enhanced") and self.total_items > 0 else "off"
 
-        self.full_section = build_section(norm_items, _FULL_HEADER) if self.mode == "full" else ""
         self._entries = ([_Entry(i, it) for i, it in enumerate(norm_items)]
-                         if self.mode == "rag" else [])
+                         if self.mode in ("on", "enhanced") else [])
 
-    def recall(self, parts: Dict[str, str]) -> List[Dict[str, str]]:
-        """词面召回并取向量命中，返回去重后的候选条目；仅 rag 模式有效。"""
-        if self.mode != "rag" or not self._entries:
+    @property
+    def has_dense(self) -> bool:
+        """enhanced 档两轮生效的前提：向量后端存在（构建失败会被置 None）。"""
+        return self.mode == "enhanced" and self.dense is not None
+
+    def recall_literal(self, parts: Dict[str, str]) -> List[Dict[str, str]]:
+        """首轮字面召回（关键词+关联词三级匹配，top_k 截断）；仅 on/enhanced 有效。"""
+        if self.mode not in ("on", "enhanced") or not self._entries:
             return []
         hay_n = _norm(_FIELD_SEP.join(v for v in parts.values() if v))
         hay_c = _compact(hay_n)
@@ -118,28 +126,36 @@ class TagRecall:
             if kind is not None:
                 hits.append((KIND_SCORE[kind], e.idx, e))
         hits.sort(key=lambda h: (-h[0], h[1]))
+        return [e.item for _, _, e in hits[: self.top_k]]
 
-        top = hits[: self.top_k]
-        candidates = [e.item for _, _, e in top]
-        taken = {idx for _, idx, _ in top}
+    def literal_injection(self, parts: Dict[str, str]) -> Tuple[str, List[str]]:
+        """首轮字面召回 → (注入段落, 命中关键词列表)；无命中返回 ("", [])。"""
+        cands = self.recall_literal(parts)
+        if not cands:
+            return "", []
+        return (build_section(cands, _LITERAL_HEADER),
+                [it["keyword"] for it in cands])
 
-        if self.dense is not None:
-            try:
-                self._ensure_dense_built()
-                vec = self.dense.search(parts, top_k=self.vec_top_n)
-            except Exception:
-                vec = []  # 向量层失败：降级为纯词面
-            for m in vec[: self.vec_top_n]:
-                if float(m.get("score", 0.0)) < self.vec_threshold:
-                    continue
-                idx = int(m.get("idx", -1))
-                if 0 <= idx < len(self.items) and idx not in taken:
-                    taken.add(idx)
-                    candidates.append(self.items[idx])
-        return candidates
+    def recall_dense(self, parts: Dict[str, str]) -> List[Dict[str, str]]:
+        """第二轮纯向量召回；仅 enhanced 且向量后端可用，任何失败返回 []（跳过第二轮）。"""
+        if not self.has_dense:
+            return []
+        try:
+            self._ensure_dense_built()
+            vec = self.dense.search(parts, top_k=self.vec_top_n)
+        except Exception:
+            return []  # 向量层失败：跳过第二轮，沿用首轮结果
+        out = []
+        for m in vec[: self.vec_top_n]:
+            if float(m.get("score", 0.0)) < self.vec_threshold:
+                continue
+            idx = int(m.get("idx", -1))
+            if 0 <= idx < len(self.items):
+                out.append(self.items[idx])
+        return out
 
     def _ensure_dense_built(self) -> None:
-        """惰性构建向量索引一次（items 顺序即 idx，词面/向量两路共用）。"""
+        """惰性构建向量索引一次（items 顺序即 idx，与标签库共用）。"""
         if self._dense_built:
             return
         with self._dense_lock:
@@ -154,7 +170,7 @@ class TagRecall:
 
     def warmup_dense(self) -> None:
         """预热：提前构建向量索引（管线启动前调用，避免首个视频承担构建耗时）。"""
-        if self.dense is not None and self.mode == "rag":
+        if self.dense is not None and self.mode == "enhanced":
             self._ensure_dense_built()
 
     @staticmethod

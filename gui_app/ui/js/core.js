@@ -120,6 +120,7 @@ const state = {
   gpuBusy: false,
   installing: false,
   taggerTaggedIds: new Set(),
+  taggerTagNames: {},             // 视频 ID → 标签名列表（英文名+中文名，待处理搜索用）
   transcribeTranscribedIds: new Set(),
   hfDownloading: false,
   hfDlPct: 0,
