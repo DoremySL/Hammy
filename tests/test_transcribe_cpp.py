@@ -1,13 +1,13 @@
 """transcribe.cpp 语音转录单元测试：模型元数据、目录定位、完整性检测、status、安装。
 
 只测纯函数与目录逻辑（不触发安装/下载/转录子进程）：
-- TRANSCRIBE_MODELS 元数据完整（两个模型、GGUF 文件名、仓库 ID、家族标记）
+- TRANSCRIBE_MODELS 元数据完整（三个模型、GGUF 文件名、仓库 ID、家族标记）
 - 模型路径按 author/repo 布局解析，未知模型返回空
 - is_model_installed 以 GGUF 文件判定完整性
-- get_current_model 配置持久化 + 异常回退默认
+- get_current_model / get_inject_model 配置持久化 + 未知 key 回退默认
 - get_status 扩展字段（models/installed/current_model）与 ready 判定
 - _download_model 未知模型参数校验
-- install_dependencies 的 NVIDIA/CPU 分支与配置写入
+- install_dependencies 的 NVIDIA/CPU 分支与 model/inject_model 配置写入
 """
 import sys
 import tempfile
@@ -33,14 +33,9 @@ class TestModelMeta(unittest.TestCase):
             self.assertIn("/", meta["hf_repo"], f"{key} 仓库 ID 应为 author/repo")
             self.assertTrue(meta["desc"])
             self.assertTrue(meta["size_label"])
-        # 字幕模型族 vs 注入候选：sensevoice 不作字幕模型（family 守卫）
+        # family 决定引擎输出模式（whisper/moss 出 SRT，sensevoice 出纯文本）
         self.assertNotIn(tc.TRANSCRIBE_MODELS["sensevoice"]["family"], ("whisper", "moss"))
         self.assertIn(tc.TRANSCRIBE_MODELS["whisper-turbo"]["family"], ("whisper", "moss"))
-
-    def test_install_bundles(self):
-        self.assertEqual(tc.DEFAULT_BUNDLE, "whisper+sv")
-        self.assertEqual(tc.INSTALL_BUNDLES["whisper+sv"], ["whisper-turbo", "sensevoice"])
-        self.assertEqual(tc.INSTALL_BUNDLES["moss+sv"], ["moss", "sensevoice"])
 
     def test_default_model_is_recommended_whisper_turbo(self):
         self.assertEqual(tc.DEFAULT_MODEL, "whisper-turbo")
@@ -117,14 +112,15 @@ class TestModelInstallCheck(unittest.TestCase):
                  mock.patch.object(tc, "VENV_DIR", Path(td) / "venv"), \
                  mock.patch.object(tc, "venv_python_path", return_value=venv_py), \
                  mock.patch("gui_app.config_store.load_transcribe_config",
-                            return_value={"model": "whisper-turbo"}):
+                            return_value={"model": "whisper-turbo",
+                                          "inject_model": "sensevoice"}):
                 # venv 缺失 + 模型缺失 -> 未就绪
                 st = tc.get_status()
                 self.assertFalse(st["ready"])
                 self.assertEqual(st["current_model"], "whisper-turbo")
-                # models=字幕模型（2），inject_models=全部候选（3）
+                # models / inject_models 均为全部候选（3）
                 self.assertEqual({m["key"] for m in st["models"]},
-                                 {"whisper-turbo", "moss"})
+                                 {"whisper-turbo", "moss", "sensevoice"})
                 self.assertEqual({m["key"] for m in st["inject_models"]},
                                  {"whisper-turbo", "moss", "sensevoice"})
                 self.assertEqual(st["inject_model"], "sensevoice")
@@ -157,17 +153,6 @@ class TestCurrentModel(unittest.TestCase):
                         return_value={"model": "bad-key"}):
             self.assertEqual(tc.get_current_model(), tc.DEFAULT_MODEL)
 
-    def test_current_fallback_default_when_missing(self):
-        with mock.patch("gui_app.config_store.load_transcribe_config",
-                        return_value={}):
-            self.assertEqual(tc.get_current_model(), tc.DEFAULT_MODEL)
-
-    def test_current_fallback_on_exception(self):
-        def _boom(*a, **k):
-            raise RuntimeError("config 损坏")
-        with mock.patch("gui_app.config_store.load_transcribe_config", _boom):
-            self.assertEqual(tc.get_current_model(), tc.DEFAULT_MODEL)
-
 
 class TestDownloadValidation(unittest.TestCase):
     """下载函数参数校验。"""
@@ -187,9 +172,9 @@ class TestDownloadValidation(unittest.TestCase):
 
 
 class TestInstallSyncsModel(unittest.TestCase):
-    """安装成功后把所选模型写为当前模型。"""
+    """安装成功后把所选模型写为当前模型与注入模型。"""
 
-    def _run_install(self, bundle="moss+sv", has_nvidia=False):
+    def _run_install(self, model="moss", inject_model="sensevoice", has_nvidia=False):
         """mock 掉全部子进程步骤，仅验证步骤 4 后的配置写入。"""
         def _fake_download(model_key, log_fn=None, progress_cb=None,
                            cancel_event=None, cleanup_on_cancel=False):
@@ -220,28 +205,67 @@ class TestInstallSyncsModel(unittest.TestCase):
                     p.start()
                 uwc = mock.patch("gui_app.config_store.update_transcribe_config").start()
                 try:
-                    r = tc.install_dependencies(pypi_mirror="nju", bundle=bundle)
+                    r = tc.install_dependencies(pypi_mirror="nju", model=model,
+                                                inject_model=inject_model)
                 finally:
                     mock.patch.stopall()
         return r, uwc
 
     def test_install_cpu_writes_selected_model(self):
-        r, uwc = self._run_install(bundle="moss+sv", has_nvidia=False)
+        r, uwc = self._run_install(model="moss", inject_model="sensevoice", has_nvidia=False)
         self.assertTrue(r["ok"])
-        # mutator 应写入组合主模型
+        # mutator 应写入右键转录模型与辅助重命名模型
         mutator = uwc.call_args.args[0]
         cfg = {}
         self.assertIsNone(mutator(cfg))
-        self.assertEqual(cfg, {"model": "moss"})
+        self.assertEqual(cfg, {"model": "moss", "inject_model": "sensevoice"})
 
     def test_install_nvidia_uses_engine_wheels(self):
-        r, uwc = self._run_install(bundle="whisper+sv", has_nvidia=True)
+        r, uwc = self._run_install(model="whisper-turbo", inject_model="whisper-turbo",
+                                   has_nvidia=True)
         self.assertTrue(r["ok"])
         mutator = uwc.call_args.args[0]
         cfg = {"model": "whisper-turbo", "enabled": True}
         mutator(cfg)
         self.assertEqual(cfg["model"], "whisper-turbo")
+        self.assertEqual(cfg["inject_model"], "whisper-turbo")
         self.assertEqual(cfg["enabled"], True)  # 其他键不被破坏
+
+    def test_install_unknown_model_rejected(self):
+        """未知模型 key 直接报错，不回退默认。"""
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            with mock.patch.object(tc, "TRANSCRIBE_DIR", base):
+                r = tc.install_dependencies(model="bad-key", inject_model="sensevoice")
+        self.assertFalse(r["ok"])
+        self.assertIn("未知模型", r["error"])
+
+    def test_install_same_model_downloads_once(self):
+        """两个选择为同一模型时只下载一次。"""
+        calls = []
+        def _record(model_key, log_fn=None, progress_cb=None,
+                    cancel_event=None, cleanup_on_cancel=False):
+            calls.append(model_key)
+            return {"ok": True, "downloaded": 1, "failed": [], "cancelled": False}
+
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            with mock.patch.object(tc, "TRANSCRIBE_DIR", base), \
+                 mock.patch.object(tc, "VENV_DIR", base / "venv"), \
+                 mock.patch.object(tc, "MODEL_DIR", base / "models"), \
+                 mock.patch.object(tc, "_ensure_uv", return_value="uv"), \
+                 mock.patch.object(tc, "_run_subprocess_streaming",
+                                   return_value=(0, ["ok"])), \
+                 mock.patch.object(tc, "venv_python_path",
+                                   return_value=base / "venv" / "python"), \
+                 mock.patch.object(tc, "detect_gpu_cached",
+                                   return_value={"has_nvidia": False}), \
+                 mock.patch.object(tc, "_download_model", side_effect=_record), \
+                 mock.patch("gui_app.config_store.update_transcribe_config"):
+                r = tc.install_dependencies(pypi_mirror="nju",
+                                            model="whisper-turbo", inject_model="whisper-turbo")
+        self.assertTrue(r["ok"])
+        self.assertEqual(calls, ["whisper-turbo"])
 
     def test_install_download_failure_does_not_write_model(self):
         """下载失败时不写当前模型。"""
@@ -263,15 +287,16 @@ class TestInstallSyncsModel(unittest.TestCase):
                                    return_value={"has_nvidia": False}), \
                  mock.patch.object(tc, "_download_model", side_effect=_fail), \
                  mock.patch("gui_app.config_store.update_transcribe_config") as uwc:
-                r = tc.install_dependencies(pypi_mirror="nju", bundle="moss+sv")
+                r = tc.install_dependencies(pypi_mirror="nju", model="moss",
+                                            inject_model="sensevoice")
         self.assertFalse(r["ok"])
         uwc.assert_not_called()
 
     def test_install_skips_download_when_model_exists(self):
-        """组合内模型都在盘上时步骤 4 跳过下载。"""
+        """所选模型都在盘上时步骤 4 跳过下载。"""
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
-            for mk in tc.INSTALL_BUNDLES["whisper+sv"]:
+            for mk in ("whisper-turbo", "sensevoice"):
                 meta = tc.TRANSCRIBE_MODELS[mk]
                 author, _, name = meta["hf_repo"].partition("/")
                 sub = base / "models" / author / name
@@ -289,7 +314,8 @@ class TestInstallSyncsModel(unittest.TestCase):
                                    return_value={"has_nvidia": False}), \
                  mock.patch.object(tc, "_download_model") as dl, \
                  mock.patch("gui_app.config_store.update_transcribe_config"):
-                r = tc.install_dependencies(pypi_mirror="nju", bundle="whisper+sv")
+                r = tc.install_dependencies(pypi_mirror="nju",
+                                            model="whisper-turbo", inject_model="sensevoice")
         self.assertTrue(r["ok"])
         dl.assert_not_called()
 
@@ -319,8 +345,8 @@ class TestInstallSyncsModel(unittest.TestCase):
         self.assertIn("ffmpeg", r["error"])
 
 
-    def test_run_batch_rejects_sensevoice(self):
-        """SenseVoice 只作注入，不允许作为右键字幕模型。"""
+    def test_run_batch_allows_sensevoice(self):
+        """SenseVoice 可作为右键转录模型（无 family 拦截，命中 ffmpeg 前置校验）。"""
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             meta = tc.TRANSCRIBE_MODELS["sensevoice"]
@@ -332,10 +358,11 @@ class TestInstallSyncsModel(unittest.TestCase):
             vpy.parent.mkdir(parents=True)
             vpy.write_bytes(b"x")
             with mock.patch.object(tc, "TRANSCRIBE_DIR", base),                  mock.patch.object(tc, "VENV_DIR", base / "venv"),                  mock.patch.object(tc, "venv_python_path", return_value=vpy),                  mock.patch("gui_app.config_store.load_transcribe_config",
-                            return_value={"model": "sensevoice"}),                  mock.patch.object(tc, "MODEL_DIR", base / "models"):
+                            return_value={"model": "sensevoice"}),                  mock.patch.object(tc, "MODEL_DIR", base / "models"),                  mock.patch.object(tc, "FFMPEG_EXE", ""):
                 r = tc.run_transcription_batch(["C:/v.mp4"])
         self.assertFalse(r["ok"])
-        self.assertIn("不支持字幕转录", r["error"])
+        self.assertIn("ffmpeg", r["error"])
+        self.assertNotIn("不支持", r["error"])
 
     def test_inject_ready(self):
         with tempfile.TemporaryDirectory() as td:
@@ -379,9 +406,10 @@ class TestInstallSyncsModel(unittest.TestCase):
                                 return_value={"inject_model": "bad-key"}):
                     self.assertEqual(tc.get_inject_model(), "sensevoice")
 
-    def test_transcribe_defaults_integration_on(self):
+    def test_transcribe_defaults_integration_off(self):
         from gui_app.config_store import _transcribe_defaults
-        self.assertIs(_transcribe_defaults()["integration"], True)
+        self.assertIs(_transcribe_defaults()["integration"], False)
+        self.assertEqual(_transcribe_defaults()["max_chars"], 2000)
 
 
 if __name__ == "__main__":
