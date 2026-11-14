@@ -616,16 +616,18 @@ class ExperimentalMixin:
         return info
 
     def install_transcribe(self, pypi_mirror: str = DEFAULT_PYPI_MIRROR,
-                           bundle: str = "whisper+sv",
+                           model: str = "whisper-turbo",
+                           inject_model: str = "whisper-turbo",
                            github_proxy: str = "") -> Dict[str, Any]:
-        """安装语音转录依赖。"""
+        """安装语音转录依赖（model=右键转录模型，inject_model=辅助重命名模型）。"""
         from ..transcribe_cpp import install_dependencies
 
         if not _install_lock.acquire(blocking=False):
             return {"ok": False, "error": "已有模块正在安装，请等待完成后再试"}
         _install_stop_event.clear()
         try:
-            r = install_dependencies(pypi_mirror=pypi_mirror, bundle=bundle,
+            r = install_dependencies(pypi_mirror=pypi_mirror, model=model,
+                                     inject_model=inject_model,
                                      github_proxy=github_proxy,
                                      log_fn=_push_log,
                                      stop_event=_install_stop_event)
@@ -670,21 +672,29 @@ class ExperimentalMixin:
 
     def detect_speech(self, items: List) -> Dict[str, Any]:
         """对选中视频执行语音转录（items: [[video_id, video_path], ...]）。"""
-        from ..transcribe_cpp import get_status, run_transcription_batch
+        from ..transcribe_cpp import get_status
 
         status = get_status()
         if not status["ready"]:
             return {"ok": False, "results": {}, "error": "语音转录未安装或未就绪，请先在扩展功能页安装依赖"}
 
-        cfg_exp = load_config().get("experimental", {})
-        language = cfg_exp.get("transcribe_language", "")
-
         if not _gpu_task_lock.acquire(blocking=False):
             return {"ok": False, "results": {}, "error": "已有 GPU 任务在运行，请等待完成后再试"}
         _gpu_stop_event.clear()
-
         vid_list = [item[0] for item in items]
         video_paths = [item[1] for item in items]
+        try:
+            return self._transcribe_videos(vid_list, video_paths)
+        finally:
+            _gpu_task_lock.release()
+
+    def _transcribe_videos(self, vid_list: List, video_paths: List) -> Dict[str, Any]:
+        """批量转录并保存 SRT（索引记录生成模型）。需持有 _gpu_task_lock。"""
+        from ..transcribe_cpp import get_current_model, run_transcription_batch
+
+        cfg_exp = load_config().get("experimental", {})
+        language = cfg_exp.get("transcribe_language", "")
+        model = get_current_model()
         total = len(video_paths)
         results: Dict[str, Any] = {}
 
@@ -735,11 +745,12 @@ class ExperimentalMixin:
                 _push_log(f"  转录中止（{err_txt}），保留已完成的 {sum(1 for tr in per_video if (tr or {}).get('ok'))} 个结果", "warn")
 
             for idx, vid in enumerate(vid_list):
-                tr = per_video[idx] if idx < len(per_video) else {"ok": False, "srt": "", "error": "无结果"}
+                tr = per_video[idx] if idx < len(per_video) else {"ok": False, "error": "无结果"}
                 if not tr.get("ok"):
-                    results[vid] = {"srt": "", "error": tr.get("error", "转录失败")}
+                    results[vid] = {"error": tr.get("error", "转录失败")}
                 else:
-                    results[vid] = {"srt": tr["srt"], "language": tr.get("language", ""), "error": None}
+                    results[vid] = {"srt": tr["srt"], "language": tr.get("language", ""),
+                                    "model": model, "error": None}
 
             if batch_result["ok"]:
                 _push_log(f"  转录完成（{total} 个视频，总耗时 {elapsed:.1f}s）")
@@ -759,8 +770,6 @@ class ExperimentalMixin:
             _push_log(f"转录失败：{str(e)[:200]}", "err")
             return {"ok": False, "results": results, "ok_count": ok_count,
                     "total": total, "error": str(e)}
-        finally:
-            _gpu_task_lock.release()
 
     def get_transcribe_transcript(self, video_id: str) -> Dict[str, Any]:
         """获取指定视频的转录内容（读 SRT 文件）。"""
@@ -788,7 +797,7 @@ class ExperimentalMixin:
         return list(store.keys())
 
     def _save_transcribe_srt(self, results: Dict[str, Any]) -> None:
-        """保存 SRT 文件 + 轻量索引 JSON（索引只存语言）。"""
+        """保存 SRT 文件 + 轻量索引 JSON（索引存语言与生成模型）。"""
         TRANSCRIBE_SRT_DIR.mkdir(parents=True, exist_ok=True)
         langs = {}
         for vid, data in results.items():
@@ -798,37 +807,80 @@ class ExperimentalMixin:
                 (TRANSCRIBE_SRT_DIR / f"{vid}.srt").write_text(data.get("srt", ""), encoding="utf-8")
             except OSError:
                 continue
-            langs[vid] = {"language": data.get("language", "")}
+            langs[vid] = {"language": data.get("language", ""),
+                          "model": data.get("model", "")}
 
         def _mutate(current):
-            if not isinstance(current, dict):
-                current = {}
             current.update(langs)
             return current
 
         update_json(TRANSCRIBE_TRANSCRIPTS_FILE, _mutate, default_factory=dict)
 
+    def _srt_export_block_reason(self) -> Optional[str]:
+        """当前右键转录模型为 SenseVoice 时给出导出拦截原因。"""
+        from ..transcribe_cpp import get_current_model
+        if get_current_model() == "sensevoice":
+            return ("SenseVoice 无逐句时间戳，无法导出字幕；"
+                    "请更换右键转录模型后重试（更换后导出会自动重新转录）")
+        return None
+
+    def _stale_srt_keys(self, items: List) -> set:
+        """原转录由 SenseVoice 生成（无时间戳）的视频 key 集合。"""
+        store = read_json(TRANSCRIBE_TRANSCRIPTS_FILE, {})
+        return {str(vid) for vid, _ in items
+                if store.get(str(vid), {}).get("model") == "sensevoice"}
+
+    def _retranscribe_stale(self, stale: List) -> None:
+        """重新转录 SenseVoice 生成的旧转录（stale: [[vid, vpath], ...]）。需持有 _gpu_task_lock。"""
+        _push_log(f"检测到 {len(stale)} 个视频的原转录由 SenseVoice 生成（无时间戳），自动重新转录…")
+        self._transcribe_videos([s[0] for s in stale], [s[1] for s in stale])
+
     def export_srt(self, items: List) -> Dict[str, Any]:
         """导出 SRT 字幕到视频同目录（items: [[video_id, video_path], ...]）。"""
+        block = self._srt_export_block_reason()
+        if block:
+            return {"ok": False, "exported": 0, "errors": [block], "need_model_change": True}
+
+        # SenseVoice 生成的旧转录先自动重转录
+        stale_keys = self._stale_srt_keys(items)
+        if stale_keys:
+            if not _gpu_task_lock.acquire(blocking=False):
+                return {"ok": False, "exported": 0,
+                        "errors": ["已有 GPU 任务在运行，请等待完成后再试"]}
+            _gpu_stop_event.clear()
+            try:
+                self._retranscribe_stale([[vid, vpath] for vid, vpath in items
+                                          if str(vid) in stale_keys])
+            finally:
+                _gpu_task_lock.release()
+            stale_keys = self._stale_srt_keys(items)
+
         exported = 0
         errors = []
-        for item in items:
-            vid, vpath = item[0], item[1]
+        for vid, vpath in items:
+            name = Path(vpath).name
+            if str(vid) in stale_keys:
+                errors.append(f"{name}: 重新转录失败，已跳过")
+                continue
             src = TRANSCRIBE_SRT_DIR / f"{vid}.srt"
             if not src.exists():
-                errors.append(f"{Path(vpath).name}: 无转录数据")
+                errors.append(f"{name}: 无转录数据")
                 continue
             dest = Path(vpath).with_suffix('.srt')
             try:
                 shutil.copy2(src, dest)
                 exported += 1
             except Exception as e:
-                errors.append(f"{Path(vpath).name}: {e}")
+                errors.append(f"{name}: {e}")
         return {"ok": exported > 0, "exported": exported, "errors": errors}
 
     def export_srt_translated(self, items: List) -> Dict[str, Any]:
         """导出 SRT 字幕并翻译为中文（.zh.srt，items: [[video_id, video_path], ...]）。"""
         from ..srt_translate import translate_srt_file, TranslationCancelled
+
+        block = self._srt_export_block_reason()
+        if block:
+            return {"ok": False, "exported": 0, "errors": [block], "need_model_change": True}
 
         if not _gpu_task_lock.acquire(blocking=False):
             return {"ok": False, "exported": 0, "errors": ["已有 GPU 任务在运行，请等待完成后再试"]}
@@ -851,12 +903,23 @@ class ExperimentalMixin:
             if not base_url:
                 return {"ok": False, "exported": 0, "errors": ["未配置 AI 服务地址（请先在 AI 配置页填写）"]}
 
+            # SenseVoice 生成的旧转录先自动重转录
+            stale_keys = self._stale_srt_keys(items)
+            if stale_keys:
+                self._retranscribe_stale([[vid, vpath] for vid, vpath in items
+                                          if str(vid) in stale_keys])
+                stale_keys = self._stale_srt_keys(items)
+
             tasks = []  # [(idx, vid, vpath, src, dest)]
             errors = []
             for idx, item in enumerate(items):
                 vid, vpath = item[0], item[1]
                 src = TRANSCRIBE_SRT_DIR / f"{vid}.srt"
                 name = Path(vpath).name
+                if str(vid) in stale_keys:
+                    errors.append(f"{name}: 重新转录失败，已跳过")
+                    _push_log(f"  [{idx+1}/{len(items)}] {name} — 重新转录失败，已跳过", "err")
+                    continue
                 if not src.exists():
                     errors.append(f"{name}: 无转录数据")
                     _push_log(f"  [{idx+1}/{len(items)}] {name} — 无转录数据", "err")

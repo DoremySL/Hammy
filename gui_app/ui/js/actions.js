@@ -337,6 +337,8 @@ async function exportSrt(ids) {
   const r = await callApi('export_srt', items);
   if (r && r.ok) {
     toast(`已导出 ${r.exported} 个 SRT 字幕`, 'ok', true);
+  } else if (r && r.need_model_change) {
+    toast(r.errors[0] || '请更换右键转录模型后重试', 'err', true);
   } else {
     toast('导出失败: ' + ((r && r.errors && r.errors[0]) || ''), 'err', true);
   }
@@ -358,6 +360,9 @@ async function exportSrtTranslated(ids) {
     $('#prog-bar').style.width = '100%';
     $('#prog-bar').className = 'done';
     toast(r.cancelled ? `翻译已停止: 成功 ${done}/${items.length}` : `翻译完成: 成功 ${done}/${items.length}`, done > 0 ? 'ok' : 'err');
+  } else if (r && r.need_model_change) {
+    $('#prog-bar').className = '';
+    toast(r.errors[0] || '请更换右键转录模型后重试', 'err', true);
   } else {
     $('#prog-bar').className = '';
     toast('翻译失败: ' + ((r && r.errors && r.errors[0]) || ''), 'err');
@@ -428,9 +433,11 @@ function showContextMenu(e, v) {
       return vv && vv.status === viewStatus;
     });
     if (matchIds.length) {
+      // SenseVoice 无时间戳，导出字幕禁用（置灰）
+      const svNoExport = state.transcribeModel === 'sensevoice';
       gSpeech.push({ label: `语音转录（${matchIds.length} 个）`, fn: () => detectSpeech(matchIds), disabled: state.gpuBusy });
-      gSpeech.push({ label: `导出字幕 SRT（${matchIds.length} 个）`, fn: () => exportSrt(matchIds), disabled: state.gpuBusy });
-      gSpeech.push({ label: `导出字幕并翻译为中文（${matchIds.length} 个）`, fn: () => exportSrtTranslated(matchIds), disabled: state.gpuBusy || (!state.llamaIntegration && !state.aiConnected) });
+      gSpeech.push({ label: `导出字幕 SRT（${matchIds.length} 个）`, fn: () => exportSrt(matchIds), disabled: state.gpuBusy || svNoExport });
+      gSpeech.push({ label: `导出字幕并翻译为中文（${matchIds.length} 个）`, fn: () => exportSrtTranslated(matchIds), disabled: state.gpuBusy || svNoExport || (!state.llamaIntegration && !state.aiConnected) });
     }
   }
   if (gSpeech.length) groups.push(gSpeech);

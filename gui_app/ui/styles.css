@@ -866,8 +866,6 @@
     overflow:hidden;text-overflow:ellipsis;max-width:55%}
   .fix-new{font-size:10px;font-weight:700;color:var(--accent-text);background:var(--accent-soft);
     padding:1px 7px;border-radius:var(--r-full);flex-shrink:0}
-  .fix-done{display:flex;flex-direction:column;gap:3px;max-height:180px;overflow:auto;
-    font-size:11.5px;color:var(--muted);text-align:left;max-width:92%}
   .fix-fails{display:flex;flex-direction:column;gap:3px;max-height:180px;overflow:auto;
     font-size:11.5px;color:var(--warn);text-align:left;max-width:92%}
 

@@ -10,6 +10,7 @@ async function renderExperimentalTabWrapper() {
       syncLlamaState(st.llama);
       state.taggerEnabled = !!(st.tagger && st.tagger.enabled);
       state.transcribeEnabled = !!(st.transcribe && st.transcribe.enabled);
+      if (st.transcribe && st.transcribe.current_model) state.transcribeModel = st.transcribe.current_model;
       state.ragVecEnabled = !!(st.ragvec && st.ragvec.enabled);
       return { cfg: st.cfg, uvStatus: st.uv, llamaStatus: st.llama, pStatus: st.tagger, wStatus: st.transcribe, rvStatus: st.ragvec };
     },
@@ -93,6 +94,7 @@ async function _saveExperimentalNow() {
     if (res && res.ok) {
       if (data.experimental.tagger_enabled != null) state.taggerEnabled = !!data.experimental.tagger_enabled;
       if (data.experimental.transcribe_enabled != null) state.transcribeEnabled = !!data.experimental.transcribe_enabled;
+      if (data.experimental.transcribe_model) state.transcribeModel = data.experimental.transcribe_model;
       if (data.experimental.rag_vec_enabled != null) state.ragVecEnabled = !!data.experimental.rag_vec_enabled;
     } else if (token === _expSaveToken) {
       toast('保存失败: ' + ((res && res.error) || ''), 'err');
@@ -231,16 +233,24 @@ function _bindManageButtons(uvStatus, llamaStatus, pStatus, wStatus, rvStatus) {
 
   const wInstallBtn = $('#btn-transcribe-install');
   if (wInstallBtn && !wStatus.ready) wInstallBtn.addEventListener('click', async () => {
-    const bundles = [
-      { value: 'whisper+sv', name: 'whisper-turbo + SenseVoice', desc: '速度快，显存占用低', recommended: true },
-      { value: 'moss+sv', name: 'MOSS-Diarize + SenseVoice', desc: '字幕质量更好，显存不够时速度慢' },
+    // 安装页模型文案：档位 | 语言支持
+    const modelOpts = [
+      { value: 'sensevoice', name: 'SenseVoice-Small', desc: '速度 | 中粤英日韩' },
+      { value: 'whisper-turbo', name: 'whisper-turbo', desc: '均衡 | 支持主流语言', recommended: true },
+      { value: 'moss', name: 'MOSS-Diarize', desc: '质量 | 支持主流语言' },
     ];
     const sel = await showMirrorSelectDialog({
       api: 'get_transcribe_mirrors',
-      showModelSelect: true, models: bundles,
+      modelSections: [
+        { title: '右键转录模型', name: 'w-model',
+          hint: '安装时下载所选模型，其余模型可在安装后下载切换', models: modelOpts },
+        { title: '辅助重命名模型', name: 'inject-model', models: modelOpts },
+      ],
       githubProxy: true,
     });
-    if (sel) startTranscribeInstall(sel.pypi || 'sjtu', sel.model || 'whisper+sv', sel.github_proxy || '');
+    if (sel) startTranscribeInstall(sel.pypi || 'sjtu',
+      sel.sel['w-model'] || 'whisper-turbo', sel.sel['inject-model'] || 'whisper-turbo',
+      sel.github_proxy || '');
   });
 
   const wRemoveBtn = $('#btn-transcribe-remove');
@@ -382,13 +392,13 @@ async function showMirrorSelectDialog(opts) {
       items: devices.map(d => ({ value: d.id, name: d.name, desc: d.desc || '', recommended: !!d.recommended })),
     }));
   }
-  if (opts.showModelSelect && Array.isArray(opts.models) && opts.models.length) {
+  (opts.modelSections || []).forEach(ms => {
     sections.push(mirrorSection({
-      title: '模型选择', hint: '安装时下载所选模型，其余模型可在安装后下载切换', name: 'model-select',
-      items: opts.models.map(m => ({ value: m.value ?? m.key, name: m.name ?? m.title,
-                                     desc: m.desc || '', recommended: !!m.recommended })),
+      title: ms.title, hint: ms.hint || '', name: ms.name, badge: ms.badge || '推荐',
+      items: ms.models.map(m => ({ value: m.value ?? m.key, name: m.name ?? m.title,
+                                   desc: m.desc || '', recommended: !!m.recommended })),
     }));
-  }
+  });
   if (Array.isArray(mirrors.pypi) && mirrors.pypi.length) {
     sections.push(mirrorSection({
       title: '通用 PyPI 镜像', hint: '常规依赖包索引', name: 'pypi-mirror', badge: '默认',
@@ -438,14 +448,18 @@ async function showMirrorSelectDialog(opts) {
     $('#mirrorOk').addEventListener('click', () => {
       const device = dlg.box.querySelector('input[name="device"]:checked');
       const pypi = dlg.box.querySelector('input[name="pypi-mirror"]:checked');
-      const model = dlg.box.querySelector('input[name="model-select"]:checked');
       const gh = dlg.box.querySelector('input[name="gh-method"]:checked');
       const ghInput = dlg.box.querySelector('#gh-proxy-input');
       const ghProxy = (gh && gh.value === 'proxy' && ghInput) ? ghInput.value.trim() : '';
+      const sel = {};
+      (opts.modelSections || []).forEach(ms => {
+        const el = dlg.box.querySelector(`input[name="${ms.name}"]:checked`);
+        sel[ms.name] = el ? el.value : null;
+      });
       dlg.close();
       resolve({ device: device ? device.value : null,
                 pypi: pypi ? pypi.value : 'sjtu',
-                model: model ? model.value : null,
+                sel,
                 github_proxy: ghProxy });
     });
   });
@@ -782,7 +796,7 @@ function _renderTranscribeSection(exp, wStatus) {
       <div id="transcribe-cfg-panel" class="exp-cfg-panel" style="display:${state.settingsOpen.has('transcribe-cfg') ? 'block' : 'none'}">
         <div class="exp-input-row">
           <div class="field">
-            <label data-tip="右键转录/导出字幕时使用，如需提高输入llm的文本质量可先右键转录">字幕模型</label>
+            <label data-tip="右键转录/导出字幕时使用；如需提高输入llm的文本质量可先右键转录">右键转录模型</label>
             ${modelSel}
           </div>
           <div class="field">
@@ -791,7 +805,7 @@ function _renderTranscribeSection(exp, wStatus) {
           </div>
           <div class="field">
             <label data-tip="开启后，自动重命名时对未转录过的视频自动用辅助重命名模型生成语音参考">集成到自动重命名</label>
-            ${_boolDd('transcribe-integration-dd', exp.transcribe_integration !== false)}
+            ${_boolDd('transcribe-integration-dd', !!exp.transcribe_integration)}
           </div>
         </div>
         <div class="exp-input-row">
@@ -805,7 +819,7 @@ function _renderTranscribeSection(exp, wStatus) {
           </div>
           <div class="field">
             <label data-tip="注入重命名 AI 提示词的最大字符数；辅助重命名模型推理到此字符数即提前停止">提示词截断</label>
-            <input type="number" id="transcribe-max-chars" min="100" step="100" value="${exp.transcribe_max_chars || 800}"/>
+            <input type="number" id="transcribe-max-chars" min="100" step="100" value="${exp.transcribe_max_chars || 2000}"/>
           </div>
         </div>
       </div>
@@ -878,12 +892,14 @@ function _bindTranscribeEvents() {
   });
 }
 
-async function startTranscribeInstall(pypiMirror, bundle, githubProxy) {
+async function startTranscribeInstall(pypiMirror, model, injectModel, githubProxy) {
   await runInstallTask(
-    () => apiCall('install_transcribe', pypiMirror || 'sjtu', bundle || 'whisper+sv', githubProxy || ''),
+    () => apiCall('install_transcribe', pypiMirror || 'sjtu',
+                  model || 'whisper-turbo', injectModel || 'whisper-turbo', githubProxy || ''),
     async () => {
       await apiCall('set_transcribe_enabled', true);
       state.transcribeEnabled = true;
+      state.transcribeModel = model || 'whisper-turbo';
       toast('语音转录安装完成，已自动启用', 'ok');
     });
 }

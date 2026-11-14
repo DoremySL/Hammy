@@ -6,7 +6,7 @@ import re
 import shutil
 import threading
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from batch_rename.utils import fmt_size
 from .env import APP_ROOT, PYTHON_EXE, FFMPEG_EXE, make_logger
@@ -35,7 +35,7 @@ TRANSCRIBE_MODELS = {
         "gguf": "whisper-large-v3-turbo-Q8_0.gguf",
         "hf_repo": "handy-computer/whisper-large-v3-turbo-gguf",
         "ms_repo": "",  # 待填入魔搭仓库
-        "desc": "多语言快速转录（99 语种），速度最快",
+        "desc": "多语言快速转录",
         "size_label": "~850MB",
         "recommended": True,
     },
@@ -45,7 +45,7 @@ TRANSCRIBE_MODELS = {
         "gguf": "MOSS-Transcribe-Diarize-Q8_0.gguf",
         "hf_repo": "handy-computer/moss-transcribe-diarize-gguf",
         "ms_repo": "",  # 待填入魔搭仓库
-        "desc": "中日英转录 + 说话人分离，适合影视字幕",
+        "desc": "多语言，配置要求略高，适合生成字幕",
         "size_label": "~1GB",
         "recommended": False,
     },
@@ -55,20 +55,13 @@ TRANSCRIBE_MODELS = {
         "gguf": "SenseVoiceSmall-Q8_0.gguf",
         "hf_repo": "handy-computer/SenseVoiceSmall-gguf",
         "ms_repo": "",  # 待填入魔搭仓库
-        "desc": "最快档：中英日韩粤，自带标点（无逐句时间戳，不作字幕模型）",
+        "desc": "中英日韩粤，无逐句时间戳，导出字幕不可用",
         "size_label": "~240MB",
         "recommended": False,
     },
 }
 DEFAULT_MODEL = "whisper-turbo"
 DEFAULT_INJECT_MODEL = "sensevoice"
-
-# 安装组合：字幕主模型 + 注入模型
-INSTALL_BUNDLES = {
-    "whisper+sv": ["whisper-turbo", "sensevoice"],
-    "moss+sv": ["moss", "sensevoice"],
-}
-DEFAULT_BUNDLE = "whisper+sv"
 
 # 注入模式分窗时长（秒）
 INJECT_WIN_SEC = {"sensevoice": 30.0, "whisper": 60.0, "moss": 300.0}
@@ -111,22 +104,16 @@ def is_model_installed(model_key: str) -> bool:
 
 
 def get_current_model() -> str:
-    """字幕模型 key。"""
-    try:
-        from .config_store import load_transcribe_config
-        key = load_transcribe_config().get("model") or DEFAULT_MODEL
-    except Exception:
-        key = DEFAULT_MODEL
+    """右键转录模型 key。"""
+    from .config_store import load_transcribe_config
+    key = load_transcribe_config()["model"]
     return key if key in TRANSCRIBE_MODELS else DEFAULT_MODEL
 
 
 def get_inject_model() -> str:
     """辅助重命名模型 key。"""
-    try:
-        from .config_store import load_transcribe_config
-        key = load_transcribe_config().get("inject_model") or DEFAULT_INJECT_MODEL
-    except Exception:
-        key = DEFAULT_INJECT_MODEL
+    from .config_store import load_transcribe_config
+    key = load_transcribe_config()["inject_model"]
     return key if key in TRANSCRIBE_MODELS else DEFAULT_INJECT_MODEL
 
 
@@ -136,22 +123,20 @@ def get_installed_models() -> Dict[str, bool]:
 
 
 def get_status() -> Dict[str, Any]:
-    """获取安装状态。models=字幕模型，inject_models=注入模型候选。"""
+    """获取安装状态。models/inject_models 均为全部候选模型。"""
     venv_python = venv_python_path(VENV_DIR)
     venv_ok = VENV_DIR.is_dir() and venv_python.exists()
     current = get_current_model()
-    subtitle = {k: m for k, m in TRANSCRIBE_MODELS.items()
-                if m.get("family") in ("whisper", "moss")}
     installed = get_installed_models()
+    all_models = [{**meta, "key": key} for key, meta in TRANSCRIBE_MODELS.items()]
     return {
         "dir_exists": TRANSCRIBE_DIR.is_dir(),
         "venv_exists": venv_ok,
         "model_exists": installed.get(current, False),
         "ready": venv_ok and installed.get(current, False),
         "dir_path": str(TRANSCRIBE_DIR),
-        # 模型元数据
-        "models": [{**meta, "key": key} for key, meta in subtitle.items()],
-        "inject_models": [{**meta, "key": key} for key, meta in TRANSCRIBE_MODELS.items()],
+        "models": all_models,
+        "inject_models": all_models,
         "installed": installed,
         "current_model": current,
         "inject_model": get_inject_model(),
@@ -262,14 +247,19 @@ def _download_engine_wheels(proxy: str, log_fn: Callable[[str], None],
 
 
 def install_dependencies(pypi_mirror: str = DEFAULT_PYPI_MIRROR,
-                         bundle: str = DEFAULT_BUNDLE,
+                         model: str = DEFAULT_MODEL,
+                         inject_model: str = DEFAULT_INJECT_MODEL,
                          github_proxy: str = "",
                          log_fn: Optional[Callable[[str], None]] = None,
                          stop_event: Optional[threading.Event] = None) -> Dict[str, Any]:
-    """安装 transcribe.cpp 全部依赖。"""
+    """安装 transcribe.cpp 全部依赖（model=右键转录模型，inject_model=辅助重命名模型）。"""
     pypi_url = PYPI_MIRRORS.get(pypi_mirror, PYPI_MIRRORS[DEFAULT_PYPI_MIRROR])["url"]
     TRANSCRIBE_DIR.mkdir(parents=True, exist_ok=True)
-    models_to_install = INSTALL_BUNDLES.get(bundle, INSTALL_BUNDLES[DEFAULT_BUNDLE])
+    unknown = [k for k in (model, inject_model) if k not in TRANSCRIBE_MODELS]
+    if unknown:
+        return {"ok": False, "error": f"未知模型: {', '.join(unknown)}"}
+    # 去重：两处选同一模型只下载一次
+    models_to_install = list(dict.fromkeys([model, inject_model]))
     steps = InstallSteps(4)
 
     def _cancelled() -> Optional[Dict[str, Any]]:
@@ -369,7 +359,6 @@ def install_dependencies(pypi_mirror: str = DEFAULT_PYPI_MIRROR,
             _log(f"  ── {meta['title']}（{src_label}，{meta['size_label']}）──", log_fn)
 
             def _install_progress(ev: Dict[str, Any]):
-                # 下载同步执行，闭包读到的是当前循环的 n
                 if ev.get("type") == "progress" and ev.get("total") and ev.get("pct") is not None:
                     pct10 = int(ev["pct"] * 100 // 5)
                     if pct10 > last_pct10["v"]:
@@ -393,8 +382,9 @@ def install_dependencies(pypi_mirror: str = DEFAULT_PYPI_MIRROR,
                 return {"ok": False, "error": f"模型下载失败: {dl.get('error') or '未知错误'}"}
     try:
         from .config_store import update_transcribe_config
-        update_transcribe_config(lambda c: c.update(model=models_to_install[0]))
-        _log(f"当前模型已设为: {TRANSCRIBE_MODELS[models_to_install[0]]['title']}", log_fn)
+        update_transcribe_config(lambda c: c.update(model=model, inject_model=inject_model))
+        _log(f"当前模型已设为: {TRANSCRIBE_MODELS[model]['title']}"
+             f"（辅助重命名: {TRANSCRIBE_MODELS[inject_model]['title']}）", log_fn)
     except Exception as e:
         _log(f"设置当前模型失败（忽略）: {e}", log_fn)
     _log("━━ 全部完成 ━━", log_fn)
@@ -409,14 +399,59 @@ def remove_transcribe() -> Dict[str, Any]:
             shutil.rmtree(TRANSCRIBE_DIR)
         except Exception as e:
             return {"ok": False, "error": f"删除失败: {e}"}
-    # 模块配置/开关/转录结果一并删除
-    try:
-        from .workspace_paths import TRANSCRIBE_CONFIG_FILE
-        shutil.rmtree(TRANSCRIBE_CONFIG_FILE.parent, ignore_errors=True)
-    except Exception:
-        pass
+    # 模块配置与转录结果一并删除
+    from .workspace_paths import TRANSCRIBE_CONFIG_FILE
+    shutil.rmtree(TRANSCRIBE_CONFIG_FILE.parent, ignore_errors=True)
     return {"ok": True,
             "message": "已删除 transcribe 文件夹" if existed else "目录不存在，无需删除"}
+
+
+def _run_batch_script(params: Dict[str, Any], per_video: List[Dict[str, Any]],
+                      on_video_done: Optional[Callable[[int, Dict[str, Any]], None]],
+                      on_log: Optional[Callable[[str], None]],
+                      stop_event, err_label: str) -> Tuple[Optional[str], List[Dict[str, Any]]]:
+    """运行转录子进程并解析逐行 JSON 输出。返回 (error, items)，error=None 表示成功。"""
+    final_result: Optional[Dict[str, Any]] = None
+
+    def _on_line(line: str):
+        nonlocal final_result
+        line = line.strip()
+        if not line:
+            return
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            return
+        if obj.get("done"):
+            final_result = obj
+        elif "idx" in obj:
+            idx = obj["idx"]
+            entry = {k: v for k, v in obj.items() if k != "idx"}
+            while len(per_video) <= idx:
+                per_video.append({"ok": False, "error": "缺失"})
+            per_video[idx] = entry
+            if on_video_done:
+                on_video_done(idx, entry)
+        elif obj.get("log") and on_log:
+            on_log(obj["log"])
+
+    timeout = _TRANSCRIBE_TIMEOUT_PER_VIDEO_SEC * max(1, len(params["video_paths"]))
+    rc, _last, err_tail = _run_venv_script(
+        VENV_DIR, _TRANSCRIBE_SCRIPT, params,
+        timeout=timeout, stop_event=stop_event, on_line=_on_line,
+    )
+
+    if rc == RC_CANCEL:
+        return "已取消", per_video
+    if rc == RC_TIMEOUT:
+        return f"{err_label}超时", per_video
+    if rc != 0:
+        return f"{err_label}失败: {err_tail[-500:] if err_tail else '子进程异常退出'}", per_video
+    if final_result:
+        return None, final_result.get("per_video", per_video)
+    if per_video:
+        return None, per_video
+    return f"{err_label}无输出", []
 
 
 def run_transcription_batch(video_paths: List[str],
@@ -429,9 +464,6 @@ def run_transcription_batch(video_paths: List[str],
     Returns: {"ok": bool, "per_video": [...], "error": str|None}
     """
     current = get_current_model()
-    if TRANSCRIBE_MODELS[current].get("family") not in ("whisper", "moss"):
-        return {"ok": False, "per_video": [],
-                "error": "当前模型不支持字幕转录（仅 whisper-turbo / MOSS 可用）"}
     venv_python = venv_python_path(VENV_DIR)
     if not (VENV_DIR.is_dir() and venv_python.exists()):
         return {"ok": False, "per_video": [], "error": "语音转录未安装或未就绪"}
@@ -455,48 +487,11 @@ def run_transcription_batch(video_paths: List[str],
     }
 
     per_video: List[Dict[str, Any]] = []
-    final_result: Optional[Dict[str, Any]] = None
-
-    def _on_line(line: str):
-        nonlocal final_result
-        line = line.strip()
-        if not line:
-            return
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
-            return
-        if obj.get("done"):
-            final_result = obj
-        elif "idx" in obj:
-            idx = obj["idx"]
-            entry = {k: v for k, v in obj.items() if k != "idx"}
-            while len(per_video) <= idx:
-                per_video.append({"ok": False, "srt": "", "error": "缺失"})
-            per_video[idx] = entry
-            if on_video_done:
-                on_video_done(idx, entry)
-        elif obj.get("log") and on_log:
-            on_log(obj["log"])
-
-    timeout = _TRANSCRIBE_TIMEOUT_PER_VIDEO_SEC * max(1, len(video_paths))
-    rc, _last, err_tail = _run_venv_script(
-        VENV_DIR, _TRANSCRIBE_SCRIPT, params,
-        timeout=timeout, stop_event=stop_event, on_line=_on_line,
-    )
-
-    if rc == RC_CANCEL:
-        return {"ok": False, "per_video": per_video, "error": "已取消"}
-    if rc == RC_TIMEOUT:
-        return {"ok": False, "per_video": per_video, "error": "转录超时"}
-    if rc != 0:
-        return {"ok": False, "per_video": per_video,
-                "error": f"转录失败: {err_tail[-500:] if err_tail else '子进程异常退出'}"}
-    if final_result:
-        return {"ok": True, "per_video": final_result.get("per_video", per_video), "error": None}
-    if per_video:
-        return {"ok": True, "per_video": per_video, "error": None}
-    return {"ok": False, "per_video": [], "error": "转录无输出"}
+    error, items = _run_batch_script(params, per_video, on_video_done, on_log,
+                                     stop_event, "转录")
+    if error:
+        return {"ok": False, "per_video": per_video, "error": error}
+    return {"ok": True, "per_video": items, "error": None}
 
 
 def run_inject_batch(video_paths: List[str],
@@ -507,8 +502,6 @@ def run_inject_batch(video_paths: List[str],
 
     Returns: {"ok": bool, "texts": {video_path: text}, "error": str|None}
     """
-    if not video_paths:
-        return {"ok": True, "texts": {}, "error": None}
     if not inject_ready():
         return {"ok": False, "texts": {}, "error": "注入模型未安装或未就绪"}
     if not FFMPEG_EXE:
@@ -524,52 +517,19 @@ def run_inject_batch(video_paths: List[str],
         "backend": backend,
         "ffmpeg": FFMPEG_EXE,
         "venv_site_packages": str(VENV_DIR / "Lib" / "site-packages"),
-        "max_chars": max(0, int(max_chars or 0)),
-        "inject_win_sec": INJECT_WIN_SEC.get(TRANSCRIBE_MODELS[inject_key]["family"], 30.0),
+        "max_chars": int(max_chars),
+        "inject_win_sec": INJECT_WIN_SEC[TRANSCRIBE_MODELS[inject_key]["family"]],
         "mode": "text",
     }
 
-    texts: Dict[str, str] = {}
     per_video: List[Dict[str, Any]] = []
-    final_result: Optional[Dict[str, Any]] = None
+    error, items = _run_batch_script(params, per_video, None, on_log, stop_event, "推理")
+    if error:
+        return {"ok": False, "texts": {}, "error": error}
 
-    def _on_line(line: str):
-        nonlocal final_result
-        line = line.strip()
-        if not line:
-            return
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
-            return
-        if obj.get("done"):
-            final_result = obj
-        elif "idx" in obj:
-            idx = obj["idx"]
-            entry = {k: v for k, v in obj.items() if k != "idx"}
-            while len(per_video) <= idx:
-                per_video.append({"ok": False, "text": "", "error": "缺失"})
-            per_video[idx] = entry
-        elif obj.get("log") and on_log:
-            on_log(obj["log"])
-
-    timeout = _TRANSCRIBE_TIMEOUT_PER_VIDEO_SEC * max(1, len(video_paths))
-    rc, _last, err_tail = _run_venv_script(
-        VENV_DIR, _TRANSCRIBE_SCRIPT, params,
-        timeout=timeout, stop_event=stop_event, on_line=_on_line,
-    )
-
-    if rc == RC_CANCEL:
-        return {"ok": False, "texts": {}, "error": "已取消"}
-    if rc == RC_TIMEOUT:
-        return {"ok": False, "texts": {}, "error": "推理超时"}
-    if rc != 0:
-        return {"ok": False, "texts": {},
-                "error": f"推理失败: {err_tail[-500:] if err_tail else '子进程异常退出'}"}
-
-    items = (final_result or {}).get("per_video", per_video)
+    texts: Dict[str, str] = {}
     for idx, vp in enumerate(video_paths):
-        tr = items[idx] if idx < len(items) else {"ok": False, "text": "", "error": "无结果"}
+        tr = items[idx] if idx < len(items) else {"ok": False}
         if tr.get("ok") and tr.get("text"):
             texts[vp] = tr["text"]
     return {"ok": True, "texts": texts, "error": None}
@@ -614,7 +574,6 @@ model = None
 for be in backends:
     try:
         model = tc.Model(model_path, backend=be)
-        plog(f'引擎后端: {be}')
         break
     except Exception as e:
         plog(f'{be} 初始化失败: {str(e).splitlines()[0]}')
@@ -671,7 +630,7 @@ def transcribe_one(i, vp):
             dur = len(audio) / sr
             if mode == 'text':
                 # 注入模式：分窗推理，达标即停
-                win = float(params.get('inject_win_sec', 30.0) or 30.0)
+                win = float(params['inject_win_sec'])
                 texts = []
                 acc = 0
                 pos = 0.0
@@ -689,28 +648,39 @@ def transcribe_one(i, vp):
                 entry = {'ok': True, 'text': ' '.join(texts), 'srt': '',
                          'language': '', 'duration': round(dur, 1), 'error': None}
             else:
-                chunk = FAMILY_CHUNK_SEC.get(family, 0)
-                if chunk and dur <= chunk + 0.5:
-                    chunk = 0
-                if not chunk:
+                if family == 'sensevoice':
+                    # 无时间戳：整段文本合成单条字幕（仅辅助重命名用）
                     res = sess.run(audio, **run_kw)
-                    srt, _ = _to_srt(res.segments)
-                    lang = getattr(res, 'language', '') or ''
+                    body = ((getattr(res, 'text', '') or '').strip() or ' '.join(
+                        (getattr(s, 'text', '') or '').strip()
+                        for s in (res.segments or [])).strip())
+                    srt = (f'1\n{_srt_ts(0)} --> {_srt_ts(int(dur * 1000))}\n{body}\n'
+                           if body else '')
+                    entry = {'ok': True, 'srt': srt, 'language': '', 'text': '',
+                             'duration': round(dur, 1), 'error': None}
                 else:
-                    parts = []
-                    lang = ''
-                    pos = 0.0
-                    idx = 1
-                    while pos < dur - 0.1:
-                        seg_audio = audio[int(pos * sr): int((pos + chunk) * sr)]
-                        res = sess.run(seg_audio, **run_kw)
-                        part, idx = _to_srt(res.segments, offset_ms=int(pos * 1000), idx=idx)
-                        parts.append(part)
-                        lang = lang or (getattr(res, 'language', '') or '')
-                        pos += chunk
-                    srt = '\n'.join(parts)
-                entry = {'ok': True, 'srt': srt, 'language': lang, 'text': '',
-                         'duration': round(dur, 1), 'error': None}
+                    chunk = FAMILY_CHUNK_SEC.get(family, 0)
+                    if chunk and dur <= chunk + 0.5:
+                        chunk = 0
+                    if not chunk:
+                        res = sess.run(audio, **run_kw)
+                        srt, _ = _to_srt(res.segments)
+                        lang = getattr(res, 'language', '') or ''
+                    else:
+                        parts = []
+                        lang = ''
+                        pos = 0.0
+                        idx = 1
+                        while pos < dur - 0.1:
+                            seg_audio = audio[int(pos * sr): int((pos + chunk) * sr)]
+                            res = sess.run(seg_audio, **run_kw)
+                            part, idx = _to_srt(res.segments, offset_ms=int(pos * 1000), idx=idx)
+                            parts.append(part)
+                            lang = lang or (getattr(res, 'language', '') or '')
+                            pos += chunk
+                        srt = '\n'.join(parts)
+                    entry = {'ok': True, 'srt': srt, 'language': lang, 'text': '',
+                             'duration': round(dur, 1), 'error': None}
     except Exception as e:
         entry = {'ok': False, 'srt': '', 'text': '', 'language': '', 'duration': 0, 'error': str(e)}
     print(json.dumps({'idx': i, **entry}, ensure_ascii=False), flush=True)

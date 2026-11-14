@@ -115,6 +115,7 @@ const state = {
   taggerEnabled: false,
   taggerCategories: {},           // 视频 ID → 分类（2d/3d/real/cos/unk）
   transcribeEnabled: false,
+  transcribeModel: 'whisper-turbo',  // 当前右键转录模型 key（sensevoice 时禁用导出字幕）
   ragVecEnabled: false,
   thumbOptimize: true,
   gpuBusy: false,

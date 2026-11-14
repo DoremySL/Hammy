@@ -669,16 +669,6 @@ function renderFixResult(renamedList, skipList, converted, mp4Cnt, mkvCnt, skipp
   }
   if (!lines.length) lines.push('未执行任何修复');
   let html = `<div>${lines.map(esc).join('，')}</div>`;
-  const detail = [];
-  for (const it of renamedList) {
-    detail.push(`<div title="${esc(it.to)}">${esc(baseName(it.from))} → ${esc(baseName(it.to))}</div>`);
-  }
-  for (const it of converted) {
-    detail.push(`<div title="${esc(it.raw)}">${esc(it.name)} → ${esc(it.to)}</div>`);
-  }
-  if (detail.length) {
-    html += '<div class="fix-done">' + detail.join('') + '</div>';
-  }
   const failRows = [...skipList.map(s => `${s.name}：${s.reason}`),
                     ...skippedTs.map(s => `${s.name}：${s.reason}`),
                     ...fails.map(f => `${f.name}：${f.reason}`)];

@@ -45,6 +45,7 @@ pywebviewReady(30000).then(async () => {
     if (cfg) applyDisableAnimation(cfg.animation_enabled === false);
     const exp = (cfg && cfg.experimental) || {};
     state.thumbOptimize = Number(((cfg || {}).video || {}).frame_time_tags) === 2;
+    state.transcribeModel = exp.transcribe_model || 'whisper-turbo';
     // 各 id 集合互相独立，并行拉取避免逐个串行等待
     const idFetches = [];
     if (exp.tagger_enabled) {

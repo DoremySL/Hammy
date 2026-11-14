@@ -235,7 +235,7 @@ class PipelineRunner:
         inject_texts = inject_texts or {}
         if not TRANSCRIBE_SRT_DIR.exists() and not inject_texts:
             return {}
-        max_chars = max(100, _safe_int(exp_cfg, "transcribe_max_chars", 800))
+        max_chars = max(100, _safe_int(exp_cfg, "transcribe_max_chars", 2000))
         inject_ts = exp_cfg.get("transcribe_inject_timestamps", False)
         store = read_json(TRANSCRIBE_TRANSCRIPTS_FILE, {})
         result: Dict[str, str] = {}
@@ -272,7 +272,7 @@ class PipelineRunner:
                               on_log) -> Optional[Dict[str, str]]:
         """为缺转录的视频生成注入文本；None=用户停止，失败降级为 {}。"""
         if not (exp_cfg.get("transcribe_enabled", False)
-                and exp_cfg.get("transcribe_integration", True)):
+                and exp_cfg.get("transcribe_integration", False)):
             return {}
         from . import transcribe_cpp
         if not transcribe_cpp.inject_ready():
@@ -284,7 +284,7 @@ class PipelineRunner:
                    if not (TRANSCRIBE_SRT_DIR / f"{stable_id(vp)}.srt").exists()]
         if not missing:
             return {}
-        max_chars = max(100, _safe_int(exp_cfg, "transcribe_max_chars", 800))
+        max_chars = max(100, _safe_int(exp_cfg, "transcribe_max_chars", 2000))
 
         from .api_mixins.experimental import _gpu_task_lock
         # 轮询获取 GPU 任务锁，期间响应停止
