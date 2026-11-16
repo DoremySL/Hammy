@@ -7,6 +7,7 @@ import unittest
 
 from batch_rename import video as video_mod
 from batch_rename.config import Config
+from batch_rename.types import Frame
 
 
 def _make_cfg(mode):
@@ -19,6 +20,11 @@ _META_MP4 = {"duration": 100.0, "start_time": 0.0, "format_name": "matroska,webm
              "video": {"frame_rate": 24.0}, "audio": []}
 _META_TS = {"duration": 100.0, "start_time": 1.442, "format_name": "mpegts",
             "video": {"frame_rate": 24.0}, "audio": []}
+
+
+def _frames(*ts_list):
+    """构造测试帧（b64 为标记串，预处理在 harness 中打桩为透传）。"""
+    return [Frame(t, f"F{i}") for i, t in enumerate(ts_list)]
 
 
 class _RouterHarness:
@@ -39,8 +45,8 @@ class _RouterHarness:
     def _probe(self, path, stop, points, per_point):
         return dict(self.meta), list(self.key_ts)
 
-    def _select(self, duration, key_ts, points, per_point):
-        return list(self.timestamp_list)
+    def _samples(self, duration, key_ts, points, per_point):
+        return [(t, i) for i, t in enumerate(self.timestamp_list)]
 
     def _concat(self, path, targets, config, stop, frame_rate, frame_vf=None):
         self.concat_calls.append((list(targets), frame_rate))
@@ -56,7 +62,9 @@ class _RouterHarness:
 
     def run(self, cfg):
         with mock.patch.object(video_mod, "probe_video", self._probe), \
-             mock.patch.object(video_mod, "select_sampled_timestamps", self._select), \
+             mock.patch.object(video_mod, "select_point_samples", self._samples), \
+             mock.patch.object(video_mod, "_preprocess_extracted",
+                               lambda frames: list(frames)), \
              mock.patch.object(video_mod, "_extract_frames_concat", self._concat), \
              mock.patch.object(video_mod, "_extract_frame", self._per_frame), \
              mock.patch.object(video_mod, "_extract_frames_ts", self._ts_pass), \
@@ -68,11 +76,11 @@ class _RouterHarness:
 class TestExtractRouting(unittest.TestCase):
     def test_auto_mp4_keyframe_aligned_uses_concat(self):
         h = _RouterHarness(_META_MP4, [0.0, 50.0], [0.0, 50.0],
-                           concat_frames=["F0", "F1"])
+                           concat_frames=_frames(0.0, 50.0))
         _, frames = h.run(_make_cfg("auto"))
         self.assertEqual(len(h.concat_calls), 1)
         self.assertEqual(h.per_frame_calls, [])
-        self.assertEqual(frames, ["F0", "F1"])
+        self.assertEqual(frames, [Frame(0.0, "F0", 0), Frame(50.0, "F1", 1)])
 
     def test_auto_concat_mismatch_falls_back_to_per_frame(self):
         h = _RouterHarness(_META_MP4, [0.0, 50.0], [0.0, 50.0],
@@ -103,11 +111,12 @@ class TestExtractRouting(unittest.TestCase):
         self.assertEqual([st for _, st in h.per_frame_calls], [1.442, 1.442])
 
     def test_legacy_ts_uses_single_pass(self):
-        h = _RouterHarness(_META_TS, [0.0, 50.0], [0.0, 50.0], ts_pass_frames=["F0", "F1"])
+        h = _RouterHarness(_META_TS, [0.0, 50.0], [0.0, 50.0],
+                           ts_pass_frames=_frames(0.0, 50.0))
         _, frames = h.run(_make_cfg("legacy"))
         self.assertEqual(h.ts_pass_calls, 1)
         self.assertEqual(h.per_frame_calls, [])
-        self.assertEqual(frames, ["F0", "F1"])
+        self.assertEqual(frames, [Frame(0.0, "F0", 0), Frame(50.0, "F1", 1)])
 
     def test_legacy_ts_mismatch_falls_back_to_per_frame(self):
         h = _RouterHarness(_META_TS, [0.0, 50.0], [0.0, 50.0])  # ts_pass 返回 None

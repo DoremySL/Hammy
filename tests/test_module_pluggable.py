@@ -130,13 +130,13 @@ class TestAssemble(_WorkspaceTestCase):
 
     def test_assemble_reflects_module_files(self):
         from gui_app import config_store
-        self._write("tagger", {"enabled": True, "frames": 9})
+        self._write("tagger", {"enabled": True, "integration": True})
         self._write("transcribe", {"enabled": True, "language": "en"})
         self._write("llama", {"enabled": True, "integrate": True})
         self._write_config(_cfg())
         exp = config_store.load_config()["experimental"]
         self.assertIs(exp["tagger_enabled"], True)
-        self.assertEqual(exp["tagger_frames"], 9)
+        self.assertIs(exp["tagger_integration"], True)
         self.assertIs(exp["transcribe_enabled"], True)
         self.assertEqual(exp["transcribe_language"], "en")
         self.assertIs(exp["llama_enabled"], True)
@@ -145,7 +145,7 @@ class TestAssemble(_WorkspaceTestCase):
     def test_assemble_not_persisted(self):
         # 组装只发生在返回值（内存）：磁盘 config.json 不写任何模块键
         from gui_app import config_store
-        self._write("tagger", {"enabled": True, "frames": 9})
+        self._write("tagger", {"enabled": True, "integration": True})
         self._write("transcribe", {"enabled": True, "language": "en"})
         self._write("llama", {"enabled": True, "integrate": True})
         self._write_config(_cfg())
@@ -159,7 +159,7 @@ class TestAssemble(_WorkspaceTestCase):
     def test_module_dir_deleted_still_usable(self):
         # 模拟卸载：模块文件夹整个删除后，load_config 用默认值组装，程序可用
         from gui_app import config_store
-        self._write("tagger", {"enabled": True, "frames": 9})
+        self._write("tagger", {"enabled": True, "integration": True})
         self._write("transcribe", {"enabled": True})
         self._write("llama", {"enabled": True, "integrate": True})
         self._write_config(_cfg())
@@ -186,12 +186,12 @@ class TestSaveConfigSplit(_WorkspaceTestCase):
         from gui_app import config_store
         self._write_config(_cfg())
         r = config_store.save_config({
-            "experimental": {"tagger_enabled": True, "tagger_frames": 6},
+            "experimental": {"tagger_enabled": True, "tagger_integration": True},
         })
         self.assertTrue(r["ok"])
         # 模块文件：默认值 + 提交值
         self.assertEqual(self._read("tagger")["enabled"], True)
-        self.assertEqual(self._read("tagger")["frames"], 6)
+        self.assertIs(self._read("tagger")["integration"], True)
         # config.json：experimental 段为空（模块键不落盘）
         self.assertEqual(self._disk_cfg().get("experimental", {}), {})
 
@@ -219,11 +219,11 @@ class TestSaveConfigSplit(_WorkspaceTestCase):
         from gui_app import config_store
         self._write_config(_cfg())
         config_store.save_config({
-            "experimental": {"custom_key": 1, "tagger_frames": 7},
+            "experimental": {"custom_key": 1, "tagger_frames": 7},  # frames 已废弃：非模块键
         })
-        self.assertEqual(self._read("tagger")["frames"], 7)
+        self.assertFalse(self.paths["tagger"].exists())  # 废弃键不路由，模块文件不创建
         self.assertEqual(self._disk_cfg()["experimental"],
-                         {"custom_key": 1})  # 非模块键仍在 config.json
+                         {"custom_key": 1, "tagger_frames": 7})  # 非模块键仍在 config.json
 
     def test_llama_switches_dropped_not_persisted(self):
         # llama 开关不经 save_config（权威在 llama/config.json，只走
@@ -275,7 +275,7 @@ class TestSetEnabled(unittest.TestCase):
             r = api.set_tagger_enabled(True)
         self.assertEqual(r, {"ok": True, "enabled": True})
         up.assert_called_once()
-        cfg = {"enabled": False, "frames": 5}
+        cfg = {"enabled": False, "integration": False}
         self.assertIsNone(up.call_args[0][0](cfg))  # 原地修改，返回 None
         self.assertIs(cfg["enabled"], True)
 
@@ -295,7 +295,7 @@ class TestSetEnabled(unittest.TestCase):
         with mock.patch("gui_app.tagger.get_status",
                         return_value={"ready": True}), \
              mock.patch("gui_app.api_mixins.experimental.load_tagger_config",
-                        return_value={"enabled": True, "frames": 5}):
+                        return_value={"enabled": True, "integration": True}):
             st = api.get_tagger_status()
         self.assertIs(st["enabled"], True)
 
@@ -502,7 +502,7 @@ class TestModuleConfigStore(_WorkspaceTestCase):
 
         def _seed(c):
             c["enabled"] = True
-            c["frames"] = 8
+            c["integration"] = True
             return c
 
         def _bump(c):
@@ -513,9 +513,9 @@ class TestModuleConfigStore(_WorkspaceTestCase):
         update_tagger_config(_bump)
         cfg = load_tagger_config()
         self.assertIs(cfg["enabled"], True)
-        self.assertEqual(cfg["frames"], 8)
+        self.assertIs(cfg["integration"], True)
         self.assertEqual(cfg["threshold"], 0.75)
-        self.assertNotIn("short_side", cfg)  # v1.0 起废弃键不再注入默认值
+        self.assertNotIn("frames", cfg)  # 废弃键不再注入默认值
 
     def test_tagger_corrupt_tolerated(self):
         from gui_app.config_store import load_tagger_config, update_tagger_config
@@ -566,6 +566,91 @@ class TestModuleConfigStore(_WorkspaceTestCase):
         self.paths["transcribe"].parent.mkdir(parents=True, exist_ok=True)
         self.paths["transcribe"].write_text(json.dumps("x"), encoding="utf-8")
         self.assertEqual(load_transcribe_config(), _transcribe_defaults())
+
+
+# ═══════════════════════════════════════════════════════════════
+# tagger 标签删除（手动清除误报）
+# ═══════════════════════════════════════════════════════════════
+
+class TestTaggerTagDelete(_WorkspaceTestCase):
+    """delete_tagger_tag：按段删单条标签，char_ip 反映角色/IP 段余量。"""
+
+    def _api(self):
+        from gui_app.api_mixins.experimental import ExperimentalMixin
+        return ExperimentalMixin()
+
+    def _seed(self):
+        self._write("tagger_tags", {
+            "vid1": {"character_tags": [{"name": "hakurei_reimu", "score": 0.9}],
+                     "ip_tags": [{"name": "touhou", "score": 0.95}],
+                     "general_tags": [{"name": "1girl", "score": 0.8}],
+                     "category": "2d"}})
+
+    def test_delete_removes_tag_only(self):
+        api = self._api()
+        self._seed()
+        r = api.delete_tagger_tag("vid1", "ip_tags", "touhou")
+        self.assertTrue(r["ok"])
+        self.assertIs(r["char_ip"], True)  # 角色段仍在
+        disk = self._read("tagger_tags")["vid1"]
+        self.assertEqual(disk["ip_tags"], [])
+        self.assertEqual([t["name"] for t in disk["character_tags"]], ["hakurei_reimu"])
+        self.assertEqual(disk["category"], "2d")  # 其余字段不动
+
+    def test_delete_reports_char_ip_empty(self):
+        api = self._api()
+        self._seed()
+        api.delete_tagger_tag("vid1", "ip_tags", "touhou")
+        r = api.delete_tagger_tag("vid1", "character_tags", "hakurei_reimu")
+        self.assertIs(r["char_ip"], False)
+
+    def test_delete_invalid_group_rejected(self):
+        api = self._api()
+        self.assertFalse(self._api().delete_tagger_tag("vid1", "tags", "x")["ok"])
+
+
+# ═══════════════════════════════════════════════════════════════
+# general_count：存储全量，展示/检索按配置截取前 N 个
+# ═══════════════════════════════════════════════════════════════
+
+class TestTaggerGeneralCount(_WorkspaceTestCase):
+    """general_count 截取发生在消费侧（get_tagger_tags / get_tagger_all_tags）。"""
+
+    _GENERAL = [{"name": f"gen_{i:02d}", "score": round(0.9 - i * 0.01, 2)}
+                for i in range(20)]
+
+    def _seed(self):
+        self._write("tagger_tags", {
+            "vid1": {"character_tags": [{"name": "hakurei_reimu", "score": 0.9}],
+                     "ip_tags": [{"name": "touhou", "score": 0.95}],
+                     "general_tags": self._GENERAL,
+                     "category": "2d"}})
+
+    def _api(self):
+        from gui_app.api_mixins.experimental import ExperimentalMixin
+        return ExperimentalMixin()
+
+    def _no_lib(self):
+        # 隔离真实标签检索库，避免映射过滤干扰断言
+        return mock.patch("gui_app.tagger.load_tag_library_map", return_value=None)
+
+    def test_slice_by_config(self):
+        self._seed()
+        self._write("tagger", {"enabled": True, "general_count": 5})
+        with self._no_lib():
+            d = self._api().get_tagger_tags("vid1")
+            m = self._api().get_tagger_all_tags()
+        self.assertEqual([t["name"] for t in d["general_tags"]],
+                         [f"gen_{i:02d}" for i in range(5)])
+        self.assertEqual(len(d["character_tags"]), 1)  # 其他段不受影响
+        gens = [n for n in m["vid1"] if n.startswith("gen_")]
+        self.assertEqual(gens, [f"gen_{i:02d}" for i in range(5)])
+
+    def test_default_15_without_config(self):
+        self._seed()
+        with self._no_lib():
+            d = self._api().get_tagger_tags("vid1")
+        self.assertEqual(len(d["general_tags"]), 15)
 
 
 if __name__ == "__main__":

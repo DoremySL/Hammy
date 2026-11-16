@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import unittest
 
 from batch_rename import video as video_mod
-from batch_rename.video import (select_timestamps, select_sampled_timestamps,
+from batch_rename.video import (select_timestamps, select_point_samples,
                                 _parse_frame_rate, _parse_format,
                                 _sparsify_keyframes, _anchor_keyframe_indices,
                                 _kf_from_csv_line,
@@ -144,36 +144,38 @@ class TestProbeKeyframesIntervals(unittest.TestCase):
                 "730.000%+40.000,980.000%+20.000")
 
 
-class TestSelectSampledTimestamps(unittest.TestCase):
+class TestSelectPointSamples(unittest.TestCase):
     """采样模式选帧：每个点位贡献 per_point 个关键帧，密集窗口不挤占其他点位。"""
 
     def test_each_position_contributes(self):
         # 点位 0/50/100，各窗口内关键帧充足 → 每点 2 帧
         kf = [0.0, 1.5, 49.0, 50.5, 52.0, 99.0, 100.0]
-        ts = select_sampled_timestamps(100.0, kf, 3, 2)
-        self.assertEqual(ts, [0.0, 1.5, 49.0, 52.0, 99.0])
+        ts = select_point_samples(100.0, kf, 3, 2)
+        self.assertEqual(ts, [(0.0, 0), (1.5, 0), (49.0, 1), (52.0, 1), (99.0, 2)])
 
     def test_cluster_does_not_steal_other_positions(self):
         # 首窗 6 个密集关键帧 + 其余各窗 2 个：5 个点位各自出帧
         kf = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 49.0, 51.0, 99.0, 101.0, 149.0, 151.0, 199.0]
-        ts = select_sampled_timestamps(200.0, kf, 5, 2)
-        near = {p: [t for t in ts if abs(t - p) <= 5] for p in (0, 50, 100, 150, 200)}
+        ts = select_point_samples(200.0, kf, 5, 2)
+        near = {p: [t for t, _ in ts if abs(t - p) <= 5] for p in (0, 50, 100, 150, 200)}
         self.assertTrue(all(near[p] for p in near), f"有点位没帧: {near}")
-        self.assertEqual(ts, [0.0, 4.0, 49.0, 51.0, 99.0, 101.0, 149.0, 151.0, 199.0])
+        self.assertEqual(ts, [(0.0, 0), (4.0, 0), (49.0, 1), (51.0, 1), (99.0, 2),
+                              (101.0, 2), (149.0, 3), (151.0, 3), (199.0, 4)])
 
     def test_per_point_one_nearest_to_position(self):
         kf = [0.0, 1.5, 49.0, 50.5, 52.0, 99.0]
-        ts = select_sampled_timestamps(100.0, kf, 3, 1)
-        self.assertEqual(ts, [0.0, 50.5, 99.0])
+        ts = select_point_samples(100.0, kf, 3, 1)
+        self.assertEqual(ts, [(0.0, 0), (50.5, 1), (99.0, 2)])
 
     def test_empty_falls_back_to_duration_split(self):
-        ts = select_sampled_timestamps(100.0, [], 5, 3)
-        self.assertEqual([round(t, 1) for t in ts], [16.7, 33.3, 50.0, 66.7, 83.3])
+        ts = select_point_samples(100.0, [], 5, 3)
+        self.assertEqual([round(t, 1) for t, _ in ts], [16.7, 33.3, 50.0, 66.7, 83.3])
+        self.assertEqual([pi for _, pi in ts], [0, 1, 2, 3, 4])
 
     def test_overlapping_windows_dedup(self):
-        ts = select_sampled_timestamps(20.0, [0.0, 5.0, 10.0, 15.0], 5, 3)
-        self.assertEqual(len(ts), len(set(ts)))
-        self.assertEqual(ts, [0.0, 5.0, 10.0, 15.0])
+        ts = select_point_samples(20.0, [0.0, 5.0, 10.0, 15.0], 5, 3)
+        self.assertEqual(len(ts), len({t for t, _ in ts}))
+        self.assertEqual(ts, [(0.0, 0), (5.0, 0), (10.0, 1), (15.0, 2)])
 
 
 class TestProbeVideoSampling(unittest.TestCase):

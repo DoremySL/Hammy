@@ -1,4 +1,4 @@
-"""runner._build_transcribe_meta_map：SRT 优先 / inject_texts 回退 / 截断 / 空文本跳过。"""
+"""runner._build_transcribe_meta_map：已有 SRT → 辅助上下文块（缺失视频由 ASR worker 交付）。"""
 import json
 import sys
 import tempfile
@@ -18,7 +18,7 @@ SRT_SAMPLE = "1\n00:00:00,000 --> 00:00:05,000\nこんにちは、世界。\n"
 
 
 class TestBuildTranscribeMetaMap(unittest.TestCase):
-    """注入合并逻辑：有右键转录用 SRT，缺的用 SenseVoice 注入文本。"""
+    """已有右键转录的 SRT → 辅助上下文块。"""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -48,43 +48,33 @@ class TestBuildTranscribeMetaMap(unittest.TestCase):
 
     def test_disabled_returns_empty(self):
         r = self._make_runner()._build_transcribe_meta_map(
-            ["C:/a.mp4"], {"transcribe_enabled": False}, inject_texts={"C:/a.mp4": "x"})
+            ["C:/a.mp4"], {"transcribe_enabled": False})
         self.assertEqual(r, {})
 
-    def test_srt_preferred_over_inject(self):
+    def test_srt_builds_block(self):
         vp = "C:/a.mp4"
         self._write_srt(vp)
         self._write_store(vp, "ja")
-        r = self._make_runner()._build_transcribe_meta_map(
-            [vp], EXP, inject_texts={vp: " SenseVoice 文本 "})
+        r = self._make_runner()._build_transcribe_meta_map([vp], EXP)
         self.assertIn("こんにちは、世界。", r[vp])
-        self.assertNotIn("SenseVoice 文本", r[vp])
+        self.assertIn("【语音辅助参考】", r[vp])
         self.assertIn("- 语言: ja", r[vp])
 
-    def test_inject_fallback_for_missing_srt(self):
-        vp = "C:/b.mp4"
-        r = self._make_runner()._build_transcribe_meta_map(
-            [vp], EXP, inject_texts={vp: " SenseVoice 文本 "})
-        self.assertIn("SenseVoice 文本", r[vp])
-        self.assertIn("【语音辅助参考】", r[vp])
-        self.assertNotIn("- 语言:", r[vp])  # 注入文本无语言信息
-
-    def test_empty_inject_skipped(self):
-        vp = "C:/c.mp4"
-        r = self._make_runner()._build_transcribe_meta_map(
-            [vp], EXP, inject_texts={vp: "   "})
-        self.assertEqual(r, {})
-
-    def test_inject_truncated_to_max_chars(self):
+    def test_truncated_to_max_chars(self):
         vp = "C:/d.mp4"
-        r = self._make_runner()._build_transcribe_meta_map(
-            [vp], EXP, inject_texts={vp: "字" * 1200})
+        self._write_srt(vp, "1\n00:00:00,000 --> 00:00:05,000\n" + "字" * 1200 + "\n")
+        r = self._make_runner()._build_transcribe_meta_map([vp], EXP)
         self.assertIn("…（已截断）", r[vp])
         self.assertNotIn("字" * 801, r[vp])
 
-    def test_missing_everything_skipped(self):
-        r = self._make_runner()._build_transcribe_meta_map(
-            ["C:/e.mp4"], EXP, inject_texts={})
+    def test_missing_srt_skipped(self):
+        r = self._make_runner()._build_transcribe_meta_map(["C:/e.mp4"], EXP)
+        self.assertEqual(r, {})
+
+    def test_empty_srt_skipped(self):
+        vp = "C:/c.mp4"
+        self._write_srt(vp, "")
+        r = self._make_runner()._build_transcribe_meta_map([vp], EXP)
         self.assertEqual(r, {})
 
 

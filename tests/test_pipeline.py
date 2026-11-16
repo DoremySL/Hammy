@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from batch_rename.ai import AnalyzeResult
 from batch_rename.config import Config
 from batch_rename.pipeline import (
-    _max_ai_seconds_per_video, AIWorker, BatchPipeline,
+    _max_ai_seconds_per_video, AIWorker, BatchPipeline, TaskContext,
 )
 from batch_rename.stats import PipelineStats
 
@@ -42,7 +42,7 @@ class TestAIWorkerFrameError(unittest.TestCase):
         worker, stats, _ = _make_worker()
         calls = []
 
-        def _cb(vp, new_path, status, info, title, plot, tags):
+        def _cb(vp, new_path, status, info, title, plot, tags, thumb_lookup=None):
             calls.append((vp, new_path, status))
 
         worker._on_file_done = _cb
@@ -62,7 +62,7 @@ class TestAIWorkerFailure(unittest.TestCase):
         worker, stats, _ = _make_worker()
         calls = []
 
-        def _cb(vp, new_path, status, info, title, plot, tags):
+        def _cb(vp, new_path, status, info, title, plot, tags, thumb_lookup=None):
             calls.append(status)
 
         worker._on_file_done = _cb
@@ -100,7 +100,9 @@ class TestAIWorkerFailure(unittest.TestCase):
         stop.set()
         worker, stats, _ = _make_worker(stop_event=stop)
         with mock.patch("batch_rename.pipeline.analyze_frames") as af:
-            worker._process_task(("C:/v.mp4", {"duration": 5.0}, ["b64"]))
+            ctx = TaskContext("C:/v.mp4", 0)
+            ctx.frames = ["b64"]
+            worker._process_task(ctx)
         af.assert_not_called()
         self.assertEqual(stats.to_summary(0).cancelled, 1)
 
@@ -108,7 +110,9 @@ class TestAIWorkerFailure(unittest.TestCase):
         """frame_b64s=None → 走抽帧失败分支，不调 AI。"""
         worker, stats, _ = _make_worker()
         with mock.patch("batch_rename.pipeline.analyze_frames") as af:
-            worker._process_task(("C:/v.mp4", {}, None))
+            ctx = TaskContext("C:/v.mp4", 0)
+            ctx.frames = None
+            worker._process_task(ctx)
         af.assert_not_called()
         self.assertEqual(stats.error, 1)
 
@@ -120,7 +124,7 @@ class TestAIWorkerSuccess(unittest.TestCase):
         worker, stats, _ = _make_worker()
         calls = []
 
-        def _cb(vp, new_path, status, info, title, plot, tags):
+        def _cb(vp, new_path, status, info, title, plot, tags, thumb_lookup=None):
             calls.append((new_path, status, title, tags))
 
         worker._on_file_done = _cb
@@ -179,7 +183,9 @@ class TestAIWorkerProcessSuccess(unittest.TestCase):
              mock.patch("batch_rename.pipeline.build_new_stem", return_value="新名"), \
              mock.patch("batch_rename.pipeline.rename_video",
                         return_value=("C:/新名.mp4", "ok")):
-            worker._process_task(("C:/v.mp4", {"duration": 5.0}, ["b64"]))
+            ctx = TaskContext("C:/v.mp4", 0)
+            ctx.frames = ["b64"]
+            worker._process_task(ctx)
         self.assertEqual(stats.to_summary(0).processed_count, 1)
 
     def test_process_task_ai_empty_title(self):
@@ -188,7 +194,9 @@ class TestAIWorkerProcessSuccess(unittest.TestCase):
         result = AnalyzeResult("", "", [], 0, "空内容", "empty")
         with mock.patch("batch_rename.pipeline.analyze_frames", return_value=result), \
              mock.patch("batch_rename.pipeline.is_context_error", return_value=False):
-            worker._process_task(("C:/v.mp4", {}, ["b64"]))
+            ctx = TaskContext("C:/v.mp4", 0)
+            ctx.frames = ["b64"]
+            worker._process_task(ctx)
         self.assertEqual(stats.error, 1)
 
 
@@ -196,16 +204,16 @@ class TestBatchPipelineDiscover(unittest.TestCase):
     """发现与过滤：空列表返回 None；有视频则初始化 stats 与熔断阈值。"""
 
     def test_no_videos_returns_none(self):
-        pipe = BatchPipeline([], Config(), None, threading.Event())
         with mock.patch("batch_rename.pipeline.VideoCollector.collect",
                         return_value=[]):
+            pipe = BatchPipeline([], Config(), None, threading.Event())
             self.assertIsNone(pipe._discover_and_filter())
 
     def test_videos_init_stats_and_threshold(self):
         cfg = Config(ai_workers=4)
-        pipe = BatchPipeline(["C:/a.mp4", "C:/b.mp4"], cfg, None, threading.Event())
         with mock.patch("batch_rename.pipeline.VideoCollector.collect",
                         return_value=["C:/a.mp4", "C:/b.mp4"]):
+            pipe = BatchPipeline(["C:/a.mp4", "C:/b.mp4"], cfg, None, threading.Event())
             stats = pipe._discover_and_filter()
         self.assertIsNotNone(stats)
         self.assertEqual(stats.total, 2)

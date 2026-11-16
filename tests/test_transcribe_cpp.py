@@ -194,6 +194,7 @@ class TestInstallSyncsModel(unittest.TestCase):
                 mock.patch.object(tc, "detect_gpu_cached",
                                   return_value={"has_nvidia": has_nvidia}),
                 mock.patch.object(tc, "_download_model", side_effect=_fake_download),
+                mock.patch.object(tc, "_download_vad", return_value=True),
             ]
             if has_nvidia:
                 wheel = base / "binding.whl"
@@ -261,6 +262,7 @@ class TestInstallSyncsModel(unittest.TestCase):
                  mock.patch.object(tc, "detect_gpu_cached",
                                    return_value={"has_nvidia": False}), \
                  mock.patch.object(tc, "_download_model", side_effect=_record), \
+                 mock.patch.object(tc, "_download_vad", return_value=True), \
                  mock.patch("gui_app.config_store.update_transcribe_config"):
                 r = tc.install_dependencies(pypi_mirror="nju",
                                             model="whisper-turbo", inject_model="whisper-turbo")
@@ -286,6 +288,7 @@ class TestInstallSyncsModel(unittest.TestCase):
                  mock.patch.object(tc, "detect_gpu_cached",
                                    return_value={"has_nvidia": False}), \
                  mock.patch.object(tc, "_download_model", side_effect=_fail), \
+                 mock.patch.object(tc, "_download_vad", return_value=True), \
                  mock.patch("gui_app.config_store.update_transcribe_config") as uwc:
                 r = tc.install_dependencies(pypi_mirror="nju", model="moss",
                                             inject_model="sensevoice")
@@ -312,6 +315,7 @@ class TestInstallSyncsModel(unittest.TestCase):
                                    return_value=base / "venv" / "python"), \
                  mock.patch.object(tc, "detect_gpu_cached",
                                    return_value={"has_nvidia": False}), \
+                 mock.patch.object(tc, "_download_vad", return_value=True), \
                  mock.patch.object(tc, "_download_model") as dl, \
                  mock.patch("gui_app.config_store.update_transcribe_config"):
                 r = tc.install_dependencies(pypi_mirror="nju",
