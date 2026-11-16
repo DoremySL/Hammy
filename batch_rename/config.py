@@ -14,8 +14,8 @@ class Config:
     model: str = "gpt-4o"
     base_url: str = "http://localhost:8080/v1"
     api_key: str = "not-needed"
-    sampling_points: int = 15
-    frames_per_point: int = 1
+    sampling_points: int = 7
+    frames_per_point: int = 2
     frame_max_side: int = 672
     frame_time_tags: int = 2  # 0=不添加 1=添加时间标签 2=添加并用于优化缩略图
     frame_extract_mode: str = "auto"  # auto=TS逐帧+关键帧concat / per_frame=全部逐帧 / legacy=全部旧行为
@@ -32,9 +32,6 @@ class Config:
     prompt: str = ""
     naming_mode: str = "date"  # date / original / both / none
     rag_top_k: int = 40
-    # 调试开关（GUI 无界面）：完成日志在「召回N个关键词」后列出具体关键词。
-    # 由 config.json ai 段同名键控制，手动改为 true 生效
-    rag_debug_keywords: bool = False
     llama_slots: int = 0
     rag_vec_enabled: bool = False
     rag_vec_device: str = ""          # 嵌入设备（安装时选定并写入：gpu / cpu；空 = 未安装）

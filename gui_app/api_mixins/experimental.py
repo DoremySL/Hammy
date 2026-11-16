@@ -301,8 +301,8 @@ class ExperimentalMixin:
             _push_log(f"正在分析 {total} 个视频的IP信息…")
             t0 = time.time()
 
-            # 仓库文件预检：缺失则补下载
-            files_err = ensure_model_files(log_fn=_push_log, stop_event=_gpu_stop_event)
+            # 仓库文件预检：缺失即报错（安装时保证齐全）
+            files_err = ensure_model_files()
             if files_err:
                 _push_log(f"IP分析失败：{files_err}", "err")
                 return {"ok": False, "results": {}, "ok_count": 0, "total": total,
@@ -634,7 +634,7 @@ class ExperimentalMixin:
 
     def install_transcribe(self, pypi_mirror: str = DEFAULT_PYPI_MIRROR,
                            model: str = "whisper-turbo",
-                           inject_model: str = "whisper-turbo",
+                           inject_model: str = "sensevoice",
                            github_proxy: str = "") -> Dict[str, Any]:
         """安装语音转录依赖（model=右键转录模型，inject_model=辅助重命名模型）。"""
         from ..transcribe_cpp import install_dependencies

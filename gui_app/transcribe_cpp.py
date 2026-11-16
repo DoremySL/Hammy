@@ -518,6 +518,7 @@ def run_transcription_batch(video_paths: List[str],
         "model_path": str(model_path),
         "family": TRANSCRIBE_MODELS[current]["family"],
         "timestamps": bool(TRANSCRIBE_MODELS[current].get("timestamps", True)),
+        "inject_win_sec": INJECT_WIN_SEC[TRANSCRIBE_MODELS[current]["family"]],
         "language": language,
         "backend": backend,
         "ffmpeg": FFMPEG_EXE,
@@ -640,7 +641,7 @@ if language:
     run_kw['language'] = language
 
 
-# ── 官方 Silero VAD 区段判定（注入模式专用，同引擎零依赖）──
+# ── 官方 Silero VAD 区段判定（无时间戳转录/注入共用，同引擎零依赖）──
 # 参数：min_silence 2000ms 合并碎段、pad 300ms；VAD 不可用 → 整段单区段
 VAD_MIN_SPEECH_SEC = 0.3  # 总语音时长低于此值视为无语音
 
@@ -657,7 +658,7 @@ def _get_vad_sess():
             try:
                 _VAD_SESS = tc.VadSession(tc.Model(vad_model_path, backend='cpu'))
             except Exception as e:
-                plog(f'Silero VAD 不可用（{str(e)[:80]}），本次注入整段推理')
+                plog(f'Silero VAD 不可用（{str(e)[:80]}），本次整段推理')
     return _VAD_SESS
 
 
@@ -668,7 +669,9 @@ def _vad_regions(audio, sr):
     if sess is None:
         return whole
     try:
-        res = sess.run(audio, min_silence_ms=2000, speech_pad_ms=300)
+        # max_speech 29s：长语音段在停顿处预切，单段 ≤30s 可整段送模型
+        res = sess.run(audio, min_silence_ms=2000, speech_pad_ms=300,
+                       max_speech_ms=29000)
         segs = [(s.start_sample / sr, s.end_sample / sr) for s in res.segments]
         if segs and sum(b - a for a, b in segs) >= VAD_MIN_SPEECH_SEC:
             return segs
@@ -676,6 +679,25 @@ def _vad_regions(audio, sr):
     except Exception as e:
         plog(f'Silero VAD 推理失败（{str(e)[:80]}），本次整段推理')
         return whole
+
+
+def _windowed_text(audio, sr, regions, win, stop_at=0):
+    # 区段内分窗推理拼接文本；stop_at>0 时累计达标提前结束
+    texts, acc = [], 0
+    for a, b in regions:
+        pos = a
+        while pos < b - 0.1:
+            end = min(pos + win, b)
+            res = sess.run(audio[int(pos * sr): int(end * sr)], **run_kw)
+            t = ' '.join(s.text.strip() for s in (res.segments or [])
+                         if s.text.strip()) or (res.text or '').strip()
+            if t:
+                texts.append(t)
+                acc += len(t) + 1
+            if stop_at and acc >= stop_at:
+                return ' '.join(texts).strip()
+            pos = end
+    return ' '.join(texts).strip()
 
 
 def _srt_ts(ms):
@@ -722,37 +744,17 @@ def transcribe_one(i, vp):
                     entry = {'ok': True, 'text': '', 'srt': '', 'language': '',
                              'duration': round(dur, 1), 'error': None, 'silent': True}
                 else:
-                    # 区段内分窗推理，达标即停
-                    win = float(params['inject_win_sec'])
-                    texts = []
-                    acc = 0
-                    stop = False
-                    for a, b in regions:
-                        pos = a
-                        while pos < b - 0.1:
-                            end = min(pos + win, b)
-                            seg_audio = audio[int(pos * sr): int(end * sr)]
-                            res = sess.run(seg_audio, **run_kw)
-                            t = ' '.join(s.text.strip() for s in (res.segments or [])
-                                         if s.text.strip()) or (res.text or '').strip()
-                            if t:
-                                texts.append(t)
-                                acc += len(t) + 1
-                            if max_chars and acc >= max_chars:
-                                stop = True
-                                break
-                            pos = end
-                        if stop:
-                            break
-                    entry = {'ok': True, 'text': ' '.join(texts).strip(), 'srt': '',
-                             'language': '', 'duration': round(dur, 1), 'error': None}
+                    entry = {'ok': True,
+                             'text': _windowed_text(audio, sr, regions,
+                                                    float(params['inject_win_sec']),
+                                                    max_chars),
+                             'srt': '', 'language': '',
+                             'duration': round(dur, 1), 'error': None}
             else:
                 if not has_ts:
-                    # 无逐句时间戳：整段文本合成单条字幕（仅辅助重命名用）
-                    res = sess.run(audio, **run_kw)
-                    body = ((getattr(res, 'text', '') or '').strip() or ' '.join(
-                        (getattr(s, 'text', '') or '').strip()
-                        for s in (res.segments or [])).strip())
+                    # 无逐句时间戳：分窗转录文本合成单条字幕
+                    body = _windowed_text(audio, sr, _vad_regions(audio, sr),
+                                          float(params.get('inject_win_sec') or 30.0))
                     srt = (f'1\n{_srt_ts(0)} --> {_srt_ts(int(dur * 1000))}\n{body}\n'
                            if body else '')
                     entry = {'ok': True, 'srt': srt, 'language': '', 'text': '',

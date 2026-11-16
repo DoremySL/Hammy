@@ -627,7 +627,6 @@ async function openTaggerTagEdit(enName) {
   return openTagLibraryEditor({ ...items[idx] }, idx);
 }
 
-/* 删除单条 tagger 标签（手动清除误报），刷新展示、检索缓存与角标 */
 async function deleteTaggerTag(vid, group, name) {
   const r = await callApi('delete_tagger_tag', vid, group, name);
   if (!r || !r.ok) { toast('删除失败: ' + ((r && r.error) || '未知错误'), 'err'); return; }

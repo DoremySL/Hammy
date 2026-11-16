@@ -143,8 +143,6 @@ def build_engine_config(cfg_dict: Dict[str, Any]) -> Config:
         cfg.ai_workers = max(1, _safe_int(ov, "ai_workers", cfg.ai_workers))
     cfg.enforce_json_mode = bool(ai.get("enforce_json_mode", cfg.enforce_json_mode))
     cfg.rag_top_k = _safe_int(ai, "rag_top_k", cfg.rag_top_k)
-    # 调试开关（GUI 无开关）：完成日志列出召回的具体关键词
-    cfg.rag_debug_keywords = bool(ai.get("rag_debug_keywords", cfg.rag_debug_keywords))
     exp = cfg_dict.get("experimental") if isinstance(cfg_dict.get("experimental"), dict) else {}
     cfg.rag_vec_enabled = bool(exp.get("rag_vec_enabled", False))
     cfg.rag_vec_device = str(exp.get("rag_vec_device", "") or "")
@@ -431,9 +429,7 @@ class PipelineRunner:
                                  and bool(exp_cfg.get("tagger_integration", False)))
                 if tagger_active:
                     st = tagger_mod.get_status()
-                    files_err = tagger_mod.ensure_model_files(
-                        log_fn=lambda m: _log_cb("info", str(m)),
-                        stop_event=self._stop)
+                    files_err = tagger_mod.ensure_model_files()
                     if not st.get("ready") or files_err:
                         _log_cb("warn", f"[标签辅助] 集成不可用（{files_err or '引擎未就绪'}），"
                                         f"本次跳过标签推理，重命名不受影响")
@@ -505,6 +501,7 @@ class PipelineRunner:
                         else:
                             engine_logger.info("[RAG] 向量检索已启用但 ort-embedding 未就绪，"
                                                "增强档本次降级为开启（仅首轮字面召回）")
+                    from .tagger import TAGGER_GROUP
                     tag_recall = TagRecall(items=pt_items,
                                            # GUI 三档值与内部模式同名直传
                                            #（on=首轮字面召回注入，enhanced=字面+第二轮向量召回）
@@ -512,7 +509,8 @@ class PipelineRunner:
                                            top_k=engine_cfg.rag_top_k,
                                            dense=dense,
                                            vec_threshold=engine_cfg.rag_vec_threshold,
-                                           vec_top_n=engine_cfg.rag_vec_top_n)
+                                           vec_top_n=engine_cfg.rag_vec_top_n,
+                                           strict_groups=(TAGGER_GROUP,))
                     if dense is not None:
                         engine_logger.info(f"[RAG] 正在加载嵌入模型: {dense.model_title}"
                                            f"（device={dense.device}）…")

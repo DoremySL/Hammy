@@ -470,9 +470,6 @@ def _preprocess_extracted(frames: List[Frame]) -> List[Frame]:
         done = preprocess_frame(raw)
         if done is not None:
             out.append(Frame(f.ts, base64.b64encode(done).decode(), f.point_index))
-    dropped = len(frames) - len(out)
-    if dropped:
-        logger.debug(f"预处理丢弃 {dropped} 帧（黑帧/坏帧）")
     return out
 
 

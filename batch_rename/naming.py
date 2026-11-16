@@ -115,7 +115,7 @@ def rename_video(video_path: str, new_stem: str, config: "Config",
         src_long = to_long_path(str(p))
         target, status = resolve_collision(p.parent, new_stem, p.suffix, src_long)
         if status == "skipped":
-            logger.debug(f"[跳过] 文件名未变化: {p.name}")
+            logger.info(f"[跳过] 文件名未变化: {p.name}")
             return str(target), "skipped"
         if status == "error":
             logger.error(f"重命名失败: {p.name}")
@@ -132,7 +132,7 @@ def rename_video(video_path: str, new_stem: str, config: "Config",
             if err_out is not None:
                 err_out.append(err)
             return video_path, "error"
-        logger.debug(f"[改名] {p.name} -> {target.name}")
+        logger.info(f"[改名] {p.name} -> {target.name}")
         if orig_stat:
             try:
                 os.utime(to_long_path(str(target)), (orig_stat.st_atime, orig_stat.st_mtime))
@@ -164,7 +164,7 @@ def _rename_companion_files(old_video: Path, new_video: Path,
                 logger.debug(f"[伴随] 目标已存在，跳过: {new_file.name}")
                 continue
             os.replace(to_long_path(str(old_file)), to_long_path(str(new_file)))
-            logger.debug(f"[伴随] {old_file.name} -> {new_file.name}")
+            logger.info(f"[伴随] {old_file.name} -> {new_file.name}")
         except Exception as e:
             logger.debug(f"[伴随] 重命名失败 {old_file.name}: {e}")
 

@@ -373,15 +373,16 @@ def _refine_round(client: OpenAIClient, model: str, messages: list,
                   result: AnalyzeResult, config: Config,
                   stop_event: threading.Event, video_path: str,
                   container_title: str, extra_meta: str,
-                  slot_id: Optional[int], tag_recall) -> AnalyzeResult:
-    """第二轮：纯向量召回 → assistant(首轮原文)+user(候选) 追加请求修订，失败沿用首轮。"""
+                  slot_id: Optional[int], tag_recall,
+                  literal_keywords: Sequence[str] = ()) -> AnalyzeResult:
+    """第二轮：纯向量召回（排除首轮已注入关键词）→ 追加候选请求修订，失败沿用首轮。"""
     parts = {
         "plot": result.plot,
         "tags": " ".join([*result.tags, result.title]),
         "filename": " ".join(x for x in (Path(video_path).stem, container_title) if x),
         "aux": extra_meta,
     }
-    candidates = tag_recall.recall_dense(parts)
+    candidates = tag_recall.recall_dense(parts, exclude=literal_keywords)
     if stop_event.is_set():
         return AnalyzeResult("", "", [], 0, "已取消", "cancel")
     if not candidates:
@@ -434,8 +435,9 @@ def analyze_frames(
         return AnalyzeResult("", "", [], 0, "无有效帧", "other")
 
     recall_section = ""
+    lit_keywords: List[str] = []
     if tag_recall is not None:
-        recall_section, _ = tag_recall.literal_injection({
+        recall_section, lit_keywords = tag_recall.literal_injection({
             "filename": " ".join(x for x in (Path(video_path).stem, container_title) if x),
             "aux": literal_meta or "",
         })
@@ -475,6 +477,6 @@ def analyze_frames(
             and result.title and not stop_event.is_set():
         result = _refine_round(client, model, messages, result, config, stop_event,
                                video_path, container_title, extra_meta,
-                               slot_id, tag_recall)
+                               slot_id, tag_recall, lit_keywords)
     # 首轮字面注入不计入 recalled（完成日志不追加召回后缀）
     return result._replace(retries=attempt)

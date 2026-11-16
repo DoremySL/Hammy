@@ -274,7 +274,6 @@ async function detectTags(ids) {
     $('#prog-bar').className = '';
     toast('IP分析失败: ' + (r.error || ''), 'err', true);
   }
-  // 失败前也可能已部分落盘，一律读盘对齐
   await refreshTaggerBadges();
 }
 

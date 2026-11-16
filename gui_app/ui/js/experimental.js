@@ -241,17 +241,18 @@ function _bindManageButtons(uvStatus, llamaStatus, pStatus, wStatus, rvStatus) {
       { value: 'whisper-turbo', name: 'whisper-turbo', desc: '均衡 | 支持主流语言', recommended: true },
       { value: 'moss', name: 'MOSS-Diarize', desc: '质量 | 支持主流语言' },
     ];
+    const injectOpts = modelOpts.map(m => ({ ...m, recommended: m.value === 'sensevoice' }));
     const sel = await showMirrorSelectDialog({
       api: 'get_transcribe_mirrors',
       modelSections: [
         { title: '右键转录模型', name: 'w-model',
           hint: '安装时下载所选模型，其余模型可在安装后下载切换', models: modelOpts },
-        { title: '辅助重命名模型', name: 'inject-model', models: modelOpts },
+        { title: '辅助重命名模型', name: 'inject-model', models: injectOpts },
       ],
       githubProxy: true,
     });
     if (sel) startTranscribeInstall(sel.pypi || 'sjtu',
-      sel.sel['w-model'] || 'whisper-turbo', sel.sel['inject-model'] || 'whisper-turbo',
+      sel.sel['w-model'] || 'whisper-turbo', sel.sel['inject-model'] || 'sensevoice',
       sel.github_proxy || '');
   });
 
@@ -642,17 +643,15 @@ function _renderTaggerSection(exp, pStatus) {
       <div id="tagger-cfg-panel" class="exp-cfg-panel" style="display:${state.settingsOpen.has('tagger-cfg') ? 'block' : 'none'}">
         <div class="exp-input-row">
           <div class="field">
-            <label data-tip="角色按 0.4×该值进池，IP 按该值进池；输出判定结合跨帧加权与互召回">角色/IP阈值</label>
+            <label data-tip="角色/IP 标签输出阈值；0.75 为校准原值">角色/IP阈值</label>
             <input type="number" id="tagger-threshold" min="0.1" max="1" step="0.01" value="${exp.tagger_threshold || 0.75}"/>
           </div>
           <div class="field">
             <label data-tip="详情展示与检索使用的 General 标签个数">General 数量</label>
             <input type="number" id="tagger-general-count" min="1" max="200" value="${exp.tagger_general_count || 15}"/>
           </div>
-        </div>
-        <div class="exp-input-row">
           <div class="field">
-            <label data-tip="开启后自动重命名批次内逐视频识别标签（复用同批抽帧），并作为标签检索查询词；本地推理显存不足时建议关闭，改用右键手动分析">集成到自动重命名</label>
+            <label data-tip="开启后自动重命名时同步识别标签，作为标签检索查询词">集成到自动重命名</label>
             ${_boolDd('tagger-integration-dd', !!exp.tagger_integration)}
           </div>
         </div>
@@ -907,7 +906,7 @@ function _bindTranscribeEvents() {
 async function startTranscribeInstall(pypiMirror, model, injectModel, githubProxy) {
   await runInstallTask(
     () => apiCall('install_transcribe', pypiMirror || 'sjtu',
-                  model || 'whisper-turbo', injectModel || 'whisper-turbo', githubProxy || ''),
+                  model || 'whisper-turbo', injectModel || 'sensevoice', githubProxy || ''),
     async () => {
       await apiCall('set_transcribe_enabled', true);
       state.transcribeEnabled = true;
@@ -1674,6 +1673,7 @@ async function removeLlama() {
    llama.cpp
    ════════════════════════════════════════════════════════════ */
 async function launchLlama() {
+  switchTab('llama');
   const params = _collectLlamaParams();
   const model = params.model;
   const saved = await apiCall('set_llama_config', params);

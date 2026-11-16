@@ -45,7 +45,6 @@ function loadFromResult(result, preserveScroll) {
   refreshTaggerBadges();
 }
 
-/* 角标状态统一读盘：tags.json 为唯一真源，数据重载后全量拉取 */
 async function refreshTaggerBadges() {
   if (!state.taggerEnabled) return;
   try {
@@ -58,7 +57,7 @@ async function refreshTaggerBadges() {
     if (cats) state.taggerCategories = cats;
     if (names) state.taggerTagNames = names;
     refreshGridData();
-  } catch (e) { /* 拉取失败沿用旧缓存 */ }
+  } catch (e) {}
 }
 
 function currentList() {

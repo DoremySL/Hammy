@@ -375,11 +375,8 @@ def install_dependencies(
         if dl.get("cancelled"):
             return {"ok": False, "cancelled": True, "error": "模型下载已取消"}
         if not dl.get("ok"):
-            core_failed = [f for f in dl.get("failed") or [] if f.get("file") != PRESET_TAGS_FILE]
-            if dl.get("error") or core_failed:
-                err = dl.get("error") or str(core_failed[0].get("error", ""))[:200]
-                return {"ok": False, "error": f"模型下载失败: {err}"}
-            _log("预设标签包下载失败（不影响标签生成，下次分析前会自动补下载）", log_fn)
+            err = dl.get("error") or str((dl.get("failed") or [{}])[0].get("error", ""))[:200]
+            return {"ok": False, "error": f"模型下载失败: {err}，请尝试重新安装"}
     finally:
         models_downloader.end_download()
 
@@ -406,33 +403,12 @@ def install_dependencies(
     return {"ok": True, "error": None}
 
 
-def ensure_model_files(log_fn: Optional[Callable[[str], None]] = None,
-                       stop_event: Optional[threading.Event] = None) -> Optional[str]:
-    """分析前预检：缺失的共享文件从魔搭补下载；引擎缺失直接报重装。返回错误信息或 None。"""
-    from . import models_downloader
-    if any(not p.is_file() for p in _engine_paths()):
-        return "TRT 引擎缺失，请卸载后重新安装 Hammy-tagger"
-    missing = [n for n in SHARED_FILES if not (_repo_dir() / n).is_file()]
-    if not missing:
-        return None
-    if not models_downloader.begin_download():
-        return "已有下载任务进行中，请稍后再试"
-    try:
-        _log(f"补充下载仓库文件: {', '.join(missing)}", log_fn)
-        dl = models_downloader.download_files(
-            "ms", REPO_ID, missing, str(MODEL_DIR),
-            log_fn=lambda m: _log(m, log_fn), cancel_event=stop_event,
-            cleanup_on_cancel=True)
-        if dl.get("cancelled"):
-            return "模型下载已取消"
-        failed = [f.get("file") for f in dl.get("failed") or []]
-        if not dl.get("ok") and (dl.get("error") or any(f in _CRITICAL_SHARED for f in failed)):
-            err = dl.get("error") or str((dl.get("failed") or [{}])[0].get("error", ""))[:200]
-            return f"仓库文件补下载失败: {err or '未知错误'}"
-        if any(f in _CRITICAL_SHARED for f in failed):
-            return "仓库文件补下载失败，请卸载后重新安装 Hammy-tagger"
-    finally:
-        models_downloader.end_download()
+def ensure_model_files() -> Optional[str]:
+    """分析前预检：引擎或仓库文件缺失一律报重装（安装时保证齐全）。返回错误信息或 None。"""
+    missing = [p.name for p in _engine_paths() if not p.is_file()]
+    missing += [n for n in SHARED_FILES if not (_repo_dir() / n).is_file()]
+    if missing:
+        return f"文件缺失（{'、'.join(missing)}），请卸载后重新安装 Hammy-tagger"
     return None
 
 
@@ -464,25 +440,37 @@ def video_sampling_config() -> Config:
     from .config_store import load_config
     video = load_config().get("video") or {}
     cfg = Config(
-        sampling_points=max(1, safe_int(video.get("sampling_points"), 15)),
-        frames_per_point=max(1, safe_int(video.get("frames_per_point"), 1)),
+        sampling_points=max(1, safe_int(video.get("sampling_points"), 7)),
+        frames_per_point=max(1, safe_int(video.get("frames_per_point"), 2)),
         frame_max_side=max(64, safe_int(video.get("frame_max_side"), 672)),
     )
     cfg.validate()
     return cfg
 
 
+def _per_point_frames(frames):
+    """每点位取首个存活帧；点位未知（-1）的帧全保留。"""
+    picked, seen = [], set()
+    for f in frames:
+        if f.point_index < 0:
+            picked.append(f)
+        elif f.point_index not in seen:
+            seen.add(f.point_index)
+            picked.append(f)
+    return picked
+
+
 def extract_frames_for_tagger(video_path: str,
                               stop_event: Optional[threading.Event] = None,
                               config: Optional[Config] = None) -> List[str]:
-    """复用公用抽帧与预处理（主设置页基础采样），返回存活帧 JPEG base64 列表。"""
+    """复用公用抽帧与预处理（主设置页基础采样），每点位取首个存活帧。"""
     if stop_event is None:
         stop_event = _NO_STOP
     if stop_event.is_set():
         return []
     _, frames = probe_and_extract_keyframes(video_path, config or video_sampling_config(),
                                             stop_event)
-    return [f.b64 for f in frames]
+    return [f.b64 for f in _per_point_frames(frames)]
 
 
 def _inference_timeout(video_count: int) -> float:

@@ -46,16 +46,10 @@ def _ai_seconds_per_video(config: Config, two_round: bool) -> float:
     return secs * 2 if two_round else secs
 
 
-def _rag_suffix(config: Config, recalled: int, keywords=()) -> str:
-    """完成日志的召回后缀。
-
-    调试开关 config.rag_debug_keywords（config.json ai 段，GUI 无界面，默认关闭）：
-    开启时在「召回N个关键词」后列出具体关键词。
-    """
+def _rag_suffix(recalled: int) -> str:
+    """完成日志的召回后缀。"""
     if recalled < 0:
         return ""
-    if keywords and getattr(config, "rag_debug_keywords", False):
-        return f"（召回{recalled}个关键词：{'、'.join(keywords)}）"
     return f"（召回{recalled}个关键词）"
 
 
@@ -329,7 +323,9 @@ class AIWorker:
 
         if status == "ok":
             # 增强模式（recalled ≥ 0）追加召回数：词面+向量去重后的候选关键词数
-            rag_suffix = _rag_suffix(self.config, recalled, recalled_keywords)
+            rag_suffix = _rag_suffix(recalled)
+            if recalled_keywords:
+                logger.debug(f"{name} 召回关键词: {'、'.join(recalled_keywords)}")
             return f"{name} -> {Path(new_path).name}{rag_suffix}{retry_hint(retries, success=True)}"
         elif status == "skipped":
             return f"{name}（文件名未变化）"
