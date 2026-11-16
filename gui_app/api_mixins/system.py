@@ -114,7 +114,8 @@ class SystemMixin:
         if sys.platform == "win32":
             kw["creationflags"] = subprocess.CREATE_NO_WINDOW
         try:
-            subprocess.Popen(["explorer", "/select," + path], **kw)
+            # 引号只包路径：整参数引号（路径含空格时）会让 explorer 解析不出 /select
+            subprocess.Popen(f'explorer /select,"{path}"', **kw)
             return {"ok": True}
         except Exception as e:
             return {"ok": False, "error": str(e)}

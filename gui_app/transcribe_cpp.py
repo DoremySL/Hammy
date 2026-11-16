@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from batch_rename.utils import fmt_size
+from batch_rename.env import SUBPROCESS_KWARGS
 from .env import APP_ROOT, PYTHON_EXE, FFMPEG_EXE, make_logger
 from .installer import (
     PYPI_MIRRORS, DEFAULT_PYPI_MIRROR, UV_TIMEOUT_SEC,
@@ -723,7 +724,7 @@ def _to_srt(segments, offset_ms=0, idx=1):
 def _extract_wav(vp, out_wav):
     cmd = [ffmpeg, '-y', '-v', 'error', '-i', vp,
            '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', out_wav]
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    r = subprocess.run(cmd, capture_output=True, text=True, **SUBPROCESS_KWARGS)
     if r.returncode != 0:
         raise RuntimeError(f'ffmpeg 提取音频失败: {(r.stderr or "")[-300:]}')
 

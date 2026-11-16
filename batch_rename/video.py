@@ -371,6 +371,7 @@ def _extract_frames_concat(video_path: str, targets: List[float], config: Config
     try:
         cmd = [
             ffmpeg_tools.ffmpeg, "-y",
+            "-threads", "1",  # 解码单线程：多线程与 concat 段丢弃有竞态，偶发中途崩溃
             "-skip_frame", "nokey",
             "-f", "concat", "-safe", "0", "-i", script,
             "-fps_mode", "passthrough",

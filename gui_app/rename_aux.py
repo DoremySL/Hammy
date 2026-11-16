@@ -75,7 +75,7 @@ class AsrInjectWorker:
         elif not r.get("ok"):
             self.on_log("warn", f"[语音辅助] 注入失败（不影响重命名）: {r.get('error')}")
         else:
-            self.on_log("info", f"[语音辅助] 已生成 {len(r.get('texts') or {})} 个视频的参考文本")
+            logger.debug(f"[语音辅助] 已生成 {len(r.get('texts') or {})} 个视频的参考文本")
 
 
 class TaggerInjectWorker:
@@ -141,7 +141,7 @@ class TaggerInjectWorker:
                 self.save_fn(results)
             ok_n = sum(1 for r in results.values() if not r.get("error"))
             if results and not self.stop_event.is_set():
-                self.on_log("info", f"[标签辅助] 集成完成：成功 {ok_n}/{len(results)}")
+                logger.debug(f"[标签辅助] 集成完成：成功 {ok_n}/{len(results)}")
 
     def _start_engine(self, total: int, tagger_mod):
         """懒启动引擎：首个待推理任务出现时才加载（全部跳过时零开销）。"""

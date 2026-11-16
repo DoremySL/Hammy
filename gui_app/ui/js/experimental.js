@@ -1727,6 +1727,8 @@ function ensureLlamaReady() {
   if (state.llamaRunning && !state.llamaStarting) return Promise.resolve(true);
   if (_ensureLlamaInflight) return _ensureLlamaInflight;
   _ensureLlamaInflight = (async () => {
+    switchTab('llama');
+    toastBusy('正在启动本地推理服务…');
     state.llamaPendingLaunch = true;
     updateLlamaPill({ running: false, starting: true, model: null });
     startLlamaPillPolling();
@@ -1735,16 +1737,22 @@ function ensureLlamaReady() {
       const r = await apiCall('ensure_llama_running');
       let st = r ? await apiCall('get_llama_status') : null;
       if (st) syncLlamaState(st);
-      if (r && r.ok && st && st.running && !st.starting) return true;
+      if (r && r.ok && st && st.running && !st.starting) {
+        toast('llama-server 已启动', 'ok', true);
+        return true;
+      }
       if (r && r.ok && st && st.starting) {
         st = await waitLlamaSettled();
         if (st) syncLlamaState(st);
-        if (st && st.running && !st.starting) return true;
+        if (st && st.running && !st.starting) {
+          toast('llama-server 已启动', 'ok', true);
+          return true;
+        }
       }
-      toast('本地推理服务启动失败: ' + ((r && r.error) || (st && st.launch_failed) || '未知错误'), 'err');
+      toast('本地推理服务启动失败: ' + ((r && r.error) || (st && st.launch_failed) || '未知错误'), 'err', true);
       return false;
     } catch (e) {
-      toast('本地推理服务启动失败: ' + ((e && e.message) || e), 'err');
+      toast('本地推理服务启动失败: ' + ((e && e.message) || e), 'err', true);
       return false;
     } finally {
       state.llamaPendingLaunch = false;

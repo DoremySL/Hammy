@@ -24,7 +24,7 @@ from .workspace_store import (
 from .workspace_service import find_cached_nfo
 from batch_rename.config import Config
 from batch_rename.dependencies import DependencyError, ensure_dependencies, bindings
-from batch_rename.env import logger as engine_logger
+from batch_rename.env import SUBPROCESS_KWARGS, logger as engine_logger
 from batch_rename.pipeline import BatchPipeline
 from batch_rename.tag_recall import TagRecall
 
@@ -65,7 +65,7 @@ def _llama_vram_warning(on_log) -> None:
             return
         r = subprocess.run(
             ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=5)
+            capture_output=True, text=True, timeout=5, **SUBPROCESS_KWARGS)
         frees = [int(x) for x in (r.stdout or "").split() if x.strip().isdigit()]
         if frees and max(frees) < 2048:
             on_log("warn", "[显存提示] 空闲显存不足 2GB，集成辅助与本地推理共存"
@@ -80,6 +80,10 @@ def _llama_vram_warning(on_log) -> None:
 class _UIHandler(logging.Handler):
     """把 batch_rename 日志行转发到 GUI 回调。"""
 
+    # GUI 日志为精简视图：这些前缀不推界面（日志流中按级别可查）
+    _FILTER_PREFIXES = ("[改名]", "[NFO] 已生成",
+                        "[标签辅助] 集成完成", "[语音辅助] 已生成")
+
     def __init__(self, callback: Callable[[str, str], None]):
         super().__init__()
         self._cb = callback
@@ -90,8 +94,8 @@ class _UIHandler(logging.Handler):
             msg = self.format(record)
             if not msg.strip():
                 return
-            # GUI 日志只保留 [i/N] 进度行，过滤引擎的 [改名]/[NFO 已生成] 细节
-            if msg.startswith("[改名]") or msg.startswith("[NFO] 已生成"):
+            # GUI 日志只保留 [i/N] 进度行，过滤引擎细节（明细见日志流）
+            if msg.startswith(self._FILTER_PREFIXES):
                 return
             # 过滤纯横线分隔行（引擎的 ━/─ 分隔符）
             stripped = msg.strip()
@@ -375,7 +379,7 @@ class PipelineRunner:
             self._handler = _UIHandler(on_log or (lambda lv, msg: None))
             engine_logger.addHandler(self._handler)
             old_level = engine_logger.level
-            engine_logger.setLevel(logging.DEBUG)
+            engine_logger.setLevel(logging.INFO)
 
             try:
                 try:

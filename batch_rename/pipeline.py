@@ -25,6 +25,7 @@ _FRAME_WORKERS = 4
 _FRAME_PENDING_FACTOR = 4
 _TASK_QUEUE_FACTOR = 4
 _TAGGER_QUEUE_MAX = 64   # 集成 Tagger 待推理队列上限（超出降级为无辅助标签）
+_AUX_RUNAHEAD_EXTRA = 2  # 集成 Tagger 领先 LLM 消费的额度余量
 # ── join 超时兜底 ──
 _MIN_JOIN_TIMEOUT_SEC = 120.0
 _JOIN_SLACK_FACTOR = 1.5
@@ -89,6 +90,9 @@ class TaskContext:
         # 帧缓存额度（FrameProducer 信号量）：提交抽帧前置位，release 时归位
         self.cache_slot = False
         self.release_hook: Optional[Callable[[Any], None]] = None
+        # 集成 Tagger run-ahead 额度：入 tagger 队列前置位，LLM 消费后归位
+        self.aux_slot = False
+        self.aux_release: Optional[Callable[[], None]] = None
         self.on_ready: Optional[Callable[["TaskContext"], None]] = None
         self._stages_left = {"frames", *self.aux_stages}
         self._lock = threading.Lock()
@@ -134,18 +138,25 @@ class TaskContext:
             self.complete_stage(k)
 
     def release(self) -> None:
-        """LLM 消费完毕/取消后释放帧缓存（幂等，线程安全）。"""
+        """LLM 消费完毕/取消后释放帧缓存与辅助额度（幂等，线程安全）。"""
         with self._lock:
             if self._released:
                 return
             self._released = True
             owned = self.cache_slot
             self.cache_slot = False
+            aux = self.aux_slot
+            self.aux_slot = False
         self.frames = None
         self.thumb_lookup = None
         if owned and self.release_hook is not None:
             try:
                 self.release_hook()
+            except Exception:
+                pass
+        if aux and self.aux_release is not None:
+            try:
+                self.aux_release()
             except Exception:
                 pass
 
@@ -203,11 +214,14 @@ class FrameProducer:
             # 抽帧失败也是 frames 阶段终态（交付后由 LLM 侧 frame_error 处理）
             ctx.complete_stage("frames")
 
-    def _collect(self, future: Future, ctx: TaskContext, tagger_queue) -> None:
+    def _collect(self, future: Future, ctx: TaskContext, tagger_queue,
+                 aux_sem=None) -> None:
         """单个抽帧 future 完成：需要标签推理的送 tagger 队列，其余就地终态。"""
         if self.stop_event.is_set():
             return
         if tagger_queue is not None and ctx.frames and ctx.stage_pending("tagger"):
+            if aux_sem is not None and not self._acquire_aux_slot(ctx, aux_sem):
+                return
             try:
                 tagger_queue.put_nowait(ctx)
                 return
@@ -216,7 +230,22 @@ class FrameProducer:
                 logger.debug(f"Tagger 队列已满，跳过 {Path(ctx.vp).name} 的标签推理")
         ctx.complete_stage("tagger")
 
-    def run(self, tagger_queue=None):
+    def _acquire_aux_slot(self, ctx: TaskContext, aux_sem) -> bool:
+        """run-ahead 额度：集成 Tagger 只领先 LLM 消费有限个，消费后归还。"""
+        deadline = time.time() + self._ai_secs
+        while True:
+            if self.stop_event.is_set():
+                return False
+            if aux_sem.acquire(blocking=False):
+                ctx.aux_slot = True
+                return True
+            if time.time() > deadline:
+                logger.error(f"辅助限速额度等待超过 {self._ai_secs:.0f} 秒，强制停止管线。")
+                self.stop_event.set()
+                return False
+            self.stop_event.wait(0.1)
+
+    def run(self, tagger_queue=None, aux_sem=None):
         """并发抽帧全部上下文；tagger_queue 非空时成功任务按完成顺序送入队列。"""
         pending = [c for c in self.contexts if not self.stop_event.is_set()]
         try:
@@ -236,10 +265,10 @@ class FrameProducer:
                     if len(futures) >= frame_workers * _FRAME_PENDING_FACTOR:
                         done, _ = wait(futures.keys(), return_when=FIRST_COMPLETED)
                         for f in done:
-                            self._collect(f, futures.pop(f), tagger_queue)
+                            self._collect(f, futures.pop(f), tagger_queue, aux_sem)
                 if futures and not self.stop_event.is_set():
                     for future in as_completed(list(futures.keys())):
-                        self._collect(future, futures.pop(future), tagger_queue)
+                        self._collect(future, futures.pop(future), tagger_queue, aux_sem)
                 elif futures:
                     # f.cancel() 只取消未开始任务，运行中的抽帧靠内部轮询 stop 退出
                     for f in futures:
@@ -474,6 +503,7 @@ class BatchPipeline:
         self.aux_workers = aux_workers or []
         self._prefill = prefill or {}
         self.tagger_queue: Optional[queue.Queue] = None
+        self.aux_sem: Optional[threading.Semaphore] = None  # Tagger run-ahead 限速
         self.producer: Optional[FrameProducer] = None
         self.producer_done = threading.Event()  # 抽帧生产者收尾信号
         # 两轮耗时估算：enhanced 且向量后端可用（不可用时增强档降级为单轮）
@@ -531,6 +561,11 @@ class BatchPipeline:
 
         return stats
 
+    def _release_aux_slot(self) -> None:
+        """LLM 消费完毕/取消后归还 run-ahead 额度（TaskContext.release 触发）。"""
+        if self.aux_sem is not None:
+            self.aux_sem.release()
+
     def _run_workers(self, stats):
         """启动辅助 worker + 抽帧生产者 + 就绪队列收尾 + AI 消费者。"""
         videos = self._videos
@@ -538,6 +573,8 @@ class BatchPipeline:
         ready_queue: queue.Queue = queue.Queue(maxsize=self.config.ai_workers * _TASK_QUEUE_FACTOR)
         self.tagger_queue = (queue.Queue(maxsize=_TAGGER_QUEUE_MAX)
                              if "tagger" in self.aux_stages else None)
+        self.aux_sem = (threading.Semaphore(self.config.ai_workers + _AUX_RUNAHEAD_EXTRA)
+                        if "tagger" in self.aux_stages else None)
         producer = FrameProducer(self.contexts, self.config, self.stop_event,
                                  ai_secs=ai_max_per_video)
         self.producer = producer
@@ -561,6 +598,7 @@ class BatchPipeline:
         for ctx in self.contexts:
             ctx.on_ready = _put_ready
             ctx.release_hook = producer.release_slot_for
+            ctx.aux_release = self._release_aux_slot
 
         def _queue_closer() -> None:
             """全部上下文交付（或停止）后投递哨兵，让 AI worker 退出主循环。"""
@@ -590,7 +628,7 @@ class BatchPipeline:
 
         def _run_producer() -> None:
             try:
-                producer.run(self.tagger_queue)
+                producer.run(self.tagger_queue, self.aux_sem)
             finally:
                 self.producer_done.set()  # aux worker 据此判断抽帧收尾
 
