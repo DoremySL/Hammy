@@ -20,7 +20,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from batch_rename.subprocess_registry import register_subprocess, unregister_subprocess
 from batch_rename.env import SUBPROCESS_KWARGS
 from batch_rename.config import Config
-from batch_rename.utils import fmt_size
+from batch_rename.utils import fmt_size, safe_int
 from batch_rename.video import probe_and_extract_keyframes
 from .env import APP_ROOT, PYTHON_EXE, make_logger
 from . import installer
@@ -39,7 +39,7 @@ TAGGER_DIR = APP_ROOT / "Tagger"
 VENV_DIR = TAGGER_DIR / "venv"
 MODEL_DIR = TAGGER_DIR / "models"  # 模型根目录（魔搭 作者/仓库 布局）
 
-REPO_ID = "DoremySL/Hammy-tagger-dual"  # 双模型仓库：H 504×336 横 / V 336×504 竖
+REPO_ID = "DoremySL/Hammy-tagger-onnx"  # v5 单引擎动态五档仓库
 
 TAG_THRESHOLD = 0.75
 PRESET_TAGS_FILE = "preset_tags.json"  # 模型仓库预设标签包（安装时导入标签检索）
@@ -49,12 +49,12 @@ TAGGER_GROUP = "Hammy-tagger"  # 导入条目固定分组
 SHARED_FILES = ("config.json", "char_ip_map.json", PRESET_TAGS_FILE, "manifest.json",
                 "hammy_tagger.py", "hammy_server.py", "build_trt.py")
 _CRITICAL_SHARED = ("config.json", "char_ip_map.json", "hammy_tagger.py", "hammy_server.py")
-_ENGINES = ("tagger-H.trt", "tagger-V.trt")
+_ENGINES = ("tagger.trt",)
 
 
 def _onnx_files(precision: str) -> Tuple[str, ...]:
     """按精度生成 ONNX 文件清单。"""
-    return tuple(f"{precision}-onnx/tagger-{t}.onnx" for t in ("H", "V"))
+    return (f"{precision}-onnx/tagger.onnx",)
 
 
 # 子进程超时
@@ -62,10 +62,6 @@ _INSTALL_TIMEOUT_SEC = 2400.0
 _BUILD_TIMEOUT_SEC = 1800.0
 _INFERENCE_BASE_SEC = 240.0
 _INFERENCE_PER_VIDEO_SEC = 120.0
-
-# 抽帧滤镜：短边压到 400（只缩不放）
-FRAME_VF = ("scale=trunc(iw*min(1\\,400/min(iw\\,ih))/2)*2"
-            ":trunc(ih*min(1\\,400/min(iw\\,ih))/2)*2")
 
 
 _log = make_logger("tagger")
@@ -212,6 +208,51 @@ def import_preset_tags(log_fn: Optional[Callable[[str], None]] = None) -> Dict[s
     return {"imported": len(fresh), "skipped": skipped, "mode": mode}
 
 
+def tagger_entry_query(entry: Dict[str, Any], lib: Optional[Dict[str, str]],
+                       gen_n: int) -> str:
+    """单个 tags entry → 召回查询词（英文名+中文名，库外标签过滤）；手动/集成两路径共用。"""
+    names: List[str] = []
+    for group in ("character_tags", "ip_tags", "general_tags"):
+        tags = entry.get(group) or []
+        if group == "general_tags":
+            tags = tags[:max(0, gen_n)]
+        for t in tags:
+            name = str(t.get("name") or "")
+            if not name:
+                continue
+            if lib is not None and name not in lib:
+                continue
+            names.append(name)
+            z = lib.get(name) if lib is not None else None
+            if z and z not in names:
+                names.append(z)
+    return " ".join(names)
+
+
+def save_tag_results(results: Dict[str, Any]) -> None:
+    """将辅助分类标签结果合并保存到 tagger/tags.json（失败条目不落盘）。"""
+    from .workspace_paths import TAGGER_TAGS_FILE
+    from .workspace_store import update_json
+
+    def _mutate(current):
+        if not isinstance(current, dict):
+            current = {}
+        for vid, data in results.items():
+            if data.get("error"):
+                continue
+            entry = {
+                "character_tags": data.get("character_tags", []),
+                "ip_tags": data.get("ip_tags", []),
+                "general_tags": data.get("general_tags", []),
+            }
+            if data.get("category"):
+                entry["category"] = data["category"]
+            current[vid] = entry
+        return current
+
+    update_json(TAGGER_TAGS_FILE, _mutate, default_factory=dict)
+
+
 def get_status() -> Dict[str, Any]:
     """获取 Hammy-tagger 安装状态（精度读安装时写入的配置值）。"""
     from .config_store import load_tagger_config
@@ -325,7 +366,7 @@ def install_dependencies(
 
         steps.push(4)
         files = [*_onnx_files(precision), *SHARED_FILES]
-        _log(f"━━ 步骤 4/5：从魔搭下载 Hammy tagger 双模型与脚本"
+        _log(f"━━ 步骤 4/5：从魔搭下载 Hammy tagger 模型与脚本"
              f"（{precision.upper()}，共 {len(files)} 个文件）━━", log_fn)
         dl = models_downloader.download_files(
             "ms", REPO_ID, files, str(MODEL_DIR),
@@ -344,7 +385,7 @@ def install_dependencies(
 
     # ── 步骤 5：构建 TRT 引擎（build_trt.py 构建成功后自动删除 ONNX）──
     steps.push(5)
-    _log("━━ 步骤 5/5：构建 TensorRT 引擎（H/V 双模型）━━", log_fn)
+    _log("━━ 步骤 5/5：构建 TensorRT 引擎（5 档动态单引擎）━━", log_fn)
     from .llama_cpp import pause_for_task
     pause_for_task(log_fn=log_fn)  # 让出显存
     rc, out = _run_subprocess_streaming(
@@ -418,17 +459,29 @@ def remove_tagger() -> Dict[str, Any]:
 _NO_STOP = threading.Event()
 
 
+def video_sampling_config() -> Config:
+    """基础采样配置（主设置页 video 段）：点位/每点帧数/长边，LLM 与 Tagger 共用。"""
+    from .config_store import load_config
+    video = load_config().get("video") or {}
+    cfg = Config(
+        sampling_points=max(1, safe_int(video.get("sampling_points"), 15)),
+        frames_per_point=max(1, safe_int(video.get("frames_per_point"), 1)),
+        frame_max_side=max(64, safe_int(video.get("frame_max_side"), 672)),
+    )
+    cfg.validate()
+    return cfg
+
+
 def extract_frames_for_tagger(video_path: str,
                               stop_event: Optional[threading.Event] = None,
-                              frame_count: int = 15) -> List[str]:
-    """复用主流程抽帧，返回 JPEG base64 帧列表。"""
+                              config: Optional[Config] = None) -> List[str]:
+    """复用公用抽帧与预处理（主设置页基础采样），返回存活帧 JPEG base64 列表。"""
     if stop_event is None:
         stop_event = _NO_STOP
     if stop_event.is_set():
         return []
-    cfg = Config(sampling_points=max(1, frame_count), frames_per_point=1)
-    cfg.validate()
-    _, frames = probe_and_extract_keyframes(video_path, cfg, stop_event, frame_vf=FRAME_VF)
+    _, frames = probe_and_extract_keyframes(video_path, config or video_sampling_config(),
+                                            stop_event)
     return [f.b64 for f in frames]
 
 

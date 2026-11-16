@@ -263,17 +263,6 @@ async function detectTags(ids) {
   const items = videos.map(v => [v.id, v.path]);
   const r = await withGpuBusy(() => callApi('detect_ip_tags', items));
   if (!r) { $('#prog-bar').className = ''; return; }
-  if (r.results) {
-    for (const [vid, d] of Object.entries(r.results)) {
-      if (d.error) continue;
-      if (d.category) state.taggerCategories[vid] = d.category;
-      else delete state.taggerCategories[vid];
-      if ((d.character_tags && d.character_tags.length) || (d.ip_tags && d.ip_tags.length)) {
-        state.taggerTaggedIds.add(vid);
-      }
-    }
-    apiCall('get_tagger_all_tags').then(m => { if (m) state.taggerTagNames = m; }).catch(() => {});
-  }
   const stopped = r.error === '已停止';
   if (r.ok || stopped) {
     const okN = r.ok_count || 0;
@@ -281,11 +270,12 @@ async function detectTags(ids) {
     $('#prog-bar').className = 'done';
     const msg = stopped ? `IP分析已停止: 成功 ${okN}/${r.total}` : `IP分析完成: 成功 ${okN}/${r.total}`;
     toast(msg, okN > 0 ? 'ok' : 'err', true);
-    refreshGridData();
   } else {
     $('#prog-bar').className = '';
     toast('IP分析失败: ' + (r.error || ''), 'err', true);
   }
+  // 失败前也可能已部分落盘，一律读盘对齐
+  await refreshTaggerBadges();
 }
 
 /* ════════════════════════════════════════════════════════════

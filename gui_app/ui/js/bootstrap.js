@@ -46,16 +46,8 @@ pywebviewReady(30000).then(async () => {
     const exp = (cfg && cfg.experimental) || {};
     state.thumbOptimize = Number(((cfg || {}).video || {}).frame_time_tags) === 2;
     state.transcribeModel = exp.transcribe_model || 'whisper-turbo';
-    // 各 id 集合互相独立，并行拉取避免逐个串行等待
     const idFetches = [];
-    if (exp.tagger_enabled) {
-      state.taggerEnabled = true;
-      idFetches.push(
-        apiCall('get_tagger_tagged_ids').then(ids => { if (ids) state.taggerTaggedIds = new Set(ids); }).catch(() => {}),
-        apiCall('get_tagger_category_ids').then(m => { if (m) state.taggerCategories = m; }).catch(() => {}),
-        apiCall('get_tagger_all_tags').then(m => { if (m) state.taggerTagNames = m; }).catch(() => {}),
-      );
-    }
+    if (exp.tagger_enabled) state.taggerEnabled = true;
     if (exp.transcribe_enabled) {
       state.transcribeEnabled = true;
       idFetches.push(

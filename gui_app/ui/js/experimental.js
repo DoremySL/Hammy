@@ -61,12 +61,14 @@ function _collectExperimentalData() {
   let topN = num('#ragvec-topn');
   if (topN !== null) topN = Math.min(100, Math.max(1, topN));
   put('rag_vec_top_n', topN);
-  let frames = num('#tagger-frames');
-  if (frames !== null) frames = Math.max(1, frames);
-  put('tagger_frames', frames);
   let thr = num('#tagger-threshold');
   if (thr !== null) thr = Math.min(1, Math.max(0.1, thr));
   put('tagger_threshold', thr);
+  let gcnt = num('#tagger-general-count');
+  if (gcnt !== null) gcnt = Math.min(200, Math.max(1, gcnt));
+  put('tagger_general_count', gcnt);
+  const tinteg = ddl('#tagger-integration-dd');
+  put('tagger_integration', tinteg === null ? null : tinteg === '1');
   put('tagger_enabled', chk('#tagger-enable-toggle'));
   const lang = $('#transcribe-language');
   put('transcribe_language', lang ? lang.value.trim() : null);
@@ -640,12 +642,18 @@ function _renderTaggerSection(exp, pStatus) {
       <div id="tagger-cfg-panel" class="exp-cfg-panel" style="display:${state.settingsOpen.has('tagger-cfg') ? 'block' : 'none'}">
         <div class="exp-input-row">
           <div class="field">
-            <label data-tip="每个视频的采样点位数，每点位取 1 帧（短视频固定头中尾 3 帧）：越多识别越全面，耗时越长">采样帧数</label>
-            <input type="number" id="tagger-frames" min="1" value="${exp.tagger_frames || 15}"/>
+            <label data-tip="角色按 0.4×该值进池，IP 按该值进池；输出判定结合跨帧加权与互召回">角色/IP阈值</label>
+            <input type="number" id="tagger-threshold" min="0.1" max="1" step="0.01" value="${exp.tagger_threshold || 0.75}"/>
           </div>
           <div class="field">
-            <label data-tip="两者均按出现次数加权；角色超过该值输出，IP 需超过 2 倍该值">角色/IP阈值</label>
-            <input type="number" id="tagger-threshold" min="0.1" max="1" step="0.01" value="${exp.tagger_threshold || 0.75}"/>
+            <label data-tip="详情展示与检索使用的 General 标签个数">General 数量</label>
+            <input type="number" id="tagger-general-count" min="1" max="200" value="${exp.tagger_general_count || 15}"/>
+          </div>
+        </div>
+        <div class="exp-input-row">
+          <div class="field">
+            <label data-tip="开启后自动重命名批次内逐视频识别标签（复用同批抽帧），并作为标签检索查询词；本地推理显存不足时建议关闭，改用右键手动分析">集成到自动重命名</label>
+            ${_boolDd('tagger-integration-dd', !!exp.tagger_integration)}
           </div>
         </div>
       </div>
@@ -663,22 +671,26 @@ function _bindTaggerEvents() {
     scheduleExperimentalSave(true);
     updateSortDropdown();
     syncSearchModes();
+    if (toggle.checked) refreshTaggerBadges();
   });
 
   _bindCardToggle('tagger');
 
-  ['#tagger-frames', '#tagger-threshold'].forEach(sel => {
+  ['#tagger-threshold', '#tagger-general-count'].forEach(sel => {
     const el = $(sel);
     if (el) el.addEventListener('input', () => scheduleExperimentalSave());
   });
+
+  const tintDD = $('#tagger-integration-dd');
+  if (tintDD) initDropdown(tintDD, () => scheduleExperimentalSave(true));
 
   const clearBtn = $('#btn-tagger-clear-tags');
   if (clearBtn) clearBtn.addEventListener('click', async () => {
     if (!await showConfirm('确定清除所有已保存的标签数据吗？')) return;
     const r = await apiCall('clear_tagger_tags');
     if (r && r.ok) {
-      state.taggerTaggedIds.clear(); state.taggerCategories = {}; state.taggerTagNames = {};
-      refreshGridData(); toast(r.message || '已清除', 'ok');
+      await refreshTaggerBadges();
+      toast(r.message || '已清除', 'ok');
     } else toast('清除失败', 'err');
   });
 }

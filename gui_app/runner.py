@@ -1,6 +1,7 @@
 """在后台线程中运行 BatchPipeline：装配 Config、转发引擎日志、逐文件写 history 并推送前端。"""
 from __future__ import annotations
 
+import base64
 import logging
 import re
 import sys
@@ -10,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from . import discovery, prompts
+from .rename_aux import format_transcribe_block
 from .workspace_paths import NFO_DIR, stable_id
 from .workspace_store import (
     append_history_entry,
@@ -39,6 +41,37 @@ def _safe_float(d: dict, key: str, default: float) -> float:
         return float(d.get(key, default))
     except (TypeError, ValueError):
         return default
+
+
+_THUMB_TIME_RE = re.compile(r"\d{1,3}:\d{2}:\d{2}")
+
+
+def _thumb_time_seconds(thumb_time: str) -> Optional[int]:
+    """history 的 thumb_time（HH:MM:SS）→ int 秒（与提示词时间标签同为四舍五入口径）。"""
+    raw = (thumb_time or "").strip()
+    if not isinstance(raw, str) or not _THUMB_TIME_RE.fullmatch(raw):
+        return None
+    h, m, s = (int(x) for x in raw.split(":"))
+    return h * 3600 + m * 60 + s
+
+
+def _llama_vram_warning(on_log) -> None:
+    """集成辅助与本地推理共存前的显存提示（警告引导，不自动改变配置）。"""
+    try:
+        import subprocess
+        from .llama_integration import is_active
+        from .llama_cpp import get_status
+        if not (is_active() and get_status().get("running")):
+            return
+        r = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5)
+        frees = [int(x) for x in (r.stdout or "").split() if x.strip().isdigit()]
+        if frees and max(frees) < 2048:
+            on_log("warn", "[显存提示] 空闲显存不足 2GB，集成辅助与本地推理共存"
+                           "可能显存不足；如遇失败建议关闭集成，改用右键手动分析/转录。")
+    except Exception:
+        pass  # 检测失败不阻断流程
 
 
 # ── 日志转发 handler ──
@@ -201,39 +234,26 @@ class PipelineRunner:
         tags_store = read_json(TAGGER_TAGS_FILE, {})
         if not tags_store:
             return {}
-        from .tagger import load_tag_library_map
+        from .tagger import load_tag_library_map, tagger_entry_query
         lib = load_tag_library_map()
+        gen_n = max(0, _safe_int(exp_cfg, "tagger_general_count", 15))
 
         result: Dict[str, str] = {}
         for vp in paths:
-            vid = stable_id(vp)
-            entry = tags_store.get(vid)
+            entry = tags_store.get(stable_id(vp))
             if not entry:
                 continue
-            names: List[str] = []
-            for group in ("character_tags", "ip_tags"):
-                for t in entry.get(group) or []:
-                    name = str(t.get("name") or "")
-                    if not name:
-                        continue
-                    if lib is not None and name not in lib:
-                        continue
-                    names.append(name)
-                    z = lib.get(name) if lib is not None else None
-                    if z and z not in names:
-                        names.append(z)
-            if names:
-                result[vp] = " ".join(names)
+            q = tagger_entry_query(entry, lib, gen_n)
+            if q:
+                result[vp] = q
         return result
 
-    def _build_transcribe_meta_map(self, paths: List[str], exp_cfg: Dict[str, Any],
-                                   inject_texts: Optional[Dict[str, str]] = None) -> Dict[str, str]:
-        """构建语音转录上下文映射：优先右键 SRT，缺失回退 inject_texts。"""
+    def _build_transcribe_meta_map(self, paths: List[str], exp_cfg: Dict[str, Any]) -> Dict[str, str]:
+        """构建语音转录上下文映射（已有 SRT；缺失视频由 ASR worker 逐视频交付）。"""
         if not exp_cfg.get("transcribe_enabled", False):
             return {}
         from .workspace_paths import TRANSCRIBE_SRT_DIR, TRANSCRIBE_TRANSCRIPTS_FILE
-        inject_texts = inject_texts or {}
-        if not TRANSCRIBE_SRT_DIR.exists() and not inject_texts:
+        if not TRANSCRIBE_SRT_DIR.exists():
             return {}
         max_chars = max(100, _safe_int(exp_cfg, "transcribe_max_chars", 2000))
         inject_ts = exp_cfg.get("transcribe_inject_timestamps", False)
@@ -242,76 +262,20 @@ class PipelineRunner:
         for vp in paths:
             vid = stable_id(vp)
             srt_file = TRANSCRIBE_SRT_DIR / f"{vid}.srt"
-            text = ""
-            lang = ""
-            if srt_file.exists():
-                try:
-                    srt_content = srt_file.read_text(encoding="utf-8").strip()
-                except OSError:
-                    srt_content = ""
-                if not srt_content:
-                    continue
-                text = srt_to_text(srt_content, inject_ts)
-                lang = store.get(vid, {}).get("language", "")
-            elif vp in inject_texts:
-                text = (inject_texts.get(vp) or "").strip()
-            if not text:
+            if not srt_file.exists():
                 continue
-            if len(text) > max_chars:
-                text = text[:max_chars] + "…（已截断）"
-            parts = ["【语音辅助参考】",
-                     "以下为自动语音转录结果，仅供参考。请结合视频画面自行判断："]
-            if lang:
-                parts.append(f"- 语言: {lang}")
-            parts.append(f"- 转录文本: {text}")
-            parts.append("过长的转录文本可能被截断，注意判断")
-            result[vp] = "\n".join(parts)
+            try:
+                srt_content = srt_file.read_text(encoding="utf-8").strip()
+            except OSError:
+                continue
+            if not srt_content:
+                continue
+            text = srt_to_text(srt_content, inject_ts)
+            lang = store.get(vid, {}).get("language", "")
+            block = format_transcribe_block(text, lang, max_chars)
+            if block:
+                result[vp] = block
         return result
-
-    def _run_rename_injection(self, paths: List[str], exp_cfg: Dict[str, Any],
-                              on_log) -> Optional[Dict[str, str]]:
-        """为缺转录的视频生成注入文本；None=用户停止，失败降级为 {}。"""
-        if not (exp_cfg.get("transcribe_enabled", False)
-                and exp_cfg.get("transcribe_integration", False)):
-            return {}
-        from . import transcribe_cpp
-        if not transcribe_cpp.inject_ready():
-            return {}
-        inject_title = transcribe_cpp.TRANSCRIBE_MODELS[
-            transcribe_cpp.get_inject_model()]["title"]
-        from .workspace_paths import TRANSCRIBE_SRT_DIR
-        missing = [vp for vp in paths
-                   if not (TRANSCRIBE_SRT_DIR / f"{stable_id(vp)}.srt").exists()]
-        if not missing:
-            return {}
-        max_chars = max(100, _safe_int(exp_cfg, "transcribe_max_chars", 2000))
-
-        from .api_mixins.experimental import _gpu_task_lock
-        # 轮询获取 GPU 任务锁，期间响应停止
-        acquired = False
-        while not acquired:
-            if self._stop.is_set():
-                return None
-            acquired = _gpu_task_lock.acquire(blocking=False)
-            if not acquired:
-                time.sleep(0.2)
-        try:
-            on_log("info", f"[语音辅助] {len(missing)} 个视频无转录，"
-                           f"使用 {inject_title} 生成参考文本…")
-            r = transcribe_cpp.run_inject_batch(
-                missing, max_chars=max_chars,
-                on_log=lambda m: on_log("info", str(m)),
-                stop_event=self._stop)
-        finally:
-            _gpu_task_lock.release()
-
-        if self._stop.is_set():
-            return None
-        if not r.get("ok"):
-            on_log("warn", f"[语音辅助] 注入失败（不影响重命名）: {r.get('error')}")
-            return {}
-        on_log("info", f"[语音辅助] 已生成 {len(r.get('texts') or {})} 个视频的参考文本")
-        return r.get("texts") or {}
 
     def run(
         self,
@@ -335,7 +299,8 @@ class PipelineRunner:
 
         def _emit_file_done(orig: str, new_path: Optional[str], status: str,
                              info: Dict[str, Any], title: str, plot: str,
-                             tags: List[str]) -> None:
+                             tags: List[str],
+                             thumb_lookup: Optional[Dict[int, Any]] = None) -> None:
             """引擎 on_file_done 回调 → 写 history + 推送前端。"""
             vid = stable_id(orig)
             entry = {
@@ -363,12 +328,23 @@ class PipelineRunner:
             if status in ("ok", "skipped"):
                 append_history_entry(entry)
                 if engine_cfg.frame_time_tags == 2:
-                    # 先于前端推送用 thumb_time 重生成缩略图（append 后 history 内存缓存立即可读）
+                    # 先于前端推送重生成缩略图：优先 thumb_time 匹配的本次缓存帧
                     discovery.invalidate_thumbnail(vid)
-                    try:
-                        discovery.generate_thumbnail(new_path or orig, vid)
-                    except Exception:
-                        pass
+                    refreshed = False
+                    if thumb_lookup:
+                        sec = _thumb_time_seconds(thumb_time)
+                        f = thumb_lookup.get(sec) if sec is not None else None
+                        if f is not None:
+                            try:
+                                refreshed = discovery.generate_thumbnail_from_jpeg(
+                                    vid, base64.b64decode(f.b64)) is not None
+                            except Exception:
+                                refreshed = False
+                    if not refreshed:
+                        try:
+                            discovery.generate_thumbnail(new_path or orig, vid)
+                        except Exception:
+                            pass
                     entry["thumb_refresh"] = True
             # 停止检查点：stop 后每完成一个文件即落盘一次，避免 daemon 线程退出时整批记录丢失。
             if self._stop.is_set():
@@ -433,74 +409,150 @@ class PipelineRunner:
                 begin_batch()  # history 变更累积到内存，结束时一次性落盘
                 # 扩展功能上下文
                 exp_cfg = cfg_dict.get("experimental", {})
-                # tagger 上下文单独成 map：作为首轮字面召回的查询 scope
-                tagger_meta_map = self._build_tagger_meta_map(paths, exp_cfg)
-                # 注入文本；None 表示用户已停止
                 _log_cb = on_log or (lambda lv, msg: None)
-                inject_texts = self._run_rename_injection(paths, exp_cfg, _log_cb)
-                if inject_texts is None:
-                    if on_done:
-                        on_done({"ok": False, "error": "已停止", "ok_count": 0,
-                                  "error_count": 0, "skipped_count": 0})
-                    return
-                # 提示词 aux 仅转录（tagger 名单只作为字面查询词，见 literal_meta_map）
-                extra_meta_map = {}
-                for vp, txt in self._build_transcribe_meta_map(
-                        paths, exp_cfg, inject_texts=inject_texts).items():
-                    extra_meta_map[vp] = txt
-                pt = prompts.load_tag_library()
-                # 停用组过滤：黑名单命中组的条目不进入检索（"" 为默认分组）
-                pt_disabled = set(pt["disabled_groups"])
-                pt_items = [it for it in pt["items"] if it["group"] not in pt_disabled]
-                pt_skipped = len(pt["items"]) - len(pt_items)
-                dense = None
-                pt_mode = pt["mode"]
-                if engine_cfg.rag_vec_enabled and pt_mode == "enhanced":
-                    from .ort_embedding import OrtEmbedBackend, get_status as ort_status
-                    if ort_status().get("ready"):
-                        dense = OrtEmbedBackend(
-                            device=engine_cfg.rag_vec_device,
-                            log_fn=lambda m: engine_logger.info(f"[RAG] {m}"))
-                    else:
-                        engine_logger.info("[RAG] 向量检索已启用但 ort-embedding 未就绪，"
-                                           "增强档本次降级为开启（仅首轮字面召回）")
-                tag_recall = TagRecall(items=pt_items,
-                                       # GUI 三档值与内部模式同名直传
-                                       #（on=首轮字面召回注入，enhanced=字面+第二轮向量召回）
-                                       mode=pt_mode,
-                                       top_k=engine_cfg.rag_top_k,
-                                       dense=dense,
-                                       vec_threshold=engine_cfg.rag_vec_threshold,
-                                       vec_top_n=engine_cfg.rag_vec_top_n)
-                if dense is not None:
-                    engine_logger.info(f"[RAG] 正在加载嵌入模型: {dense.model_title}"
-                                       f"（device={dense.device}）…")
+
+                from .workspace_paths import TRANSCRIBE_SRT_DIR, TAGGER_TAGS_FILE
+                from .api_mixins.experimental import _gpu_task_lock
+                from .rename_aux import AsrInjectWorker, TaggerInjectWorker
+                from . import tagger as tagger_mod, transcribe_cpp
+
+                # 注入转录集成：开关 + 就绪 + 存在缺失 SRT 的视频
+                asr_active = (bool(exp_cfg.get("transcribe_enabled", False))
+                              and bool(exp_cfg.get("transcribe_integration", False))
+                              and transcribe_cpp.inject_ready())
+                asr_missing: List[str] = []
+                if asr_active:
+                    asr_missing = [vp for vp in paths
+                                   if not (TRANSCRIBE_SRT_DIR / f"{stable_id(vp)}.srt").exists()]
+                asr_active = bool(asr_missing)
+
+                # Tagger 集成：开关 + 已启用 + 引擎就绪（未就绪降级手动路径语义，不阻断）
+                tagger_active = (bool(exp_cfg.get("tagger_enabled", False))
+                                 and bool(exp_cfg.get("tagger_integration", False)))
+                if tagger_active:
+                    st = tagger_mod.get_status()
+                    files_err = tagger_mod.ensure_model_files(
+                        log_fn=lambda m: _log_cb("info", str(m)),
+                        stop_event=self._stop)
+                    if not st.get("ready") or files_err:
+                        _log_cb("warn", f"[标签辅助] 集成不可用（{files_err or '引擎未就绪'}），"
+                                        f"本次跳过标签推理，重命名不受影响")
+                        tagger_active = False
+
+                aux_workers: List[Any] = []
+                aux_stages: set = set()
+                prefill: Dict[str, Dict[str, Any]] = {}
+                if asr_active:
+                    max_chars = max(100, _safe_int(exp_cfg, "transcribe_max_chars", 2000))
+                    aux_workers.append(AsrInjectWorker(asr_missing, max_chars,
+                                                       _log_cb, self._stop))
+                    aux_stages.add("asr")
+                if tagger_active:
+                    from .config_store import load_tagger_config
+                    pcfg = load_tagger_config()
+                    threshold = pcfg.get("threshold")
                     try:
-                        tag_recall.warmup_dense()  # 预构建索引，首个视频不承担耗时
-                    except Exception as e:
-                        engine_logger.info(f"[RAG] 向量索引构建失败，增强档本次降级为开启: {e}")
-                if tag_recall.mode != "off":
-                    if tag_recall.mode == "enhanced" and not tag_recall.has_dense:
-                        mode_label = "增强（向量不可用，本次降级为开启）"
-                    else:
-                        mode_label = {"on": "开启（单轮·字面召回注入）",
-                                      "enhanced": "增强（首轮字面注入+第二轮向量召回）"}[tag_recall.mode]
-                    skip_note = f"（停用组跳过 {pt_skipped} 条）" if pt_skipped else ""
-                    engine_logger.info(
-                        f"[RAG] 标签检索模式: {mode_label} | 标签库 {tag_recall.total_items} 条{skip_note}")
-                elif pt_mode != "off":
-                    engine_logger.info("[RAG] 标签检索已开启但启用组内无标签，本次不注入")
-                pipeline = BatchPipeline(
-                    paths, engine_cfg, self._client, self._stop,
-                    on_file_done=_emit_file_done,
-                    # NFO 缓存模式（nfo_target_dir 非空）下直接以 stable_id 命名写入，
-                    # 避免不同目录下同 stem 视频映射到同一文件互相覆盖
-                    nfo_namer=lambda vp: f"{stable_id(vp)}.nfo",
-                    extra_meta_map=extra_meta_map,
-                    literal_meta_map=tagger_meta_map,
-                    tag_recall=tag_recall,
-                )
-                pipeline.run()
+                        threshold = min(1, max(0.1, float(threshold)))
+                    except (TypeError, ValueError):
+                        threshold = 0.75
+                    aux_workers.append(TaggerInjectWorker(
+                        self._stop, _log_cb, threshold=threshold,
+                        general_count=max(0, _safe_int(exp_cfg, "tagger_general_count", 15)),
+                        save_fn=tagger_mod.save_tag_results))
+                    aux_stages.add("tagger")
+
+                # 已有结果的复用上下文（prefill），其余视频由 aux worker 交付
+                for vp, q in self._build_tagger_meta_map(paths, exp_cfg).items():
+                    prefill.setdefault(vp, {})["literal_meta"] = q
+                for vp, block in self._build_transcribe_meta_map(paths, exp_cfg).items():
+                    prefill.setdefault(vp, {})["extra_meta"] = block
+                if tagger_active:
+                    tags_store = read_json(TAGGER_TAGS_FILE, {})
+                    tagged_skip = {vp for vp in paths if tags_store.get(stable_id(vp))}
+                else:
+                    tagged_skip = set()
+
+                # 集成辅助开启时持锁整个批次，隔离右键手动入口（不 pause 让出显存）
+                hold_gpu_lock = bool(aux_workers)
+                if hold_gpu_lock:
+                    acquired = False
+                    while not acquired:
+                        if self._stop.is_set():
+                            break
+                        acquired = _gpu_task_lock.acquire(blocking=False)
+                        if not acquired:
+                            time.sleep(0.2)
+                    if not acquired:
+                        if on_done:
+                            on_done({"ok": False, "error": "已停止", "ok_count": 0,
+                                      "error_count": 0, "skipped_count": 0})
+                        return
+                    _llama_vram_warning(_log_cb)
+                try:
+                    pt = prompts.load_tag_library()
+                    # 停用组过滤：黑名单命中组的条目不进入检索（"" 为默认分组）
+                    pt_disabled = set(pt["disabled_groups"])
+                    pt_items = [it for it in pt["items"] if it["group"] not in pt_disabled]
+                    pt_skipped = len(pt["items"]) - len(pt_items)
+                    dense = None
+                    pt_mode = pt["mode"]
+                    if engine_cfg.rag_vec_enabled and pt_mode == "enhanced":
+                        from .ort_embedding import OrtEmbedBackend, get_status as ort_status
+                        if ort_status().get("ready"):
+                            dense = OrtEmbedBackend(
+                                device=engine_cfg.rag_vec_device,
+                                log_fn=lambda m: engine_logger.info(f"[RAG] {m}"))
+                        else:
+                            engine_logger.info("[RAG] 向量检索已启用但 ort-embedding 未就绪，"
+                                               "增强档本次降级为开启（仅首轮字面召回）")
+                    tag_recall = TagRecall(items=pt_items,
+                                           # GUI 三档值与内部模式同名直传
+                                           #（on=首轮字面召回注入，enhanced=字面+第二轮向量召回）
+                                           mode=pt_mode,
+                                           top_k=engine_cfg.rag_top_k,
+                                           dense=dense,
+                                           vec_threshold=engine_cfg.rag_vec_threshold,
+                                           vec_top_n=engine_cfg.rag_vec_top_n)
+                    if dense is not None:
+                        engine_logger.info(f"[RAG] 正在加载嵌入模型: {dense.model_title}"
+                                           f"（device={dense.device}）…")
+                        try:
+                            tag_recall.warmup_dense()  # 预构建索引，首个视频不承担耗时
+                        except Exception as e:
+                            engine_logger.info(f"[RAG] 向量索引构建失败，增强档本次降级为开启: {e}")
+                    if tag_recall.mode != "off":
+                        if tag_recall.mode == "enhanced" and not tag_recall.has_dense:
+                            mode_label = "增强（向量不可用，本次降级为开启）"
+                        else:
+                            mode_label = {"on": "开启（单轮·字面召回注入）",
+                                          "enhanced": "增强（首轮字面注入+第二轮向量召回）"}[tag_recall.mode]
+                        skip_note = f"（停用组跳过 {pt_skipped} 条）" if pt_skipped else ""
+                        engine_logger.info(
+                            f"[RAG] 标签检索模式: {mode_label} | 标签库 {tag_recall.total_items} 条{skip_note}")
+                    elif pt_mode != "off":
+                        engine_logger.info("[RAG] 标签检索已开启但启用组内无标签，本次不注入")
+                    pipeline = BatchPipeline(
+                        paths, engine_cfg, self._client, self._stop,
+                        on_file_done=_emit_file_done,
+                        # NFO 缓存模式（nfo_target_dir 非空）下直接以 stable_id 命名写入，
+                        # 避免不同目录下同 stem 视频映射到同一文件互相覆盖
+                        nfo_namer=lambda vp: f"{stable_id(vp)}.nfo",
+                        tag_recall=tag_recall,
+                        aux_stages=aux_stages,
+                        aux_workers=aux_workers,
+                        prefill=prefill,
+                    )
+                    # 预完成复用已有结果的辅助阶段（与 prefill 同一口径）
+                    missing_set = set(asr_missing)
+                    for ctx in pipeline.contexts:
+                        if "asr" in aux_stages and ctx.vp not in missing_set:
+                            ctx.complete_stage("asr")
+                        if "tagger" in aux_stages and ctx.vp in tagged_skip:
+                            ctx.complete_stage("tagger")
+                    pipeline.run()
+                finally:
+                    if hold_gpu_lock:
+                        _gpu_task_lock.release()
 
                 # 4. 先把累积的 history 落盘，再通知前端完成
                 #    （on_done 里会 scan_all 重读 history，必须保证读到的是已持久化的数据）

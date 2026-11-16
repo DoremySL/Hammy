@@ -33,9 +33,9 @@ def _default_config() -> Dict[str, Any]:
             "rag_debug_keywords": False,
         },
         "video": {
-            "sampling_points": 5,
-            "frames_per_point": 3,
-            "frame_max_side": 640,
+            "sampling_points": 15,
+            "frames_per_point": 1,
+            "frame_max_side": 672,
             "frame_time_tags": 2,
             "frame_extract_mode": "auto",
         },
@@ -139,8 +139,9 @@ def update_config(mutator: Callable[[Dict[str, Any]], Dict[str, Any]]) -> Dict[s
 # 模块文件内键名 → experimental 段键名（load_config 组装用）
 _TAGGER_KEY_MAP = {
     "enabled": "tagger_enabled",
-    "frames": "tagger_frames",
+    "integration": "tagger_integration",
     "threshold": "tagger_threshold",
+    "general_count": "tagger_general_count",
 }
 _TRANSCRIBE_KEY_MAP = {
     "enabled": "transcribe_enabled",
@@ -161,7 +162,8 @@ _LLAMA_KEYS = frozenset({"llama_enabled", "llama_integrate"})
 
 def _tagger_defaults() -> Dict[str, Any]:
     """tagger 模块配置默认值（文件缺失/损坏时的兜底）。"""
-    return {"enabled": False, "frames": 15, "threshold": 0.75, "precision": ""}
+    return {"enabled": False, "integration": False, "threshold": 0.75,
+            "general_count": 15, "precision": ""}
 
 
 def _transcribe_defaults() -> Dict[str, Any]:

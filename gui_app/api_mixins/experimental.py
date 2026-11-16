@@ -14,7 +14,7 @@ from ..installer import DEFAULT_PYPI_MIRROR, DEFAULT_TRT_SITE
 from ..js_push import js_pusher
 from ..workspace_paths import (LLAMA_CONFIG_FILE, TAGGER_TAGS_FILE,
                                TRANSCRIBE_SRT_DIR, TRANSCRIBE_TRANSCRIPTS_FILE)
-from ..workspace_store import read_json, update_json, write_json
+from ..workspace_store import read_json, read_json_cached, update_json, write_json
 from batch_rename.utils import safe_float, safe_int
 
 # GPU 密集任务互斥（转录/辅助分类标签/翻译同刻只允许一个）
@@ -36,8 +36,8 @@ def _push_llama_log(msg: str) -> None:
 
 
 def _load_tags() -> Dict[str, Any]:
-    """读取 tagger 标签存储（缺失/损坏按空 dict 处理）。"""
-    return read_json(TAGGER_TAGS_FILE, {})
+    """读取 tagger 标签存储（mtime 缓存；缺失/损坏按空 dict 处理）。"""
+    return read_json_cached(TAGGER_TAGS_FILE)
 
 
 def _record_last_model(path: str) -> None:
@@ -270,7 +270,7 @@ class ExperimentalMixin:
         """对选中视频执行辅助分类标签识别（items: [[video_id, video_path], ...]）。"""
         from ..tagger import (get_status, start_analyze_stream,
                                     extract_frames_for_tagger, ensure_model_files,
-                                    TAG_THRESHOLD)
+                                    video_sampling_config, TAG_THRESHOLD)
         from batch_rename.dependencies import ffmpeg_tools
         from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 
@@ -279,7 +279,7 @@ class ExperimentalMixin:
             return {"ok": False, "results": {}, "error": "Hammy-tagger 未安装或未就绪，请先在扩展功能页安装依赖"}
 
         pcfg = load_tagger_config()
-        frames_n = max(1, safe_int(pcfg.get("frames"), 15))
+        frame_cfg = video_sampling_config()
         threshold = min(1, max(0.1, safe_float(pcfg.get("threshold"), TAG_THRESHOLD)))
 
         if not ffmpeg_tools.ffmpeg:
@@ -322,7 +322,7 @@ class ExperimentalMixin:
             )
             if stream is None:
                 return self._tagger_engine_unavailable(
-                    vid_list, video_paths, results, frames_n, total)
+                    vid_list, video_paths, results, frame_cfg, total)
 
             # 抽帧流水线（线程池 + 有界背压 + send-ahead）
             frame_workers = min(6, max(1, total))
@@ -346,7 +346,8 @@ class ExperimentalMixin:
                     _push_log(f"  [{done}/{total}] {name} — 分析失败: {vr['error']}", "err")
                 else:
                     entry = {"character_tags": vr.get("character_tags", []),
-                             "ip_tags": vr.get("ip_tags", []), "error": None}
+                             "ip_tags": vr.get("ip_tags", []),
+                             "general_tags": vr.get("general_tags", []), "error": None}
                     if vr.get("category"):
                         entry["category"] = str(vr["category"])
                     results[vid] = entry
@@ -421,7 +422,7 @@ class ExperimentalMixin:
                     if not pipeline_ok:
                         break
                     futures[ex.submit(extract_frames_for_tagger, vpath,
-                                      _gpu_stop_event, frames_n)] = i
+                                      _gpu_stop_event, frame_cfg)] = i
                 # 排空剩余抽帧任务
                 while futures and pipeline_ok:
                     for f in wait(futures, return_when=FIRST_COMPLETED)[0]:
@@ -482,7 +483,7 @@ class ExperimentalMixin:
             _gpu_task_lock.release()
 
     def _tagger_engine_unavailable(self, vid_list: List, video_paths: List,
-                                  results: Dict[str, Any], frames_n: int,
+                                  results: Dict[str, Any], frame_cfg,
                                   total: int) -> Dict[str, Any]:
         """引擎启动失败降级：仍尝试逐个抽帧并记录结果。"""
         from ..tagger import extract_frames_for_tagger
@@ -494,7 +495,7 @@ class ExperimentalMixin:
             vid, name = vid_list[i], Path(vpath).name
             try:
                 frames = extract_frames_for_tagger(
-                    vpath, _gpu_stop_event, frames_n)
+                    vpath, _gpu_stop_event, frame_cfg)
             except Exception:
                 frames = None
             if frames:
@@ -515,20 +516,27 @@ class ExperimentalMixin:
         return {"ok": False, "results": results, "ok_count": 0,
                 "total": total, "error": "分析引擎启动失败"}
 
+    def _general_count(self) -> int:
+        """General 标签展示/使用个数（存储为全量，截取在消费侧）。"""
+        return max(0, safe_int(load_tagger_config().get("general_count"), 15))
+
     def get_tagger_tags(self, video_id: str) -> Dict[str, Any]:
-        """获取指定视频的可展示 tagger 标签（仅映射命中，附中文=库 keyword）。"""
+        """获取指定视频的可展示 tagger 标签（仅映射命中，附中文=库 keyword；general 取前 N 个）。"""
         entry = _load_tags().get(video_id)
         if not entry:
-            return {"ok": False, "character_tags": [], "ip_tags": []}
+            return {"ok": False, "character_tags": [], "ip_tags": [], "general_tags": []}
         from ..tagger import load_tag_library_map
         lib = load_tag_library_map()
+        gen_n = self._general_count()
         data = {"ok": True, **entry}
-        for group in ("character_tags", "ip_tags"):
+        for group in ("character_tags", "ip_tags", "general_tags"):
             tags = list(data.get(group) or [])
             if lib is not None:
-                tags = [t for t in tags if str(t.get("name") or "") in lib]
-                for t in tags:
-                    t["zh"] = lib[str(t.get("name") or "")]
+                # 拷贝 tag 再附 zh：cached 读取的嵌套对象与缓存共享
+                tags = [{**t, "zh": lib[name]} for t in tags
+                        if (name := str(t.get("name") or "")) in lib]
+            if group == "general_tags":
+                tags = tags[:gen_n]
             data[group] = tags
         return data
 
@@ -537,8 +545,27 @@ class ExperimentalMixin:
         write_json(TAGGER_TAGS_FILE, {})
         return {"ok": True, "message": "已清除所有IP标签数据"}
 
+    def delete_tagger_tag(self, video_id: str, group: str, name: str) -> Dict[str, Any]:
+        """删除指定视频的一条 tagger 标签（手动清除误报）。返回 char_ip=角色/IP 段是否仍非空。"""
+        if group not in ("character_tags", "ip_tags", "general_tags"):
+            return {"ok": False, "error": f"无效的标签组: {group}"}
+
+        def _mutate(current):
+            if not isinstance(current, dict):
+                current = {}
+            entry = current.get(str(video_id))
+            if isinstance(entry, dict):
+                entry[group] = [t for t in entry.get(group) or []
+                                if str(t.get("name") or "") != name]
+            return current
+
+        update_json(TAGGER_TAGS_FILE, _mutate, default_factory=dict)
+        entry = _load_tags().get(str(video_id)) or {}
+        return {"ok": True,
+                "char_ip": bool(entry.get("character_tags") or entry.get("ip_tags"))}
+
     def get_tagger_tagged_ids(self) -> List[str]:
-        """返回已有 IP 标签数据的视频 ID 列表（供前端 IP 角标显示）。"""
+        """返回有角色/IP 标签的视频 ID 列表（供前端 IP 角标显示，general 不计入）。"""
         return [vid for vid, data in _load_tags().items()
                 if data.get("character_tags") or data.get("ip_tags")]
 
@@ -546,11 +573,15 @@ class ExperimentalMixin:
         """视频 ID → 可展示标签名列表（resolver 过滤未映射；英文名+中文名，供待处理搜索）。"""
         from ..tagger import load_tag_library_map
         lib = load_tag_library_map()
+        gen_n = self._general_count()
         out: Dict[str, List[str]] = {}
         for vid, data in _load_tags().items():
             names: List[str] = []
-            for group in ("character_tags", "ip_tags"):
-                for t in data.get(group) or []:
+            for group in ("character_tags", "ip_tags", "general_tags"):
+                tags = data.get(group) or []
+                if group == "general_tags":
+                    tags = tags[:gen_n]
+                for t in tags:
                     n = str(t.get("name") or "")
                     if not n:
                         continue
@@ -572,23 +603,9 @@ class ExperimentalMixin:
                 if data.get("category")}
 
     def _save_tags(self, results: Dict[str, Any]) -> None:
-        """将辅助分类标签结果合并保存到 tagger/tags.json（失败条目不落盘）。"""
-        def _mutate(current):
-            if not isinstance(current, dict):
-                current = {}
-            for vid, data in results.items():
-                if data.get("error"):
-                    continue
-                entry = {
-                    "character_tags": data.get("character_tags", []),
-                    "ip_tags": data.get("ip_tags", []),
-                }
-                if data.get("category"):
-                    entry["category"] = data["category"]
-                current[vid] = entry
-            return current
-
-        update_json(TAGGER_TAGS_FILE, _mutate, default_factory=dict)
+        """将辅助分类标签结果合并保存到 tagger/tags.json（手动/集成共用落盘格式）。"""
+        from ..tagger import save_tag_results
+        save_tag_results(results)
 
     # ── 语音转录（transcribe.cpp）──
 
@@ -817,18 +834,21 @@ class ExperimentalMixin:
         update_json(TRANSCRIBE_TRANSCRIPTS_FILE, _mutate, default_factory=dict)
 
     def _srt_export_block_reason(self) -> Optional[str]:
-        """当前右键转录模型为 SenseVoice 时给出导出拦截原因。"""
-        from ..transcribe_cpp import get_current_model
-        if get_current_model() == "sensevoice":
-            return ("SenseVoice 无逐句时间戳，无法导出字幕；"
+        """当前右键转录模型无逐句时间戳时给出导出拦截原因。"""
+        from ..transcribe_cpp import get_current_model, TRANSCRIBE_MODELS
+        meta = TRANSCRIBE_MODELS.get(get_current_model()) or {}
+        if not meta.get("timestamps", True):
+            return (f"{meta.get('title', '当前模型')} 无逐句时间戳，无法导出字幕；"
                     "请更换右键转录模型后重试（更换后导出会自动重新转录）")
         return None
 
     def _stale_srt_keys(self, items: List) -> set:
-        """原转录由 SenseVoice 生成（无时间戳）的视频 key 集合。"""
+        """原转录由无时间戳模型生成的视频 key 集合。"""
+        from ..transcribe_cpp import TRANSCRIBE_MODELS
+        no_ts = {k for k, m in TRANSCRIBE_MODELS.items() if not m.get("timestamps", True)}
         store = read_json(TRANSCRIBE_TRANSCRIPTS_FILE, {})
         return {str(vid) for vid, _ in items
-                if store.get(str(vid), {}).get("model") == "sensevoice"}
+                if store.get(str(vid), {}).get("model") in no_ts}
 
     def _retranscribe_stale(self, stale: List) -> None:
         """重新转录 SenseVoice 生成的旧转录（stale: [[vid, vpath], ...]）。需持有 _gpu_task_lock。"""

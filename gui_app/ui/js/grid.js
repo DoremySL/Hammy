@@ -42,6 +42,23 @@ function loadFromResult(result, preserveScroll) {
   else renderGrid();
   updateStats();
   updateSelectedInfo();
+  refreshTaggerBadges();
+}
+
+/* 角标状态统一读盘：tags.json 为唯一真源，数据重载后全量拉取 */
+async function refreshTaggerBadges() {
+  if (!state.taggerEnabled) return;
+  try {
+    const [ids, cats, names] = await Promise.all([
+      apiCall('get_tagger_tagged_ids'),
+      apiCall('get_tagger_category_ids'),
+      apiCall('get_tagger_all_tags'),
+    ]);
+    if (ids) state.taggerTaggedIds = new Set(ids);
+    if (cats) state.taggerCategories = cats;
+    if (names) state.taggerTagNames = names;
+    refreshGridData();
+  } catch (e) { /* 拉取失败沿用旧缓存 */ }
 }
 
 function currentList() {

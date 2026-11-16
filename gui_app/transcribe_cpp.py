@@ -38,6 +38,7 @@ TRANSCRIBE_MODELS = {
         "desc": "多语言快速转录",
         "size_label": "~850MB",
         "recommended": True,
+        "timestamps": True,   # 是否有逐句时间戳（SRT 导出/脚本分支的唯一真源）
     },
     "moss": {
         "title": "MOSS-Diarize",
@@ -48,6 +49,7 @@ TRANSCRIBE_MODELS = {
         "desc": "多语言，配置要求略高，适合生成字幕",
         "size_label": "~1GB",
         "recommended": False,
+        "timestamps": True,
     },
     "sensevoice": {
         "title": "SenseVoice-Small",
@@ -58,6 +60,7 @@ TRANSCRIBE_MODELS = {
         "desc": "中英日韩粤，无逐句时间戳，导出字幕不可用",
         "size_label": "~240MB",
         "recommended": False,
+        "timestamps": False,
     },
 }
 DEFAULT_MODEL = "whisper-turbo"
@@ -65,6 +68,35 @@ DEFAULT_INJECT_MODEL = "sensevoice"
 
 # 注入模式分窗时长（秒）
 INJECT_WIN_SEC = {"sensevoice": 30.0, "whisper": 60.0, "moss": 300.0}
+
+# ── 官方 Silero VAD（transcribe.cpp 内置，与 ASR 同引擎零新依赖）──
+# 注入模式区段跳过静音/底噪/纯音乐（防幻觉）；模型缺失时整段推理
+VAD_MODEL_META = {
+    "gguf": "silero-vad-v6.2-F32.gguf",
+    "hf_repo": "handy-computer/silero-vad-v6.2-gguf",
+    "size_label": "~1.2MB",
+}
+
+
+def vad_model_path() -> Optional[Path]:
+    """官方 VAD 模型 GGUF 路径；未下载返回 None。"""
+    author, _, name = VAD_MODEL_META["hf_repo"].partition("/")
+    p = MODEL_DIR / author / name / VAD_MODEL_META["gguf"]
+    return p if p.is_file() else None
+
+
+def vad_ready() -> bool:
+    return vad_model_path() is not None
+
+
+def _download_vad(log_fn=None, stop_event=None) -> bool:
+    """下载官方 Silero VAD 模型；成功返回 True。"""
+    from . import models_downloader as _md
+    dl = _md.download_files(
+        "hf", VAD_MODEL_META["hf_repo"], [VAD_MODEL_META["gguf"]], str(MODEL_DIR),
+        log_fn=lambda m: _log(m, log_fn), cancel_event=stop_event,
+        cleanup_on_cancel=True)
+    return bool(dl.get("ok"))
 
 # ── 引擎 wheel ──
 GITHUB_RELEASE_API = "https://api.github.com/repos/handy-computer/transcribe.cpp/releases?per_page=5"
@@ -344,6 +376,12 @@ def install_dependencies(pypi_mirror: str = DEFAULT_PYPI_MIRROR,
 
     # ── 步骤 4：下载模型 ──
     steps.push(4)
+    # 官方 Silero VAD（1.2MB）：注入模式区段跳过静音/音乐；失败不阻断安装
+    if not vad_ready():
+        _log(f"  ── 官方 Silero VAD（hf-mirror，{VAD_MODEL_META['size_label']}，"
+             f"注入模式静音跳过用）──", log_fn)
+        if not _download_vad(log_fn=log_fn, stop_event=stop_event):
+            _log("  VAD 模型下载失败（不影响转录安装；注入模式将整段推理，静音不跳过）", log_fn)
     todo = [k for k in models_to_install if not is_model_installed(k)]
     if not todo:
         _log("━━ 步骤 4/4：模型已存在，跳过下载 ━━", log_fn)
@@ -479,6 +517,7 @@ def run_transcription_batch(video_paths: List[str],
         "video_paths": video_paths,
         "model_path": str(model_path),
         "family": TRANSCRIBE_MODELS[current]["family"],
+        "timestamps": bool(TRANSCRIBE_MODELS[current].get("timestamps", True)),
         "language": language,
         "backend": backend,
         "ffmpeg": FFMPEG_EXE,
@@ -497,9 +536,13 @@ def run_transcription_batch(video_paths: List[str],
 def run_inject_batch(video_paths: List[str],
                      max_chars: int = 800,
                      on_log: Optional[Callable[[str], None]] = None,
-                     stop_event=None) -> Dict[str, Any]:
+                     stop_event=None,
+                     on_video_done: Optional[Callable[[int, Dict[str, Any]], None]] = None
+                     ) -> Dict[str, Any]:
     """注入文本批量推理，达到 max_chars 提前停止，不落盘。
 
+    on_video_done(idx, entry)：单视频完成即回调（同一子进程批内逐视频交付，
+    供重命名流水线在整批结束前拿到已完成视频的注入文本）。
     Returns: {"ok": bool, "texts": {video_path: text}, "error": str|None}
     """
     if not inject_ready():
@@ -509,6 +552,7 @@ def run_inject_batch(video_paths: List[str],
 
     inject_key = get_inject_model()
     backend = "cuda" if detect_gpu_cached().get("has_nvidia") else "cpu"
+    vad_path = vad_model_path()
     params = {
         "video_paths": video_paths,
         "model_path": str(_model_path(inject_key)),
@@ -519,11 +563,14 @@ def run_inject_batch(video_paths: List[str],
         "venv_site_packages": str(VENV_DIR / "Lib" / "site-packages"),
         "max_chars": int(max_chars),
         "inject_win_sec": INJECT_WIN_SEC[TRANSCRIBE_MODELS[inject_key]["family"]],
+        # 官方 Silero VAD（缺失则脚本内整段推理，静音不跳过）
+        "vad_model": str(vad_path) if vad_path else "",
         "mode": "text",
     }
 
     per_video: List[Dict[str, Any]] = []
-    error, items = _run_batch_script(params, per_video, None, on_log, stop_event, "推理")
+    error, items = _run_batch_script(params, per_video, on_video_done, on_log,
+                                     stop_event, "推理")
     if error:
         return {"ok": False, "texts": {}, "error": error}
 
@@ -546,11 +593,13 @@ with open(params_file, 'r', encoding='utf-8') as f:
 video_paths = params['video_paths']
 model_path = params['model_path']
 family = params.get('family', 'whisper')
+has_ts = bool(params.get('timestamps', True))  # 无逐句时间戳 → SRT 合成整段单条字幕
 language = params.get('language', '') or None
 backend = params.get('backend', 'cpu')
 ffmpeg = params.get('ffmpeg', '')
 site_packages = params.get('venv_site_packages', '')
 max_chars = int(params.get('max_chars', 0) or 0)  # 注入模式的提前停止阈值
+vad_model_path = params.get('vad_model', '')  # 官方 Silero VAD GGUF（空=整段推理）
 mode = params.get('mode', 'srt')  # srt=字幕转录 / text=注入文本
 
 FAMILY_CHUNK_SEC = {'moss': 1800}
@@ -591,6 +640,44 @@ if language:
     run_kw['language'] = language
 
 
+# ── 官方 Silero VAD 区段判定（注入模式专用，同引擎零依赖）──
+# 参数：min_silence 2000ms 合并碎段、pad 300ms；VAD 不可用 → 整段单区段
+VAD_MIN_SPEECH_SEC = 0.3  # 总语音时长低于此值视为无语音
+
+_VAD_SESS = None
+_VAD_TRIED = False
+
+
+def _get_vad_sess():
+    # VAD 会话懒加载一次（1.2MB，CPU）；失败置 None（整段推理）
+    global _VAD_SESS, _VAD_TRIED
+    if not _VAD_TRIED:
+        _VAD_TRIED = True
+        if vad_model_path:
+            try:
+                _VAD_SESS = tc.VadSession(tc.Model(vad_model_path, backend='cpu'))
+            except Exception as e:
+                plog(f'Silero VAD 不可用（{str(e)[:80]}），本次注入整段推理')
+    return _VAD_SESS
+
+
+def _vad_regions(audio, sr):
+    # 返回 [(start_sec, end_sec)]；无语音返回 []；VAD 不可用返回整段单一区段
+    sess = _get_vad_sess()
+    whole = [(0.0, len(audio) / sr)] if len(audio) else []
+    if sess is None:
+        return whole
+    try:
+        res = sess.run(audio, min_silence_ms=2000, speech_pad_ms=300)
+        segs = [(s.start_sample / sr, s.end_sample / sr) for s in res.segments]
+        if segs and sum(b - a for a, b in segs) >= VAD_MIN_SPEECH_SEC:
+            return segs
+        return []
+    except Exception as e:
+        plog(f'Silero VAD 推理失败（{str(e)[:80]}），本次整段推理')
+        return whole
+
+
 def _srt_ts(ms):
     h, rem = divmod(int(ms) // 1000, 3600)
     m, s = divmod(rem, 60)
@@ -629,27 +716,39 @@ def transcribe_one(i, vp):
                 audio = audio.mean(axis=1)
             dur = len(audio) / sr
             if mode == 'text':
-                # 注入模式：分窗推理，达标即停
-                win = float(params['inject_win_sec'])
-                texts = []
-                acc = 0
-                pos = 0.0
-                while pos < dur - 0.1:
-                    seg_audio = audio[int(pos * sr): int((pos + win) * sr)]
-                    res = sess.run(seg_audio, **run_kw)
-                    t = ' '.join(s.text.strip() for s in (res.segments or [])
-                                 if s.text.strip()) or (res.text or '').strip()
-                    if t:
-                        texts.append(t)
-                        acc += len(t) + 1
-                    if max_chars and acc >= max_chars:
-                        break
-                    pos += win
-                entry = {'ok': True, 'text': ' '.join(texts), 'srt': '',
-                         'language': '', 'duration': round(dur, 1), 'error': None}
+                regions = _vad_regions(audio, sr)
+                if not regions:
+                    # VAD 零区段：静音/底噪/纯音乐，不送推理（防模型幻觉）
+                    entry = {'ok': True, 'text': '', 'srt': '', 'language': '',
+                             'duration': round(dur, 1), 'error': None, 'silent': True}
+                else:
+                    # 区段内分窗推理，达标即停
+                    win = float(params['inject_win_sec'])
+                    texts = []
+                    acc = 0
+                    stop = False
+                    for a, b in regions:
+                        pos = a
+                        while pos < b - 0.1:
+                            end = min(pos + win, b)
+                            seg_audio = audio[int(pos * sr): int(end * sr)]
+                            res = sess.run(seg_audio, **run_kw)
+                            t = ' '.join(s.text.strip() for s in (res.segments or [])
+                                         if s.text.strip()) or (res.text or '').strip()
+                            if t:
+                                texts.append(t)
+                                acc += len(t) + 1
+                            if max_chars and acc >= max_chars:
+                                stop = True
+                                break
+                            pos = end
+                        if stop:
+                            break
+                    entry = {'ok': True, 'text': ' '.join(texts).strip(), 'srt': '',
+                             'language': '', 'duration': round(dur, 1), 'error': None}
             else:
-                if family == 'sensevoice':
-                    # 无时间戳：整段文本合成单条字幕（仅辅助重命名用）
+                if not has_ts:
+                    # 无逐句时间戳：整段文本合成单条字幕（仅辅助重命名用）
                     res = sess.run(audio, **run_kw)
                     body = ((getattr(res, 'text', '') or '').strip() or ' '.join(
                         (getattr(s, 'text', '') or '').strip()

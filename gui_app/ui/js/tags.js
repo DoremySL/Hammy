@@ -528,7 +528,7 @@ async function exportTags() {
 }
 
 /* ── 主界面标签 chip 右键菜单与「加入标签检索 / 编辑标签」弹窗 ── */
-function showChipMenu(e, name, { webSearch = false, asRelated = false, edit = false, group = '' } = {}) {
+function showChipMenu(e, name, { webSearch = false, asRelated = false, edit = false, group = '', taggerDel = null } = {}) {
   e.preventDefault();
   e.stopPropagation();
   const items = [];
@@ -536,6 +536,7 @@ function showChipMenu(e, name, { webSearch = false, asRelated = false, edit = fa
   items.push(edit
     ? { label: '编辑标签', fn: () => openTaggerTagEdit(name) }
     : { label: '加入标签检索', fn: () => openTagAddToSearch(name, asRelated, group) });
+  if (taggerDel) items.push({ label: '删除此标签', fn: () => deleteTaggerTag(taggerDel.vid, taggerDel.group, name) });
   const m = $('#ctxmenu');
   m.innerHTML = items.map((it, i) => `<button data-i="${i}">${it.label}</button>`).join('');
   m.querySelectorAll('button').forEach((b, i) => { b.onclick = () => { items[i].fn(); hideContextMenu(); }; });
@@ -624,6 +625,15 @@ async function openTaggerTagEdit(enName) {
   const idx = items.findIndex(x => x.group === TAGGER_LIB_GROUP && x.related === enName);
   if (idx < 0) { await openTagAddToSearch(enName, true, TAGGER_LIB_GROUP); return; }
   return openTagLibraryEditor({ ...items[idx] }, idx);
+}
+
+/* 删除单条 tagger 标签（手动清除误报），刷新展示、检索缓存与角标 */
+async function deleteTaggerTag(vid, group, name) {
+  const r = await callApi('delete_tagger_tag', vid, group, name);
+  if (!r || !r.ok) { toast('删除失败: ' + ((r && r.error) || '未知错误'), 'err'); return; }
+  await refreshTaggerBadges();
+  refreshTaggerSearchCache();
+  toast(`已删除: ${name}`, 'ok');
 }
 
 /* 编辑后刷新待处理搜索缓存与详情 */

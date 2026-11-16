@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import os
 import re
@@ -12,6 +13,8 @@ import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
+
+from PIL import Image
 
 from .workspace_paths import PROBE_CACHE_FILE, stable_id, thumb_path
 from .workspace_store import get_history_by_id, load_history, load_manifest, read_json, write_json
@@ -402,6 +405,36 @@ def generate_thumbnail(path: str, vid: str, max_side: int = THUMB_MAX_SIDE) -> O
         with _thumb_inflight_lock:
             _thumb_inflight.discard(vid)
     return None
+
+
+def generate_thumbnail_from_jpeg(vid: str, jpeg: bytes,
+                                 max_side: int = THUMB_MAX_SIDE) -> Optional[str]:
+    """从抽帧缓存帧直接生成缩略图（省一次 ffmpeg 抽帧）。
+
+    画面为预处理后的裁剪帧（无黑边）；失败返回 None，调用方回退 ffmpeg 路径。
+    """
+    try:
+        if not jpeg or jpeg[:2] != b"\xff\xd8":
+            return None
+        im = Image.open(io.BytesIO(jpeg))
+        im.load()
+        im.thumbnail((max_side, max_side), Image.BILINEAR)
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=80)
+        data = buf.getvalue()
+    except Exception:
+        return None
+    cache = thumb_path(vid)
+    try:
+        tmp = cache.with_suffix(".jpg.tmp")
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, cache)
+    except OSError:
+        pass
+    url = f"data:image/jpeg;base64,{base64.b64encode(data).decode()}"
+    _thumb_lru_put(vid, url)
+    return url
 
 
 # ── 扫描入口 ──

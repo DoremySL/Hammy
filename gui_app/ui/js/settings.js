@@ -162,9 +162,9 @@ const CFG_FIELDS_AI = [
 ];
 const CFG_FIELDS_PROCESSING = [
   { group: '视频抽帧', noTitle: true, cols: 3, fields: [
-    { sec: 'video', key: 'sampling_points', label: '采样点位', type: 'number', min: 1, help: '均匀分布的关键帧取样位置数；采样点位*每点帧数=抽取的关键帧数量', default: 5 },
-    { sec: 'video', key: 'frames_per_point', label: '每点帧数', type: 'number', min: 1, help: '每个点位取连续关键帧数，增大此项可给AI提供连续的画面信息', default: 3 },
-    { sec: 'video', key: 'frame_max_side', label: '长边像素', type: 'number', min: 64, help: '抽帧图片长边上限', default: 640 },
+    { sec: 'video', key: 'sampling_points', label: '采样点位', type: 'number', min: 1, help: '均匀分布的关键帧取样位置数；AI 分析与辅助分类标签共用此采样；窗口内无关键帧的点位不补帧', default: 15 },
+    { sec: 'video', key: 'frames_per_point', label: '每点帧数', type: 'number', min: 1, help: '每个点位取连续关键帧数，增大此项可给AI提供连续的画面信息；推荐 1（点位分布更均匀）', default: 1 },
+    { sec: 'video', key: 'frame_max_side', label: '长边像素', type: 'number', min: 64, help: '抽帧图片长边上限；AI 分析与辅助分类标签共用；672 恰为标签模型五档输入最大边', default: 672 },
   ]},
   { group: '命名与输出', noTitle: true, cols: 3, fields: [
     { sec: 'naming', key: 'naming_mode', label: '日期与初始文件名', type: 'select',

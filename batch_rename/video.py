@@ -13,6 +13,7 @@ from .env import logger, SUBPROCESS_KWARGS
 from .subprocess_registry import register_subprocess, unregister_subprocess
 from .dependencies import ffmpeg_tools
 from .config import Config
+from .preprocess import preprocess_frame
 from .utils import safe_int, safe_float
 from .types import Frame
 
@@ -424,21 +425,22 @@ def select_timestamps(duration: float, key_ts: List[float], points: int) -> List
     return [0.0]
 
 
-def select_sampled_timestamps(duration: float, key_ts: List[float],
-                              points: int, per_point: int) -> List[float]:
-    """采样模式选帧：与探测窗口对齐，每个点位取 per_point 个关键帧（窗口内均匀采样）。
+def select_point_samples(duration: float, key_ts: List[float],
+                         points: int, per_point: int) -> List[Tuple[float, int]]:
+    """采样模式选帧（带点位语义）：每个点位取 per_point 个关键帧（窗口内均匀采样）。
 
-    不按索引取全局锚点——关键帧在窗口间分布不均时锚点会被密集窗口挤占，
-    按点位分组才能保证点位 × 每点帧数语义。
+    返回 (时间戳, 点位索引) 列表，时间升序、点位索引单调不减：
+    窗口内无关键帧的点位跳过（不补帧）；跨点位去重的时间戳归属首个声明它的点位；
+    无关键帧/非法时长回退 select_timestamps 伪点位（索引 = 伪点位序号）。
     """
     if not key_ts or duration <= 0:
-        return select_timestamps(duration, key_ts, points)
+        return [(t, i) for i, t in enumerate(select_timestamps(duration, key_ts, points))]
     half = _probe_half(per_point)
     positions = _probe_window_positions(duration, points)
     key_ts = _sparsify_keyframes(key_ts, _MIN_KEYFRAME_GAP_SEC)
-    out: List[float] = []
+    out: List[Tuple[float, int]] = []
     seen: set = set()
-    for p in positions:
+    for pi, p in enumerate(positions):
         near = [t for t in key_ts if abs(t - p) <= half]
         if not near:
             continue
@@ -451,15 +453,35 @@ def select_sampled_timestamps(duration: float, key_ts: List[float],
         for t in chosen:
             if t not in seen:
                 seen.add(t)
-                out.append(t)
-    return out or select_timestamps(duration, key_ts, points)
+                out.append((t, pi))
+    if not out:
+        return [(t, i) for i, t in enumerate(select_timestamps(duration, key_ts, points))]
+    return out
+
+
+def _preprocess_extracted(frames: List[Frame]) -> List[Frame]:
+    """公用预处理：黑帧与坏帧丢弃，存活帧重编码为预处理后 JPEG。"""
+    out: List[Frame] = []
+    for f in frames:
+        try:
+            raw = base64.b64decode(f.b64)
+        except Exception:
+            continue
+        done = preprocess_frame(raw)
+        if done is not None:
+            out.append(Frame(f.ts, base64.b64encode(done).decode(), f.point_index))
+    dropped = len(frames) - len(out)
+    if dropped:
+        logger.debug(f"预处理丢弃 {dropped} 帧（黑帧/坏帧）")
+    return out
 
 
 def probe_and_extract_keyframes(video_path: str, config: Config, stop_event: threading.Event,
-                                frame_vf: Optional[str] = None) -> Tuple[Dict[str, Any], List[Frame]]:
-    """探测视频元数据 + 关键帧 → 选取时间戳 → 逐帧抽取为 Frame（时间戳+base64）。
+                                frame_vf: Optional[str] = None,
+                                skip_preprocess: bool = False) -> Tuple[Dict[str, Any], List[Frame]]:
+    """探测视频元数据 + 关键帧 → 选点 → 抽取为 Frame（时间戳+base64+点位索引）。
 
-    frame_vf 传入时替换默认的 frame_max_side 缩放滤镜（调用方自定义抽帧尺寸/裁剪）。
+    frame_vf 传入时替换默认缩放滤镜；抽帧后默认执行公用预处理，skip_preprocess=True 跳过。
     """
     if stop_event.is_set():
         return {}, []
@@ -476,7 +498,8 @@ def probe_and_extract_keyframes(video_path: str, config: Config, stop_event: thr
     if stop_event.is_set():
         return info, []
 
-    timestamps = select_sampled_timestamps(duration, key_ts, points, per_point)
+    samples = select_point_samples(duration, key_ts, points, per_point)
+    timestamps = [t for t, _ in samples]
     mode = config.frame_extract_mode
     is_ts = "mpegts" in (info.get("format_name") or "")
     frame_rate = (info.get("video") or {}).get("frame_rate") or 0.0
@@ -506,4 +529,13 @@ def probe_and_extract_keyframes(video_path: str, config: Config, stop_event: thr
         # per_frame / legacy 非TS / 兜底点位（非关键帧对齐）：逐帧
         frames = _extract_per_frame(video_path, timestamps, config, stop_event,
                                     frame_vf=frame_vf, start_time=start_time)
+
+    # 点位归属：时间戳 → 首个声明它的点位索引
+    point_of: Dict[float, int] = {}
+    for t, pi in samples:
+        point_of.setdefault(t, pi)
+    frames = [Frame(f.ts, f.b64, point_of.get(f.ts, -1)) for f in frames]
+
+    if not skip_preprocess and not stop_event.is_set():
+        frames = _preprocess_extracted(frames)
     return info, frames

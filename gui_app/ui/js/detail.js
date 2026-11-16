@@ -52,7 +52,9 @@ async function showPendingDetail(v, quiet) {
 
   const taggerDone = !!(tagger && tagger.ok);
   const showTagger = taggerDone &&
-    ((tagger.character_tags && tagger.character_tags.length) || (tagger.ip_tags && tagger.ip_tags.length));
+    ((tagger.character_tags && tagger.character_tags.length)
+     || (tagger.ip_tags && tagger.ip_tags.length)
+     || (tagger.general_tags && tagger.general_tags.length));
   const hasTranscript = transcript && transcript.ok && transcript.text;
 
   if (!showTagger && !hasTranscript) {
@@ -67,22 +69,26 @@ async function showPendingDetail(v, quiet) {
 
   let html = '';
   if (showTagger) {
-    // data-tagger-tag=英文映射键；data-zh=库中文名
-    const tagChip = t =>
-      `<button class="chip" data-tagger-tag="${esc(t.name)}"${t.zh ? ` data-zh="${esc(t.zh)}"` : ''}>${esc(t.zh ? `${t.zh} / ${t.name}` : t.name)} <small>${t.score != null ? (t.score * 100).toFixed(0) : '—'}%</small></button>`;
-    const charTags = (tagger.character_tags || []).map(tagChip).join('')
-      || '<span class="filemeta">未识别到角色</span>';
-    const ipTags = (tagger.ip_tags || []).map(tagChip).join('')
-      || '<span class="filemeta">未识别到IP</span>';
+    // data-tagger-tag=英文映射键；data-group=所属段；data-zh=库中文名
+    const tagChip = (t, group) =>
+      `<button class="chip" data-tagger-tag="${esc(t.name)}" data-group="${group}"${t.zh ? ` data-zh="${esc(t.zh)}"` : ''}>${esc(t.zh ? `${t.zh} / ${t.name}` : t.name)} <small>${t.score != null ? (t.score * 100).toFixed(0) : '—'}%</small></button>`;
+    const merged = [
+      ...(tagger.ip_tags || []).map(t => tagChip(t, 'ip_tags')),
+      ...(tagger.character_tags || []).map(t => tagChip(t, 'character_tags')),
+    ].join('') || '<span class="filemeta">未识别到角色 / IP</span>';
     html += `
     <div class="row">
-      <h4>角色标签</h4>
-      <div class="chips">${charTags}</div>
-    </div>
-    <div class="row">
-      <h4>IP / 版权标签</h4>
-      <div class="chips">${ipTags}</div>
+      <h4>角色 / IP 标签</h4>
+      <div class="chips">${merged}</div>
     </div>`;
+    const genTags = (tagger.general_tags || []).map(t => tagChip(t, 'general_tags')).join('');
+    if (genTags) {
+      html += `
+    <div class="row">
+      <h4>General 标签</h4>
+      <div class="chips">${genTags}</div>
+    </div>`;
+    }
   }
   if (hasTranscript) {
     const lang = transcript.language ? ` <small style="color:var(--faint)">(${esc(transcript.language)})</small>` : '';
@@ -99,7 +105,8 @@ async function showPendingDetail(v, quiet) {
     const mapped = !!ch.dataset.zh;
     ch.addEventListener('contextmenu', e => showChipMenu(e, ch.dataset.taggerTag,
       { webSearch: true, edit: mapped, asRelated: !mapped,
-        group: mapped ? '' : 'Hammy-tagger' }));
+        group: mapped ? '' : 'Hammy-tagger',
+        taggerDel: { vid: v.id, group: ch.dataset.group } }));
   });
 }
 
@@ -147,7 +154,7 @@ function onTaggerTagClick(name) {
 /* ════════════════════════════════════════════════════════════
    搜索栏交互
    ════════════════════════════════════════════════════════════ */
-/* 搜索模式按视图启停：标签/标题/简介仅已处理视图；角色/IP 仅待处理视图且启用 tagger */
+/* 搜索模式按视图启停：标签/标题/简介仅已处理视图；角色/IP/泛化 仅待处理视图且启用 tagger */
 function syncSearchModes() {
   const dd = $('#searchMode');
   if (!dd) return;
