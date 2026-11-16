@@ -1,4 +1,4 @@
-"""标签检索测试：模式路由 / 三级词面匹配 / 排序截断 / 首轮注入段落构建。"""
+"""标签检索测试：模式路由 / 两级词面匹配 / 严格组 CJK 边界 / 排序截断 / 注入段落构建。"""
 import sys
 import unittest
 from pathlib import Path
@@ -78,19 +78,56 @@ class TestRecallMatch(unittest.TestCase):
         cands = _on().recall_literal({"aux": "Office Lady 主题的短剧"})
         self.assertIn("office_lady", [c["keyword"] for c in cands])
 
-    def test_token_match(self):
+    def test_token_no_match(self):
+        # 分词级已删
         cands = _on().recall_literal({"aux": "the beach at sunset is beautiful"})
-        self.assertIn("sunset beach", [c["keyword"] for c in cands])
+        self.assertNotIn("sunset beach", [c["keyword"] for c in cands])
+
+    def test_strict_group_cjk_boundary(self):
+        # 严格组：邻接汉字/假名拒，数字/标点/拉丁/端点收
+        items = [{"keyword": "日常", "group": "Hammy-tagger"},
+                 {"keyword": "原神", "group": "Hammy-tagger"},
+                 {"keyword": "初音ミク", "group": "Hammy-tagger"}]
+        tr = TagRecall(items, mode="on", strict_groups=("Hammy-tagger",))
+        kws = lambda parts: [c["keyword"] for c in tr.recall_literal(parts)]
+        # 拒
+        self.assertNotIn("日常", kws({"filename": "我的日常vlog记录"}))
+        self.assertNotIn("原神", kws({"filename": "原神同人志整理"}))
+        self.assertNotIn("初音ミク", kws({"filename": "初音ミク演唱会现场"}))
+        # 收
+        self.assertIn("日常", kws({"filename": "【日常】制作花絮"}))
+        self.assertIn("原神", kws({"filename": "原神2024新春会"}))
+        self.assertIn("原神", kws({"filename": "原神"}))
+        self.assertIn("初音ミク", kws({"filename": "【初音ミク】演唱会"}))
+
+    def test_strict_group_only_affects_named_group(self):
+        # 同关键词：严格组拒，普通组照旧裸子串
+        kw = {"keyword": "日常"}
+        strict = TagRecall([{**kw, "group": "Hammy-tagger"}], mode="on",
+                           strict_groups=("Hammy-tagger",))
+        plain = TagRecall([kw], mode="on")
+        self.assertEqual(strict.recall_literal({"filename": "我的日常vlog记录"}), [])
+        self.assertEqual([c["keyword"] for c in plain.recall_literal(
+            {"filename": "我的日常vlog记录"})], ["日常"])
+
+    def test_strict_group_latin_related_unchanged(self):
+        # 严格组拉丁 related 行为不变
+        items = [{"keyword": "胶片", "related": "film grain", "group": "Hammy-tagger"}]
+        tr = TagRecall(items, mode="on", strict_groups=("Hammy-tagger",))
+        self.assertEqual([c["keyword"] for c in tr.recall_literal(
+            {"aux": "很有filmgrain质感"})], ["胶片"])
+        self.assertEqual([c["keyword"] for c in tr.recall_literal(
+            {"aux": "film grain 质感"})], ["胶片"])
 
     def test_no_match(self):
         self.assertEqual(_on().recall_literal({"filename": "城市夜景与霓虹灯"}), [])
 
     def test_kind_score_ordering(self):
-        # 同抢最后一个 top_k 名额：精确(1.0) > 分词(0.7)
-        items = [{"keyword": "sunset beach", "description": ""},   # 词序打散 → 分词命中
+        # 同抢最后一个 top_k 名额：精确(1.0) > 紧凑(0.9)
+        items = [{"keyword": "office lady", "description": ""},   # 分隔符被打散 → 紧凑命中
                  {"keyword": "制服", "description": ""}]            # 精确命中
         cands = TagRecall(items, top_k=1, mode="on").recall_literal(
-            {"filename": "制服 at the beach watching sunset"})
+            {"filename": "officelady主题的制服"})
         self.assertEqual([c["keyword"] for c in cands], ["制服"])
 
     def test_topk_and_stable_order(self):
@@ -127,7 +164,7 @@ class TestRelatedRecall(unittest.TestCase):
         cands = TagRecall(items, mode="on").recall_literal({"aux": "标记为2160p,超清的版本"})
         self.assertEqual([c["keyword"] for c in cands], ["4K"])
 
-    def test_related_compact_and_token(self):
+    def test_related_compact_match(self):
         items = [{"keyword": "胶片", "description": "", "related": "film grain"},
                  {"keyword": "HDR", "description": "", "related": "dolby vision"}]
         cands = TagRecall(items, mode="on").recall_literal({"aux": "很有filmgrain质感"})
@@ -153,7 +190,7 @@ class TestRelatedRecall(unittest.TestCase):
         # 向量索引材料应携带关联词（build_index 收到的 items 含 related 字段）
         items = [{"keyword": "4K", "description": "高分辨率", "related": "2160p"}]
         tr = TagRecall(items, mode="enhanced")
-        self.assertEqual(tr.items, items)
+        self.assertEqual(tr.items, [{**items[0], "group": ""}])
 
 
 class TestLiteralInjection(unittest.TestCase):

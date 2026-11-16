@@ -67,6 +67,12 @@ class TestDenseRecall(unittest.TestCase):
         cands = _enh(dense, vec_threshold=0.45, vec_top_n=1).recall_dense({"plot": "无关文本"})
         self.assertEqual([c["keyword"] for c in cands], ["海边"])
 
+    def test_exclude_literal_tops_up(self):
+        # 排除首轮已注入关键词后，从更深排名补足 vec_top_n
+        dense = FakeDense([("海边", 0.9), ("制服", 0.85), ("演播室", 0.8)])
+        cands = _enh(dense, vec_top_n=2).recall_dense({"plot": "x"}, exclude=("海边",))
+        self.assertEqual([c["keyword"] for c in cands], ["制服", "演播室"])
+
     def test_invalid_idx_skipped(self):
         dense = FakeDense()
         tr = _enh(dense)

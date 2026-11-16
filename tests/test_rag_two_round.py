@@ -124,7 +124,7 @@ class TestTwoRoundSuccess(unittest.TestCase):
         self.assertEqual(msgs2[-2]["content"], R1)
         self.assertEqual(msgs2[-1]["role"], "user")
         self.assertIn("召回候选", msgs2[-1]["content"])
-        self.assertIn("海边", msgs2[-1]["content"])
+        self.assertNotIn("海边", msgs2[-1]["content"])  # 首轮已注入 → 第二轮排除
         self.assertIn("泳装", msgs2[-1]["content"])
 
     def test_second_round_result_adopted(self):
@@ -136,8 +136,8 @@ class TestTwoRoundSuccess(unittest.TestCase):
         self.assertEqual(result.title, "海边-沙滩")
         self.assertEqual(result.tags, ["沙滩", "海边", "泳装"])
         self.assertEqual(result.thumb_time, "00:01:02")
-        # 召回数 = 第二轮向量候选数（海边+泳装）
-        self.assertEqual(result.recalled, 2)
+        # 召回数 = 第二轮向量候选数（海边已被首轮注入排除，只剩泳装）
+        self.assertEqual(result.recalled, 1)
 
     def test_dense_query_parts(self):
         dense = _FakeDense([("海边", 0.8)])
@@ -174,7 +174,7 @@ class TestTwoRoundFallback(unittest.TestCase):
                                 tag_recall=_enh(_FakeDense([("海边", 0.8), ("泳装", 0.7)])))
         self.assertEqual(result.tags, ["沙滩"])
         self.assertEqual(result.err_msg, "")
-        self.assertEqual(result.recalled, 2)  # 召回已发生，回退不影响计数
+        self.assertEqual(result.recalled, 1)  # 海边已排除（首轮注入），泳装计数；回退不影响
 
     def test_round2_invalid_output_keeps_round1(self):
         bad = json.dumps({"plot": "没有 title"}, ensure_ascii=False)
@@ -183,7 +183,7 @@ class TestTwoRoundFallback(unittest.TestCase):
                                 "C:/海边测试.mp4", 60.0,
                                 tag_recall=_enh(_FakeDense([("海边", 0.8), ("泳装", 0.7)])))
         self.assertEqual(result.tags, ["沙滩"])
-        self.assertEqual(result.recalled, 2)
+        self.assertEqual(result.recalled, 1)
 
     def test_enhanced_without_dense_degrades_to_on(self):
         # 无嵌入模型：增强档 = 开启档（单轮 + 首轮字面注入）

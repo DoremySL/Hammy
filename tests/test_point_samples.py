@@ -9,6 +9,8 @@ from PIL import Image, ImageDraw
 
 from batch_rename.video import select_point_samples, _anchor_keyframe_indices
 from batch_rename.preprocess import preprocess_frame, preprocess_frames
+from batch_rename.types import Frame
+from gui_app.tagger import _per_point_frames
 
 
 def _jpeg(im, quality=95):
@@ -101,6 +103,40 @@ class TestPreprocessFrame(unittest.TestCase):
         d.rectangle([0, 283, 672, 378], fill=(0, 0, 0))
         once = preprocess_frame(_jpeg(im))
         self.assertEqual(preprocess_frame(once), once)
+
+
+class TestPerPointFrames(unittest.TestCase):
+    def _f(self, pi):
+        return Frame(0.0, "b64", pi)
+
+    def test_first_survivor_per_point(self):
+        # B1/C1/C2 黑帧剔除后剩 12 帧 → 每点取首个存活帧
+        frames = [self._f(0), self._f(0), self._f(0),
+                  self._f(1), self._f(1),
+                  self._f(2),
+                  self._f(3), self._f(3), self._f(3),
+                  self._f(4), self._f(4), self._f(4)]
+        out = _per_point_frames(frames)
+        self.assertEqual([f.point_index for f in out], [0, 1, 2, 3, 4])
+
+    def test_point_lost_entirely(self):
+        # 点位 2 全灭 → 只剩 4 个点位
+        frames = [self._f(0), self._f(0), self._f(0),
+                  self._f(1), self._f(1), self._f(1),
+                  self._f(3), self._f(3), self._f(3)]
+        out = _per_point_frames(frames)
+        self.assertEqual([f.point_index for f in out], [0, 1, 3])
+
+    def test_unknown_point_kept_all(self):
+        # 点位未知（-1）的回退帧全保留，正常点位仍取首个
+        frames = [self._f(-1), self._f(-1), self._f(0), self._f(0)]
+        out = _per_point_frames(frames)
+        self.assertEqual([f.point_index for f in out], [-1, -1, 0])
+
+    def test_order_preserved(self):
+        frames = [self._f(1), self._f(0), self._f(1), self._f(0)]
+        out = _per_point_frames(frames)
+        self.assertEqual([f.point_index for f in out], [1, 0])
 
 
 if __name__ == "__main__":
