@@ -135,6 +135,7 @@ def update_config(mutator: Callable[[Dict[str, Any]], Dict[str, Any]]) -> Dict[s
 # ── 试验模块配置（独立文件 _workspace/<模块>/config.json） ──
 
 # 模块文件内键名 → experimental 段键名（load_config 组装用）
+# TODO: 移除双层 schema——前端按模块提交、后端直读模块文件后，删掉映射/拆键路由/合成视图
 _TAGGER_KEY_MAP = {
     "enabled": "tagger_enabled",
     "integration": "tagger_integration",
@@ -173,7 +174,7 @@ def _transcribe_defaults() -> Dict[str, Any]:
 
 def load_tagger_config() -> Dict[str, Any]:
     """读取 Hammy-tagger 模块配置。文件不存在/损坏时返回默认值（enabled=False）。
-    只保留当前 schema 内的键（丢弃旧版本的遗留键，如 precision）。"""
+    只保留当前 schema 内的键（丢弃旧版本的遗留键）。"""
     data = read_json_cached(TAGGER_CONFIG_FILE)
     merged = dict(_tagger_defaults())
     merged.update({k: v for k, v in data.items() if k in merged})

@@ -25,7 +25,6 @@ _FRAME_WORKERS = 4
 _FRAME_PENDING_FACTOR = 4
 _TASK_QUEUE_FACTOR = 4
 _TAGGER_QUEUE_MAX = 64   # 集成 Tagger 待推理队列上限（超出降级为无辅助标签）
-_AUX_RUNAHEAD_EXTRA = 2  # 集成 Tagger 领先 LLM 消费的额度余量
 # ── join 超时兜底 ──
 _MIN_JOIN_TIMEOUT_SEC = 120.0
 _JOIN_SLACK_FACTOR = 1.5
@@ -570,10 +569,13 @@ class BatchPipeline:
         """启动辅助 worker + 抽帧生产者 + 就绪队列收尾 + AI 消费者。"""
         videos = self._videos
         ai_max_per_video = _ai_seconds_per_video(self.config, self._two_round)
+        slots = max(0, int(getattr(self.config, "llama_slots", 0) or 0))
+        conc = min(self.config.ai_workers, slots) if slots > 0 else self.config.ai_workers
         ready_queue: queue.Queue = queue.Queue(maxsize=self.config.ai_workers * _TASK_QUEUE_FACTOR)
         self.tagger_queue = (queue.Queue(maxsize=_TAGGER_QUEUE_MAX)
                              if "tagger" in self.aux_stages else None)
-        self.aux_sem = (threading.Semaphore(self.config.ai_workers + _AUX_RUNAHEAD_EXTRA)
+        # 辅助限速：2×LLM 有效并发（随槽位复用调整）
+        self.aux_sem = (threading.Semaphore(max(2, conc * 2))
                         if "tagger" in self.aux_stages else None)
         producer = FrameProducer(self.contexts, self.config, self.stop_event,
                                  ai_secs=ai_max_per_video)
@@ -639,7 +641,6 @@ class BatchPipeline:
         producer_thread = threading.Thread(target=_run_producer, name="producer", daemon=False)
         closer_thread = threading.Thread(target=_queue_closer, name="queue-closer", daemon=True)
 
-        slots = max(0, int(getattr(self.config, "llama_slots", 0) or 0))
         slot_ids = _worker_slot_ids(self.config.ai_workers, slots)
         if slots > 0 and slots < self.config.ai_workers:
             logger.warning(f"[RAG] 槽位数({slots})少于 AI 并发({self.config.ai_workers})，"

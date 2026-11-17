@@ -45,16 +45,15 @@ TAG_THRESHOLD = 0.75
 PRESET_TAGS_FILE = "preset_tags.json"  # 模型仓库预设标签包（安装时导入标签检索）
 TAGGER_GROUP = "Hammy-tagger"  # 导入条目固定分组
 
-# 仓库文件：ONNX 仅安装期需要，共享文件长期保留
+# 仓库文件：ONNX 与构建脚本仅安装期需要，共享文件长期保留
 SHARED_FILES = ("config.json", "char_ip_map.json", PRESET_TAGS_FILE, "manifest.json",
                 "hammy_tagger.py", "hammy_server.py", "build_trt.py")
 _CRITICAL_SHARED = ("config.json", "char_ip_map.json", "hammy_tagger.py", "hammy_server.py")
-_ENGINES = ("tagger.trt",)
 
 
-def _onnx_files(precision: str) -> Tuple[str, ...]:
-    """按精度生成 ONNX 文件清单。"""
-    return (f"{precision}-onnx/tagger.onnx",)
+def _onnx_files(precision: str) -> str:
+    """按精度生成 ONNX 相对路径。"""
+    return f"{precision}-onnx/tagger.onnx"
 
 
 # 子进程超时
@@ -62,6 +61,7 @@ _INSTALL_TIMEOUT_SEC = 2400.0
 _BUILD_TIMEOUT_SEC = 1800.0
 _INFERENCE_BASE_SEC = 240.0
 _INFERENCE_PER_VIDEO_SEC = 120.0
+_CLOSE_GRACE_SEC = 30.0   # close() 优雅等待上限：引擎 stdin EOF 秒退；卡死时封顶后强杀
 
 
 _log = make_logger("tagger")
@@ -76,8 +76,8 @@ def _engines_dir() -> Path:
     return _repo_dir() / "engines"
 
 
-def _engine_paths() -> Tuple[Path, ...]:
-    return tuple(_engines_dir() / n for n in _ENGINES)
+def _engine_path() -> Path:
+    return _engines_dir() / "tagger.trt"
 
 
 def _server_script() -> Path:
@@ -147,7 +147,7 @@ def load_tag_library_map() -> Optional[Dict[str, str]]:
             if lib:
                 mapping = lib
             if dup:
-                _log(f"[标签检索] Hammy-tagger 组存在重复英文名（取首见为准，请清理）: "
+                _log("[标签检索] Hammy-tagger 组存在重复英文名（取首见为准，请清理）: "
                      + ", ".join(sorted(set(dup))))
     except Exception as e:
         _log(f"[标签检索] 标签库解析失败，本次不过滤降级为仅英文: {e}")
@@ -261,7 +261,7 @@ def get_status() -> Dict[str, Any]:
     precision = load_tagger_config().get("precision") or ""
     ready = (venv_ok
              and all((_repo_dir() / n).is_file() for n in _CRITICAL_SHARED)
-             and all(p.is_file() for p in _engine_paths()))
+             and _engine_path().is_file())
     return {
         "dir_exists": TAGGER_DIR.is_dir(),
         "precision": precision,
@@ -365,7 +365,7 @@ def install_dependencies(
                 steps.push(4, ev.get("idx", 0) / max(1, ev.get("count", 1)))
 
         steps.push(4)
-        files = [*_onnx_files(precision), *SHARED_FILES]
+        files = [_onnx_files(precision), *SHARED_FILES]
         _log(f"━━ 步骤 4/5：从魔搭下载 Hammy tagger 模型与脚本"
              f"（{precision.upper()}，共 {len(files)} 个文件）━━", log_fn)
         dl = models_downloader.download_files(
@@ -393,9 +393,8 @@ def install_dependencies(
         return {"ok": False, "cancelled": True, "error": "安装已取消"}
     if rc != 0:
         return {"ok": False, "error": f"引擎构建失败: {out[-300:]}"}
-    missing = [p.name for p in _engine_paths() if not p.is_file()]
-    if missing:
-        return {"ok": False, "error": f"引擎构建失败: {'、'.join(missing)} 未生成"}
+    if not _engine_path().is_file():
+        return {"ok": False, "error": "引擎构建失败: tagger.trt 未生成"}
 
     from .config_store import update_tagger_config
     update_tagger_config(lambda c: c.update(precision=precision))
@@ -405,7 +404,8 @@ def install_dependencies(
 
 def ensure_model_files() -> Optional[str]:
     """分析前预检：引擎或仓库文件缺失一律报重装（安装时保证齐全）。返回错误信息或 None。"""
-    missing = [p.name for p in _engine_paths() if not p.is_file()]
+    engine = _engine_path()
+    missing = [] if engine.is_file() else [engine.name]
     missing += [n for n in SHARED_FILES if not (_repo_dir() / n).is_file()]
     if missing:
         return f"文件缺失（{'、'.join(missing)}），请卸载后重新安装 Hammy-tagger"
@@ -629,7 +629,7 @@ class AnalyzeStream:
             wait_sec = 2.0
             join_sec = 2.0
         else:
-            wait_sec = max(10.0, self._deadline - time.time())
+            wait_sec = max(10.0, min(self._deadline - time.time(), _CLOSE_GRACE_SEC))
             join_sec = 10
         try:
             self.p.wait(timeout=wait_sec)

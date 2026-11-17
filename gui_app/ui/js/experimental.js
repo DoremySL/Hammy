@@ -753,7 +753,7 @@ function _renderTranscribeSection(exp, wStatus) {
   const enabled = !!state.transcribeEnabled;
   const ready = !!(wStatus && wStatus.ready);
   const wModels = (wStatus && wStatus.models) || [];
-  const iModels = (wStatus && wStatus.inject_models) || [];
+  const iModels = wModels;
   const installed = (wStatus && wStatus.installed) || {};
   const current = (wStatus && wStatus.current_model) || 'whisper-turbo';
   const injectCur = (wStatus && wStatus.inject_model) || 'sensevoice';

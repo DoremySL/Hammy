@@ -321,8 +321,7 @@ class ExperimentalMixin:
                 on_log=_push_log,
             )
             if stream is None:
-                return self._tagger_engine_unavailable(
-                    vid_list, video_paths, results, frame_cfg, total)
+                return self._tagger_engine_unavailable(vid_list, results, total)
 
             # 抽帧流水线（线程池 + 有界背压 + send-ahead）
             frame_workers = min(6, max(1, total))
@@ -482,37 +481,13 @@ class ExperimentalMixin:
         finally:
             _gpu_task_lock.release()
 
-    def _tagger_engine_unavailable(self, vid_list: List, video_paths: List,
-                                  results: Dict[str, Any], frame_cfg,
-                                  total: int) -> Dict[str, Any]:
-        """引擎启动失败降级：仍尝试逐个抽帧并记录结果。"""
-        from ..tagger import extract_frames_for_tagger
-        _push_log("分析引擎启动失败，正在尝试抽帧…", "err")
-        any_frames = False
-        for i, vpath in enumerate(video_paths):
-            if _gpu_stop_event.is_set():
-                break
-            vid, name = vid_list[i], Path(vpath).name
-            try:
-                frames = extract_frames_for_tagger(
-                    vpath, _gpu_stop_event, frame_cfg)
-            except Exception:
-                frames = None
-            if frames:
-                any_frames = True
-                results[vid] = {"character_tags": [], "ip_tags": [],
-                                "error": "分析引擎启动失败"}
-                _push_log(f"  [{i + 1}/{total}] {name} — 分析引擎启动失败", "err")
-            else:
-                results[vid] = {"character_tags": [], "ip_tags": [], "error": "抽帧失败"}
-                _push_log(f"  [{i + 1}/{total}] {name} — 抽帧失败", "err")
-            js_pusher.push("setProgress", i + 1, total)
-        self._save_tags(results)
-        if not any_frames:
-            _push_log("IP分析完成（无可分析的视频，均已抽帧失败）", "warn")
-            return {"ok": True, "results": results, "ok_count": 0,
-                    "total": total, "error": None}
+    def _tagger_engine_unavailable(self, vid_list: List, results: Dict[str, Any],
+                                   total: int) -> Dict[str, Any]:
+        """引擎启动失败：不再逐个抽帧（无引擎不可能产出标签，抽帧纯耗时）。"""
         _push_log("IP分析失败：分析引擎启动失败", "err")
+        for vid in vid_list:
+            results[vid] = {"character_tags": [], "ip_tags": [],
+                            "error": "分析引擎启动失败"}
         return {"ok": False, "results": results, "ok_count": 0,
                 "total": total, "error": "分析引擎启动失败"}
 
@@ -733,6 +708,10 @@ class ExperimentalMixin:
                 done += 1
                 name = Path(video_paths[idx]).name if idx < len(video_paths) else f"视频{idx+1}"
                 if entry.get("ok"):
+                    if entry.get("silent"):
+                        _push_log(f"  [{done}/{total}] {name} — 无语音，不生成字幕")
+                        js_pusher.push("setProgress", done, total)
+                        return
                     seg_count = entry.get("srt", "").count("-->")
                     _push_log(f"  [{done}/{total}] {name} — 完成 {seg_count} 段，"
                               f"语言={entry.get('language') or '未知'}")
@@ -814,11 +793,11 @@ class ExperimentalMixin:
         return list(store.keys())
 
     def _save_transcribe_srt(self, results: Dict[str, Any]) -> None:
-        """保存 SRT 文件 + 轻量索引 JSON（索引存语言与生成模型）。"""
+        """保存 SRT 文件 + 轻量索引 JSON（索引存语言与生成模型）；静音/空字幕不落盘不索引。"""
         TRANSCRIBE_SRT_DIR.mkdir(parents=True, exist_ok=True)
         langs = {}
         for vid, data in results.items():
-            if data.get("error"):
+            if data.get("error") or not (data.get("srt") or "").strip():
                 continue
             try:
                 (TRANSCRIBE_SRT_DIR / f"{vid}.srt").write_text(data.get("srt", ""), encoding="utf-8")

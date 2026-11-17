@@ -32,11 +32,6 @@ def _compact(s: Any) -> str:
     s = unicodedata.normalize("NFKC", str(s or "")).lower()
     return _SEP_RE.sub("", s)
 
-def split_related(related: Any) -> List[str]:
-    """关联词取值（单值字段，不再按逗号切分）。"""
-    t = str(related or "").strip()
-    return [t] if t else []
-
 def build_section(items: List[Dict[str, str]], header: str) -> str:
     """条目列表 → 提示词段落（- 关键词：描述；不含关联词）。"""
     lines = [header]
@@ -59,7 +54,7 @@ class _Entry:
         self.idx = idx
         self.item = item
         self.targets: List[_Target] = []
-        for text in [item["keyword"], *split_related(item.get("related", ""))]:
+        for text in (item["keyword"], item.get("related", "")):
             norm = _norm(text)
             if not norm:
                 continue

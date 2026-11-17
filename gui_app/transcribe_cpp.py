@@ -4,12 +4,12 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import tempfile
 import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from batch_rename.utils import fmt_size
-from batch_rename.env import SUBPROCESS_KWARGS
 from .env import APP_ROOT, PYTHON_EXE, FFMPEG_EXE, make_logger
 from .installer import (
     PYPI_MIRRORS, DEFAULT_PYPI_MIRROR, UV_TIMEOUT_SEC,
@@ -35,7 +35,6 @@ TRANSCRIBE_MODELS = {
         "family": "whisper",
         "gguf": "whisper-large-v3-turbo-Q8_0.gguf",
         "hf_repo": "handy-computer/whisper-large-v3-turbo-gguf",
-        "ms_repo": "",  # 待填入魔搭仓库
         "desc": "多语言快速转录",
         "size_label": "~850MB",
         "recommended": True,
@@ -46,7 +45,6 @@ TRANSCRIBE_MODELS = {
         "family": "moss",
         "gguf": "MOSS-Transcribe-Diarize-Q8_0.gguf",
         "hf_repo": "handy-computer/moss-transcribe-diarize-gguf",
-        "ms_repo": "",  # 待填入魔搭仓库
         "desc": "多语言，配置要求略高，适合生成字幕",
         "size_label": "~1GB",
         "recommended": False,
@@ -57,7 +55,6 @@ TRANSCRIBE_MODELS = {
         "family": "sensevoice",
         "gguf": "SenseVoiceSmall-Q8_0.gguf",
         "hf_repo": "handy-computer/SenseVoiceSmall-gguf",
-        "ms_repo": "",  # 待填入魔搭仓库
         "desc": "中英日韩粤，无逐句时间戳，导出字幕不可用",
         "size_label": "~240MB",
         "recommended": False,
@@ -105,30 +102,20 @@ _BINDING_WHEEL_RE = re.compile(r"^transcribe_cpp-(\d+\.\d+\.\d+)-py3-none-any\.w
 _NATIVE_WHEEL_RE = re.compile(r"^transcribe_cpp_native_cu12-(\d+\.\d+\.\d+)-py3-none-win_amd64\.whl$")
 
 _INSTALL_TIMEOUT_SEC = 600.0
+# 整批挂起兜底预算 = 每视频 600s × 数量（非实际耗时估计；3h 电影全程约 20 分钟）
 _TRANSCRIBE_TIMEOUT_PER_VIDEO_SEC = 600.0
 
 _log = make_logger("transcribe_cpp")
 
 
-def _model_candidates(model_key: str) -> List[Path]:
-    """模型 GGUF 的候选磁盘路径。"""
-    meta = TRANSCRIBE_MODELS.get(model_key)
-    if not meta:
-        return []
-    out = []
-    for repo in (meta.get("ms_repo"), meta.get("hf_repo")):
-        if repo:
-            author, _, name = repo.partition("/")
-            out.append(MODEL_DIR / author / name / meta["gguf"])
-    return out
-
-
 def _model_path(model_key: str) -> Optional[Path]:
     """已安装模型 GGUF 的实际路径。"""
-    for p in _model_candidates(model_key):
-        if p.is_file():
-            return p
-    return None
+    meta = TRANSCRIBE_MODELS.get(model_key)
+    if not meta:
+        return None
+    author, _, name = meta["hf_repo"].partition("/")
+    p = MODEL_DIR / author / name / meta["gguf"]
+    return p if p.is_file() else None
 
 
 def is_model_installed(model_key: str) -> bool:
@@ -156,7 +143,7 @@ def get_installed_models() -> Dict[str, bool]:
 
 
 def get_status() -> Dict[str, Any]:
-    """获取安装状态。models/inject_models 均为全部候选模型。"""
+    """获取安装状态。models 为全部候选模型（转录/注入共用一份候选）。"""
     venv_python = venv_python_path(VENV_DIR)
     venv_ok = VENV_DIR.is_dir() and venv_python.exists()
     current = get_current_model()
@@ -169,7 +156,6 @@ def get_status() -> Dict[str, Any]:
         "ready": venv_ok and installed.get(current, False),
         "dir_path": str(TRANSCRIBE_DIR),
         "models": all_models,
-        "inject_models": all_models,
         "installed": installed,
         "current_model": current,
         "inject_model": get_inject_model(),
@@ -192,18 +178,16 @@ def _download_model(model_key: str,
     if not meta:
         return {"ok": False, "error": f"未知模型: {model_key}"}
 
-    source = "ms" if meta.get("ms_repo") else "hf"
-    repo = meta.get("ms_repo") or meta.get("hf_repo")
+    repo = meta["hf_repo"]
     from . import models_downloader
     if not models_downloader.begin_download():
         return {"ok": False, "busy": True, "error": "已有下载任务进行中，请稍后再试"}
     log_fn = log_fn or (lambda s: None)
     cancel = cancel_event or models_downloader.get_cancel_event()
     try:
-        log_fn(f"模型 {meta['title']}：{meta['gguf']}（{meta['size_label']}，"
-               f"{'魔搭' if source == 'ms' else 'hf-mirror'}）")
+        log_fn(f"模型 {meta['title']}：{meta['gguf']}（{meta['size_label']}，hf-mirror）")
         return models_downloader.download_files(
-            source, repo, [meta["gguf"]], str(MODEL_DIR),
+            "hf", repo, [meta["gguf"]], str(MODEL_DIR),
             log_fn=log_fn, progress_cb=progress_cb,
             cancel_event=cancel,
             cleanup_on_cancel=cleanup_on_cancel,
@@ -394,7 +378,7 @@ def install_dependencies(pypi_mirror: str = DEFAULT_PYPI_MIRROR,
 
         for n, mk in enumerate(todo):
             meta = TRANSCRIBE_MODELS[mk]
-            src_label = "魔搭" if meta.get("ms_repo") else "hf-mirror"
+            src_label = "hf-mirror"
             _log(f"  ── {meta['title']}（{src_label}，{meta['size_label']}）──", log_fn)
 
             def _install_progress(ev: Dict[str, Any]):
@@ -449,11 +433,11 @@ def _run_batch_script(params: Dict[str, Any], per_video: List[Dict[str, Any]],
                       on_video_done: Optional[Callable[[int, Dict[str, Any]], None]],
                       on_log: Optional[Callable[[str], None]],
                       stop_event, err_label: str) -> Tuple[Optional[str], List[Dict[str, Any]]]:
-    """运行转录子进程并解析逐行 JSON 输出。返回 (error, items)，error=None 表示成功。"""
-    final_result: Optional[Dict[str, Any]] = None
+    """运行转录子进程并解析逐行 JSON 输出。返回 (error, items)，error=None 表示成功。
+
+    临时目录由父进程持有（work_dir 传入脚本）：子进程被杀后的残留由 finally 统一清理。"""
 
     def _on_line(line: str):
-        nonlocal final_result
         line = line.strip()
         if not line:
             return
@@ -461,9 +445,7 @@ def _run_batch_script(params: Dict[str, Any], per_video: List[Dict[str, Any]],
             obj = json.loads(line)
         except json.JSONDecodeError:
             return
-        if obj.get("done"):
-            final_result = obj
-        elif "idx" in obj:
+        if "idx" in obj:
             idx = obj["idx"]
             entry = {k: v for k, v in obj.items() if k != "idx"}
             while len(per_video) <= idx:
@@ -474,23 +456,26 @@ def _run_batch_script(params: Dict[str, Any], per_video: List[Dict[str, Any]],
         elif obj.get("log") and on_log:
             on_log(obj["log"])
 
-    timeout = _TRANSCRIBE_TIMEOUT_PER_VIDEO_SEC * max(1, len(params["video_paths"]))
-    rc, _last, err_tail = _run_venv_script(
-        VENV_DIR, _TRANSCRIBE_SCRIPT, params,
-        timeout=timeout, stop_event=stop_event, on_line=_on_line,
-    )
+    work_dir = tempfile.mkdtemp(prefix="transcribe_job_")
+    params["work_dir"] = work_dir
+    try:
+        timeout = _TRANSCRIBE_TIMEOUT_PER_VIDEO_SEC * max(1, len(params["video_paths"]))
+        rc, _last, err_tail = _run_venv_script(
+            VENV_DIR, _WORKER_SCRIPT, params,
+            timeout=timeout, stop_event=stop_event, on_line=_on_line,
+        )
 
-    if rc == RC_CANCEL:
-        return "已取消", per_video
-    if rc == RC_TIMEOUT:
-        return f"{err_label}超时", per_video
-    if rc != 0:
-        return f"{err_label}失败: {err_tail[-500:] if err_tail else '子进程异常退出'}", per_video
-    if final_result:
-        return None, final_result.get("per_video", per_video)
-    if per_video:
-        return None, per_video
-    return f"{err_label}无输出", []
+        if rc == RC_CANCEL:
+            return "已取消", per_video
+        if rc == RC_TIMEOUT:
+            return f"{err_label}超时", per_video
+        if rc != 0:
+            return f"{err_label}失败: {err_tail[-500:] if err_tail else '子进程异常退出'}", per_video
+        if per_video:
+            return None, per_video
+        return f"{err_label}无输出", []
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
 
 
 def run_transcription_batch(video_paths: List[str],
@@ -514,6 +499,7 @@ def run_transcription_batch(video_paths: List[str],
         return {"ok": False, "per_video": [], "error": "未找到 ffmpeg，无法提取音频"}
 
     backend = "cuda" if detect_gpu_cached().get("has_nvidia") else "cpu"
+    vad = vad_model_path()
     params = {
         "video_paths": video_paths,
         "model_path": str(model_path),
@@ -524,6 +510,8 @@ def run_transcription_batch(video_paths: List[str],
         "backend": backend,
         "ffmpeg": FFMPEG_EXE,
         "venv_site_packages": str(VENV_DIR / "Lib" / "site-packages"),
+        # 官方 Silero VAD（缺失则整段推理/不做静音判断）
+        "vad_model": str(vad) if vad else "",
         "mode": "srt",
     }
 
@@ -584,212 +572,5 @@ def run_inject_batch(video_paths: List[str],
     return {"ok": True, "texts": texts, "error": None}
 
 
-# ── 转录脚本 ──
-_TRANSCRIBE_SCRIPT = r"""
-import sys, json, os, subprocess, tempfile
-
-params_file = sys.argv[1]
-with open(params_file, 'r', encoding='utf-8') as f:
-    params = json.load(f)
-
-video_paths = params['video_paths']
-model_path = params['model_path']
-family = params.get('family', 'whisper')
-has_ts = bool(params.get('timestamps', True))  # 无逐句时间戳 → SRT 合成整段单条字幕
-language = params.get('language', '') or None
-backend = params.get('backend', 'cpu')
-ffmpeg = params.get('ffmpeg', '')
-site_packages = params.get('venv_site_packages', '')
-max_chars = int(params.get('max_chars', 0) or 0)  # 注入模式的提前停止阈值
-vad_model_path = params.get('vad_model', '')  # 官方 Silero VAD GGUF（空=整段推理）
-mode = params.get('mode', 'srt')  # srt=字幕转录 / text=注入文本
-
-FAMILY_CHUNK_SEC = {'moss': 1800}
-
-def plog(msg):
-    print(json.dumps({'log': msg}, ensure_ascii=False), flush=True)
-
-# nvidia pip 包的 CUDA DLL 注入 PATH
-if site_packages:
-    for sub in ('cublas', 'cuda_runtime', 'cuda_nvrtc', 'nvjitlink'):
-        dll_dir = os.path.join(site_packages, 'nvidia', sub, 'bin')
-        if os.path.isdir(dll_dir):
-            os.environ['PATH'] = dll_dir + os.pathsep + os.environ.get('PATH', '')
-
-import transcribe_cpp as tc
-import soundfile as sf
-
-# 按后端优先级初始化，失败逐级回退
-backends = ['cuda', 'cpu'] if backend == 'cuda' else ['vulkan', 'cpu']
-model = None
-for be in backends:
-    try:
-        model = tc.Model(model_path, backend=be)
-        break
-    except Exception as e:
-        plog(f'{be} 初始化失败: {str(e).splitlines()[0]}')
-if model is None:
-    sys.exit(1)
-sess = model.session()
-
-# whisper/moss 出 SRT；sensevoice 出纯文本
-run_kw = {}
-if family in ('whisper', 'moss'):
-    run_kw['timestamps'] = 'segment'
-if family == 'moss':
-    run_kw['diarize'] = 'on'
-if language:
-    run_kw['language'] = language
-
-
-# ── 官方 Silero VAD 区段判定（无时间戳转录/注入共用，同引擎零依赖）──
-# 参数：min_silence 2000ms 合并碎段、pad 300ms；VAD 不可用 → 整段单区段
-VAD_MIN_SPEECH_SEC = 0.3  # 总语音时长低于此值视为无语音
-
-_VAD_SESS = None
-_VAD_TRIED = False
-
-
-def _get_vad_sess():
-    # VAD 会话懒加载一次（1.2MB，CPU）；失败置 None（整段推理）
-    global _VAD_SESS, _VAD_TRIED
-    if not _VAD_TRIED:
-        _VAD_TRIED = True
-        if vad_model_path:
-            try:
-                _VAD_SESS = tc.VadSession(tc.Model(vad_model_path, backend='cpu'))
-            except Exception as e:
-                plog(f'Silero VAD 不可用（{str(e)[:80]}），本次整段推理')
-    return _VAD_SESS
-
-
-def _vad_regions(audio, sr):
-    # 返回 [(start_sec, end_sec)]；无语音返回 []；VAD 不可用返回整段单一区段
-    sess = _get_vad_sess()
-    whole = [(0.0, len(audio) / sr)] if len(audio) else []
-    if sess is None:
-        return whole
-    try:
-        # max_speech 29s：长语音段在停顿处预切，单段 ≤30s 可整段送模型
-        res = sess.run(audio, min_silence_ms=2000, speech_pad_ms=300,
-                       max_speech_ms=29000)
-        segs = [(s.start_sample / sr, s.end_sample / sr) for s in res.segments]
-        if segs and sum(b - a for a, b in segs) >= VAD_MIN_SPEECH_SEC:
-            return segs
-        return []
-    except Exception as e:
-        plog(f'Silero VAD 推理失败（{str(e)[:80]}），本次整段推理')
-        return whole
-
-
-def _windowed_text(audio, sr, regions, win, stop_at=0):
-    # 区段内分窗推理拼接文本；stop_at>0 时累计达标提前结束
-    texts, acc = [], 0
-    for a, b in regions:
-        pos = a
-        while pos < b - 0.1:
-            end = min(pos + win, b)
-            res = sess.run(audio[int(pos * sr): int(end * sr)], **run_kw)
-            t = ' '.join(s.text.strip() for s in (res.segments or [])
-                         if s.text.strip()) or (res.text or '').strip()
-            if t:
-                texts.append(t)
-                acc += len(t) + 1
-            if stop_at and acc >= stop_at:
-                return ' '.join(texts).strip()
-            pos = end
-    return ' '.join(texts).strip()
-
-
-def _srt_ts(ms):
-    h, rem = divmod(int(ms) // 1000, 3600)
-    m, s = divmod(rem, 60)
-    return f'{h:02d}:{m:02d}:{s:02d},{int(ms) % 1000:03d}'
-
-
-def _to_srt(segments, offset_ms=0, idx=1):
-    lines = []
-    for seg in segments:
-        t = (getattr(seg, 'text', '') or '').strip()
-        if not t:
-            continue
-        lines.append(str(idx))
-        lines.append(f'{_srt_ts(seg.t0_ms + offset_ms)} --> {_srt_ts(seg.t1_ms + offset_ms)}')
-        lines.append(t)
-        lines.append('')
-        idx += 1
-    return '\n'.join(lines), idx
-
-
-def _extract_wav(vp, out_wav):
-    cmd = [ffmpeg, '-y', '-v', 'error', '-i', vp,
-           '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', out_wav]
-    r = subprocess.run(cmd, capture_output=True, text=True, **SUBPROCESS_KWARGS)
-    if r.returncode != 0:
-        raise RuntimeError(f'ffmpeg 提取音频失败: {(r.stderr or "")[-300:]}')
-
-
-def transcribe_one(i, vp):
-    try:
-        with tempfile.TemporaryDirectory(prefix='transcribe_') as td:
-            full = os.path.join(td, 'a.wav')
-            _extract_wav(vp, full)
-            audio, sr = sf.read(full, dtype='float32', always_2d=False)
-            if audio.ndim > 1:
-                audio = audio.mean(axis=1)
-            dur = len(audio) / sr
-            if mode == 'text':
-                regions = _vad_regions(audio, sr)
-                if not regions:
-                    # VAD 零区段：静音/底噪/纯音乐，不送推理（防模型幻觉）
-                    entry = {'ok': True, 'text': '', 'srt': '', 'language': '',
-                             'duration': round(dur, 1), 'error': None, 'silent': True}
-                else:
-                    entry = {'ok': True,
-                             'text': _windowed_text(audio, sr, regions,
-                                                    float(params['inject_win_sec']),
-                                                    max_chars),
-                             'srt': '', 'language': '',
-                             'duration': round(dur, 1), 'error': None}
-            else:
-                if not has_ts:
-                    # 无逐句时间戳：分窗转录文本合成单条字幕
-                    body = _windowed_text(audio, sr, _vad_regions(audio, sr),
-                                          float(params.get('inject_win_sec') or 30.0))
-                    srt = (f'1\n{_srt_ts(0)} --> {_srt_ts(int(dur * 1000))}\n{body}\n'
-                           if body else '')
-                    entry = {'ok': True, 'srt': srt, 'language': '', 'text': '',
-                             'duration': round(dur, 1), 'error': None}
-                else:
-                    chunk = FAMILY_CHUNK_SEC.get(family, 0)
-                    if chunk and dur <= chunk + 0.5:
-                        chunk = 0
-                    if not chunk:
-                        res = sess.run(audio, **run_kw)
-                        srt, _ = _to_srt(res.segments)
-                        lang = getattr(res, 'language', '') or ''
-                    else:
-                        parts = []
-                        lang = ''
-                        pos = 0.0
-                        idx = 1
-                        while pos < dur - 0.1:
-                            seg_audio = audio[int(pos * sr): int((pos + chunk) * sr)]
-                            res = sess.run(seg_audio, **run_kw)
-                            part, idx = _to_srt(res.segments, offset_ms=int(pos * 1000), idx=idx)
-                            parts.append(part)
-                            lang = lang or (getattr(res, 'language', '') or '')
-                            pos += chunk
-                        srt = '\n'.join(parts)
-                    entry = {'ok': True, 'srt': srt, 'language': lang, 'text': '',
-                             'duration': round(dur, 1), 'error': None}
-    except Exception as e:
-        entry = {'ok': False, 'srt': '', 'text': '', 'language': '', 'duration': 0, 'error': str(e)}
-    print(json.dumps({'idx': i, **entry}, ensure_ascii=False), flush=True)
-    return entry
-
-per_video = [transcribe_one(i, vp) for i, vp in enumerate(video_paths)]
-
-# 最终汇总行
-print(json.dumps({'done': True, 'per_video': per_video}, ensure_ascii=False), flush=True)
-"""
+# ── 转录 worker（真实文件：可 lint/可单测，venv 内按路径执行）──
+_WORKER_SCRIPT = Path(__file__).resolve().parent / "transcribe_worker.py"

@@ -233,7 +233,14 @@ def _subprocess_env() -> Dict[str, str]:
 
 
 def _terminate_proc(p: subprocess.Popen, wait_sec: float = 3.0) -> None:
-    """terminate → 短等 → kill 的统一收尾。"""
+    """terminate → 短等 → kill 的统一收尾（Windows 下 taskkill 连子树一起杀，防孤儿）。"""
+    if sys.platform == "win32":
+        try:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(p.pid)],
+                           capture_output=True, timeout=10, **SUBPROCESS_KWARGS)
+            return
+        except Exception:
+            pass
     try:
         p.terminate()
         p.wait(timeout=wait_sec)
@@ -360,14 +367,14 @@ def venv_python_path(venv_dir: Path) -> Path:
 
 def run_venv_script(
     venv_dir: Path,
-    script: str,
+    script,  # str=内联源码（-c 执行）；Path=脚本文件（按路径执行）
     params: Dict[str, Any],
     *,
     timeout: float,
     stop_event: Optional[threading.Event] = None,
     on_line: Optional[Callable[[str], None]] = None,
 ) -> Tuple[int, str, str]:
-    """在模块 venv 内执行内联脚本，返回 (returncode, stdout最后一行, stderr尾部)。"""
+    """在模块 venv 内执行脚本（内联源码或文件），返回 (returncode, stdout最后一行, stderr尾部)。"""
     py = venv_python_path(venv_dir)
     if not py.is_file():
         return -1, "", f"模块环境不存在: {py}"
@@ -384,8 +391,9 @@ def run_venv_script(
         return -1, "", f"参数文件写入失败: {e}"
 
     try:
+        script_arg = [str(script)] if isinstance(script, Path) else ["-c", script]
         p = subprocess.Popen(
-            [str(py), "-c", script, params_path],
+            [str(py), *script_arg, params_path],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding="utf-8", errors="replace",
             **SUBPROCESS_KWARGS,

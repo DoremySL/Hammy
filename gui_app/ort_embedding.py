@@ -435,7 +435,6 @@ class OrtEmbedBackend:
         raise RuntimeError("worker 在 300 秒内未就绪")
 
     def _ensure(self) -> subprocess.Popen:
-        global _proc
         proc = _proc
         key = (self.device,)
         if proc is None or proc.poll() is not None or _proc_key != key:
