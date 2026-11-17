@@ -90,12 +90,17 @@ class TestAnalyzeStreamCloseFastPath(unittest.TestCase):
 
     def test_close_fast_path_on_stop(self):
         stream = self._mk_stream(stop_set=True, broken=False)
-        with mock.patch("gui_app.tagger.unregister_subprocess") as mock_unreg, \
+        with mock.patch("gui_app.installer.subprocess.run") as mock_run, \
+             mock.patch("gui_app.tagger.unregister_subprocess") as mock_unreg, \
              mock.patch("gui_app.tagger.os.unlink") as mock_unlink:
             r = stream.close()
         self.assertFalse(r["ok"])
         self.assertEqual(r["error"], "已停止")
-        stream.p.terminate.assert_called_once()
+        # 终止统一走 _terminate_proc 的 taskkill /T /F（连子树一起杀）
+        mock_run.assert_called_once()
+        self.assertEqual(mock_run.call_args.args[0][:4],
+                         ["taskkill", "/T", "/F", "/PID"])
+        stream.p.terminate.assert_not_called()
         mock_unreg.assert_called_once_with(stream.p)
         mock_unlink.assert_called_once_with(stream._params_path)
 

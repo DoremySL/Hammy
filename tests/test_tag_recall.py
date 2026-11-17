@@ -156,9 +156,6 @@ class TestRelatedRecall(unittest.TestCase):
 
     def test_related_not_split(self):
         # 单值化：逗号/顿号关联串整体当一个词，逗号后的部分不再独立匹配
-        from batch_rename.tag_recall import split_related
-        self.assertEqual(split_related("2160p,超清；UHD"), ["2160p,超清；UHD"])
-        self.assertEqual(split_related("  "), [])
         items = [{"keyword": "4K", "description": "", "related": "2160p,超清"}]
         self.assertEqual(TagRecall(items, mode="on").recall_literal({"aux": "这部影片是超清制作"}), [])
         cands = TagRecall(items, mode="on").recall_literal({"aux": "标记为2160p,超清的版本"})

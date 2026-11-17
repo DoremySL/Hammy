@@ -44,11 +44,11 @@ class TestModelMeta(unittest.TestCase):
         rec = [k for k, m in tc.TRANSCRIBE_MODELS.items() if m["recommended"]]
         self.assertEqual(rec, ["whisper-turbo"])
 
-    def test_msfallback_empty_means_hf(self):
-        # ms_repo 留空 = 走 hf-mirror
+    def test_models_have_hf_source_only(self):
+        # 全部内置模型仅有 hf 源
         for meta in tc.TRANSCRIBE_MODELS.values():
-            self.assertIn("ms_repo", meta)
             self.assertIn("hf_repo", meta)
+            self.assertNotIn("ms_repo", meta)
 
     def test_gguf_names_match_upstream(self):
         self.assertEqual(tc.TRANSCRIBE_MODELS["whisper-turbo"]["gguf"],
@@ -76,26 +76,13 @@ class TestModelInstallCheck(unittest.TestCase):
                 self._make_model_file(Path(td), tc.TRANSCRIBE_MODELS["whisper-turbo"]["hf_repo"])
                 self.assertTrue(tc.is_model_installed("whisper-turbo"))
 
-    def test_is_model_installed_accepts_ms_layout(self):
-        # ms_repo 填入后，魔搭布局下的文件同样算已安装
-        meta = dict(tc.TRANSCRIBE_MODELS["moss"])
-        meta["ms_repo"] = "DoremySL/hammy-asr-gguf"
-        with tempfile.TemporaryDirectory() as td:
-            with mock.patch.object(tc, "MODEL_DIR", Path(td)), \
-                 mock.patch.object(tc, "TRANSCRIBE_MODELS", {"moss": meta}):
-                author, _, name = meta["ms_repo"].partition("/")
-                sub = Path(td) / author / name
-                sub.mkdir(parents=True)
-                (sub / meta["gguf"]).write_bytes(b"x")
-                self.assertTrue(tc.is_model_installed("moss"))
-
     def test_is_model_installed_false_when_missing(self):
         with tempfile.TemporaryDirectory() as td:
             with mock.patch.object(tc, "MODEL_DIR", Path(td)):
                 self.assertFalse(tc.is_model_installed("moss"))
 
-    def test_model_candidates_unknown_model(self):
-        self.assertEqual(tc._model_candidates("unknown-model"), [])
+    def test_model_path_unknown_model(self):
+        self.assertIsNone(tc._model_path("unknown-model"))
 
     def test_get_installed_models_scan(self):
         with tempfile.TemporaryDirectory() as td:
@@ -118,10 +105,8 @@ class TestModelInstallCheck(unittest.TestCase):
                 st = tc.get_status()
                 self.assertFalse(st["ready"])
                 self.assertEqual(st["current_model"], "whisper-turbo")
-                # models / inject_models 均为全部候选（3）
+                # models 为全部候选（3）
                 self.assertEqual({m["key"] for m in st["models"]},
-                                 {"whisper-turbo", "moss", "sensevoice"})
-                self.assertEqual({m["key"] for m in st["inject_models"]},
                                  {"whisper-turbo", "moss", "sensevoice"})
                 self.assertEqual(st["inject_model"], "sensevoice")
                 self.assertEqual(set(st["installed"].keys()),
@@ -414,6 +399,70 @@ class TestInstallSyncsModel(unittest.TestCase):
         from gui_app.config_store import _transcribe_defaults
         self.assertIs(_transcribe_defaults()["integration"], False)
         self.assertEqual(_transcribe_defaults()["max_chars"], 2000)
+
+
+class TestWorkDirCleanup(unittest.TestCase):
+    """批量脚本工作目录由父进程持有：运行中存在、结束后清理（含子进程被杀残留）。"""
+
+    def _run(self, fake):
+        with mock.patch.object(tc, "_run_venv_script", fake):
+            return tc._run_batch_script({"video_paths": ["a.mp4"]}, [], None,
+                                        None, None, "转录")
+
+    def test_workdir_exists_during_and_removed_after(self):
+        import os
+        box = {}
+
+        def fake(venv_dir, script, params, **kw):
+            wd = params["work_dir"]
+            box["wd"] = wd
+            os.makedirs(os.path.join(wd, "v1"), exist_ok=True)
+            with open(os.path.join(wd, "v1", "a.wav"), "wb") as f:
+                f.write(b"x")
+            box["exists_during"] = os.path.isdir(wd)
+            return 0, "", ""
+
+        error, _ = self._run(fake)
+        self.assertTrue(box["exists_during"])  # 运行中存在
+        self.assertEqual(error, "转录无输出")
+        self.assertFalse(os.path.isdir(box["wd"]))  # 结束后清理（含残留 wav）
+
+    def test_workdir_removed_on_script_error(self):
+        import os
+        box = {}
+
+        def fake(venv_dir, script, params, **kw):
+            box["wd"] = params["work_dir"]
+            return 1, "", "boom"
+
+        error, _ = self._run(fake)
+        self.assertIn("失败", error)
+        self.assertFalse(os.path.isdir(box["wd"]))
+
+
+class TestTranscriptionParams(unittest.TestCase):
+    """字幕转录参数传导：vad_model 与注入模式一致。"""
+
+    def test_params_carry_vad_model(self):
+        captured = {}
+
+        def fake_batch(params, per_video, on_video_done, on_log, stop_event, err_label):
+            captured["params"] = params
+            return None, []
+
+        with tempfile.TemporaryDirectory() as td:
+            vpy = Path(td) / "Scripts" / "python.exe"
+            vpy.parent.mkdir(parents=True)
+            vpy.write_bytes(b"x")
+            with mock.patch.object(tc, "get_current_model", lambda: "sensevoice"), \
+                 mock.patch.object(tc, "VENV_DIR", Path(td)), \
+                 mock.patch.object(tc, "_model_path", lambda k: Path("m.gguf")), \
+                 mock.patch.object(tc, "FFMPEG_EXE", "ffmpeg"), \
+                 mock.patch.object(tc, "_run_batch_script", fake_batch):
+                r = tc.run_transcription_batch(["a.mp4"])
+        self.assertTrue(r["ok"])
+        self.assertIn("vad_model", captured["params"])
+        self.assertEqual(captured["params"]["mode"], "srt")
 
 
 if __name__ == "__main__":
