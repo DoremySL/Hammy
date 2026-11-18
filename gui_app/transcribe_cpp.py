@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import re
 import shutil
 import tempfile
 import threading
@@ -14,7 +13,6 @@ from .env import APP_ROOT, PYTHON_EXE, FFMPEG_EXE, make_logger
 from .installer import (
     PYPI_MIRRORS, DEFAULT_PYPI_MIRROR, UV_TIMEOUT_SEC,
     RC_CANCEL, RC_TIMEOUT,
-    detect_gpu_cached,
     ensure_uv as _ensure_uv,
     venv_python_path,
     run_subprocess_streaming as _run_subprocess_streaming,
@@ -26,7 +24,6 @@ from .installer import (
 TRANSCRIBE_DIR = APP_ROOT / "transcribe"
 VENV_DIR = TRANSCRIBE_DIR / "venv"
 MODEL_DIR = TRANSCRIBE_DIR / "models"  # GGUF 模型根目录
-WHEELS_DIR = TRANSCRIBE_DIR / "wheels"  # 手动投放的引擎 wheel
 
 # ── 内置模型元数据 ──
 TRANSCRIBE_MODELS = {
@@ -96,14 +93,12 @@ def _download_vad(log_fn=None, stop_event=None) -> bool:
         cleanup_on_cancel=True)
     return bool(dl.get("ok"))
 
-# ── 引擎 wheel ──
-GITHUB_RELEASE_API = "https://api.github.com/repos/handy-computer/transcribe.cpp/releases?per_page=5"
-_BINDING_WHEEL_RE = re.compile(r"^transcribe_cpp-(\d+\.\d+\.\d+)-py3-none-any\.whl$")
-_NATIVE_WHEEL_RE = re.compile(r"^transcribe_cpp_native_cu12-(\d+\.\d+\.\d+)-py3-none-win_amd64\.whl$")
-
+# ── 引擎安装 ──
 _INSTALL_TIMEOUT_SEC = 600.0
-# 整批挂起兜底预算 = 每视频 600s × 数量（非实际耗时估计；3h 电影全程约 20 分钟）
-_TRANSCRIBE_TIMEOUT_PER_VIDEO_SEC = 600.0
+# 整批挂起兜底预算：Σ(视频时长 × 0.25s) + 120s；时长未知的视频按 600s
+_TIMEOUT_PER_VIDEO_SEC = 0.25
+_TIMEOUT_FLAT_SEC = 120.0
+_TIMEOUT_NO_DURATION_SEC = 600.0
 
 _log = make_logger("transcribe_cpp")
 
@@ -200,73 +195,9 @@ def _download_model(model_key: str,
         models_downloader.end_download()
 
 
-def _fetch_release_wheels(log_fn: Callable[[str], None],
-                          stop_event: Optional[threading.Event]) -> Dict[str, Dict[str, Any]]:
-    """从最新 release 解析引擎 wheel。"""
-    from .llama_cpp import _fetch_json
-    releases = _fetch_json(GITHUB_RELEASE_API, cancel_event=stop_event)
-    if not isinstance(releases, list):
-        raise RuntimeError("GitHub release 响应异常")
-    for rel in releases:
-        if rel.get("draft"):
-            continue
-        binding = native = None
-        for a in rel.get("assets", []):
-            name = a.get("name", "")
-            if not binding and _BINDING_WHEEL_RE.match(name):
-                binding = a
-            elif not native and _NATIVE_WHEEL_RE.match(name):
-                native = a
-        if binding and native:
-            log_fn(f"使用 release {rel.get('tag_name')} 的引擎 wheel")
-            return {"binding": binding, "native": native}
-    raise RuntimeError("release 中未找到引擎 wheel（transcribe_cpp + transcribe_cpp_native_cu12）")
-
-
-def _local_wheels() -> Optional[List[Path]]:
-    """本地手动投放的引擎 wheel。"""
-    if not WHEELS_DIR.is_dir():
-        return None
-    binding = sorted(WHEELS_DIR.glob("transcribe_cpp-*-py3-none-any.whl"))
-    native = sorted(WHEELS_DIR.glob("transcribe_cpp_native_cu12-*-py3-none-win_amd64.whl"))
-    if binding and native:
-        return [binding[-1], native[-1]]
-    return None
-
-
-def _download_engine_wheels(proxy: str, log_fn: Callable[[str], None],
-                            stop_event: Optional[threading.Event],
-                            progress_cb: Optional[Callable[[Dict[str, Any]], None]] = None) -> List[Path]:
-    """下载引擎 wheel 到 wheels/，已有本地 wheel 直接使用。"""
-    local = _local_wheels()
-    if local:
-        log_fn("使用本地引擎 wheel：" + "、".join(p.name for p in local))
-        return local
-
-    from .llama_cpp import _proxy_url
-    from . import models_downloader
-    assets = _fetch_release_wheels(log_fn, stop_event)
-    WHEELS_DIR.mkdir(parents=True, exist_ok=True)
-    items = []
-    for key in ("binding", "native"):
-        a = assets[key]
-        items.append({"url": _proxy_url(proxy, a["browser_download_url"]),
-                      "filename": a["name"], "size": a.get("size", 0),
-                      "label": a["name"]})
-    r = models_downloader.download_urls_parallel(items, str(WHEELS_DIR),
-                                                 log_fn=log_fn,
-                                                 progress_cb=progress_cb,
-                                                 cancel_event=stop_event)
-    if not r.get("ok"):
-        failed = "; ".join(f"{f.get('file')}: {f.get('error')}" for f in r.get("failed", []))
-        raise RuntimeError("引擎 wheel 下载失败" + (f": {failed}" if failed else ""))
-    return [Path(r["dir"]) / it["filename"] for it in items]
-
-
 def install_dependencies(pypi_mirror: str = DEFAULT_PYPI_MIRROR,
                          model: str = DEFAULT_MODEL,
                          inject_model: str = DEFAULT_INJECT_MODEL,
-                         github_proxy: str = "",
                          log_fn: Optional[Callable[[str], None]] = None,
                          stop_event: Optional[threading.Event] = None) -> Dict[str, Any]:
     """安装 transcribe.cpp 全部依赖（model=右键转录模型，inject_model=辅助重命名模型）。"""
@@ -313,51 +244,18 @@ def install_dependencies(pypi_mirror: str = DEFAULT_PYPI_MIRROR,
 
     # ── 步骤 3：安装引擎 ──
     steps.push(3)
-    has_nvidia = bool(detect_gpu_cached().get("has_nvidia"))
-    _lf = (lambda m: _log(m, log_fn)) if log_fn else _log
-    # 手动投放的本地 wheel 名单，安装后的清理需跳过
-    local_wheel_names = {p.name for p in (_local_wheels() or [])}
-    if has_nvidia:
-        _log("━━ 步骤 3/4：安装引擎（CUDA，GitHub release）━━", log_fn)
-
-        def _engine_progress(ev: Dict[str, Any]):
-            if ev.get("type") == "progress" and ev.get("total") and ev.get("pct") is not None:
-                steps.push(3, ((ev.get("idx", 1) - 1) + ev["pct"]) / max(1, ev.get("count", 1)))
-            elif ev.get("type") in ("file_done", "file_skip"):
-                steps.push(3, ev.get("idx", 0) / max(1, ev.get("count", 1)))
-
-        wheels = _download_engine_wheels(github_proxy, _lf, stop_event,
-                                         progress_cb=_engine_progress)
-        r = _cancelled()
-        if r:
-            return r
-        rc, out = _run_subprocess_streaming(
-            [uv, "pip", "install", "--python", venv_py,
-             *[str(p) for p in wheels], "numpy", "soundfile",
-             "--index-url", pypi_url],
-            _INSTALL_TIMEOUT_SEC, log_fn, stop_event,
-        )
-    else:
-        _log("━━ 步骤 3/4：安装引擎（CPU/Vulkan，PyPI）━━", log_fn)
-        rc, out = _run_subprocess_streaming(
-            [uv, "pip", "install", "--python", venv_py,
-             "transcribe_cpp", "numpy", "soundfile",
-             "--index-url", pypi_url],
-            _INSTALL_TIMEOUT_SEC, log_fn, stop_event,
-        )
+    _log("━━ 步骤 3/4：安装引擎（CPU/Vulkan，PyPI）━━", log_fn)
+    rc, out = _run_subprocess_streaming(
+        [uv, "pip", "install", "--python", venv_py,
+         "transcribe_cpp", "numpy", "soundfile",
+         "--index-url", pypi_url],
+        _INSTALL_TIMEOUT_SEC, log_fn, stop_event,
+    )
     r = _cancelled()
     if r:
         return r
     if rc != 0:
         return {"ok": False, "error": f"安装引擎失败: {out[-500:]}"}
-    # 安装成功后清理下载的临时 wheel（保留手动投放的本地 wheel）
-    if WHEELS_DIR.is_dir():
-        for whl in WHEELS_DIR.glob("*.whl"):
-            if whl.name not in local_wheel_names:
-                try:
-                    whl.unlink()
-                except OSError:
-                    pass
 
     # ── 步骤 4：下载模型 ──
     steps.push(4)
@@ -429,6 +327,16 @@ def remove_transcribe() -> Dict[str, Any]:
             "message": "已删除 transcribe 文件夹" if existed else "目录不存在，无需删除"}
 
 
+def _batch_timeout(video_paths: List[str]) -> float:
+    """按 ffprobe 时长累加的整批超时预算。"""
+    from .discovery import probe_video
+    total = _TIMEOUT_FLAT_SEC
+    for vp in video_paths:
+        dur = probe_video(vp).get("duration") or 0
+        total += dur * _TIMEOUT_PER_VIDEO_SEC if dur else _TIMEOUT_NO_DURATION_SEC
+    return total
+
+
 def _run_batch_script(params: Dict[str, Any], per_video: List[Dict[str, Any]],
                       on_video_done: Optional[Callable[[int, Dict[str, Any]], None]],
                       on_log: Optional[Callable[[str], None]],
@@ -459,7 +367,7 @@ def _run_batch_script(params: Dict[str, Any], per_video: List[Dict[str, Any]],
     work_dir = tempfile.mkdtemp(prefix="transcribe_job_")
     params["work_dir"] = work_dir
     try:
-        timeout = _TRANSCRIBE_TIMEOUT_PER_VIDEO_SEC * max(1, len(params["video_paths"]))
+        timeout = _batch_timeout(params["video_paths"])
         rc, _last, err_tail = _run_venv_script(
             VENV_DIR, _WORKER_SCRIPT, params,
             timeout=timeout, stop_event=stop_event, on_line=_on_line,
@@ -498,7 +406,6 @@ def run_transcription_batch(video_paths: List[str],
     if not FFMPEG_EXE:
         return {"ok": False, "per_video": [], "error": "未找到 ffmpeg，无法提取音频"}
 
-    backend = "cuda" if detect_gpu_cached().get("has_nvidia") else "cpu"
     vad = vad_model_path()
     params = {
         "video_paths": video_paths,
@@ -507,7 +414,6 @@ def run_transcription_batch(video_paths: List[str],
         "timestamps": bool(TRANSCRIBE_MODELS[current].get("timestamps", True)),
         "inject_win_sec": INJECT_WIN_SEC[TRANSCRIBE_MODELS[current]["family"]],
         "language": language,
-        "backend": backend,
         "ffmpeg": FFMPEG_EXE,
         "venv_site_packages": str(VENV_DIR / "Lib" / "site-packages"),
         # 官方 Silero VAD（缺失则整段推理/不做静音判断）
@@ -541,14 +447,12 @@ def run_inject_batch(video_paths: List[str],
         return {"ok": False, "texts": {}, "error": "未找到 ffmpeg，无法提取音频"}
 
     inject_key = get_inject_model()
-    backend = "cuda" if detect_gpu_cached().get("has_nvidia") else "cpu"
     vad_path = vad_model_path()
     params = {
         "video_paths": video_paths,
         "model_path": str(_model_path(inject_key)),
         "family": TRANSCRIBE_MODELS[inject_key]["family"],
         "language": "",
-        "backend": backend,
         "ffmpeg": FFMPEG_EXE,
         "venv_site_packages": str(VENV_DIR / "Lib" / "site-packages"),
         "max_chars": int(max_chars),

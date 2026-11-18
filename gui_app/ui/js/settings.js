@@ -44,7 +44,7 @@ async function _pinModalAnchor() {
   m.style.maxHeight = `calc(100vh - ${top + 50}px)`;
 }
 async function settingsLeaveGuard() {
-  if (state.settings_tab === 'tags' && !await ptLeaveGuard()) return false;
+  if (state.settings_tab === 'tags' && !await tmLeaveGuard()) return false;
   if (state.settings_tab === 'prompts' && !await pvLeaveGuard()) return false;
   return true;
 }
@@ -421,7 +421,7 @@ async function renderWorkspaceTabWrapper() {
 async function renderTagsTabWrapper() {
   const body = $('#modal-body');
   await renderTabWithLoading(body,
-    () => apiCall('get_tag_library'),
+    () => apiCall('get_term_library'),
     (pt) => renderTagsTab(pt),
     () => renderSettings()
   );

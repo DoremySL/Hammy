@@ -26,7 +26,7 @@ from batch_rename.config import Config
 from batch_rename.dependencies import DependencyError, ensure_dependencies, bindings
 from batch_rename.env import SUBPROCESS_KWARGS, logger as engine_logger
 from batch_rename.pipeline import BatchPipeline
-from batch_rename.tag_recall import TagRecall
+from batch_rename.term_recall import TermRecall
 
 
 def _safe_int(d: dict, key: str, default: int) -> int:
@@ -228,26 +228,27 @@ class PipelineRunner:
 
     # ── 扩展功能上下文注入 ──
 
-    def _build_tagger_meta_map(self, paths: List[str], exp_cfg: Dict[str, Any]) -> Dict[str, str]:
-        """构建 tagger 标签查询上下文（作为标签检索首轮字面召回的查询词）。"""
+    def _build_tagger_meta_map(self, paths: List[str],
+                               exp_cfg: Dict[str, Any]) -> Dict[str, tuple]:
+        """构建 tagger 注入上下文：vp → (A/B 优先条目, C 段查询词)。"""
         if not exp_cfg.get("tagger_enabled", False):
             return {}
         from .workspace_paths import TAGGER_TAGS_FILE
         tags_store = read_json(TAGGER_TAGS_FILE, {})
         if not tags_store:
             return {}
-        from .tagger import load_tag_library_map, tagger_entry_query
-        lib = load_tag_library_map()
+        from .tagger import load_term_library_map, tagger_injection
+        lib = load_term_library_map()
         gen_n = max(0, _safe_int(exp_cfg, "tagger_general_count", 15))
 
-        result: Dict[str, str] = {}
+        result: Dict[str, tuple] = {}
         for vp in paths:
             entry = tags_store.get(stable_id(vp))
             if not entry:
                 continue
-            q = tagger_entry_query(entry, lib, gen_n)
-            if q:
-                result[vp] = q
+            hits, q = tagger_injection(entry, lib, gen_n)
+            if hits or q:
+                result[vp] = (hits, q)
         return result
 
     def _build_transcribe_meta_map(self, paths: List[str], exp_cfg: Dict[str, Any]) -> Dict[str, str]:
@@ -425,7 +426,8 @@ class PipelineRunner:
                 asr_missing: List[str] = []
                 if asr_active:
                     asr_missing = [vp for vp in paths
-                                   if not (TRANSCRIBE_SRT_DIR / f"{stable_id(vp)}.srt").exists()]
+                                   if not (TRANSCRIBE_SRT_DIR / f"{stable_id(vp)}.srt").exists()
+                                   and discovery.probe_video(vp).get("has_audio") is not False]
                 asr_active = bool(asr_missing)
 
                 # Tagger 集成：开关 + 已启用 + 引擎就绪（未就绪降级手动路径语义，不阻断）
@@ -462,8 +464,9 @@ class PipelineRunner:
                     aux_stages.add("tagger")
 
                 # 已有结果的复用上下文（prefill），其余视频由 aux worker 交付
-                for vp, q in self._build_tagger_meta_map(paths, exp_cfg).items():
-                    prefill.setdefault(vp, {})["literal_meta"] = q
+                for vp, pair in self._build_tagger_meta_map(paths, exp_cfg).items():
+                    prefill.setdefault(vp, {})["tagger_hits"] = pair[0]
+                    prefill.setdefault(vp, {})["literal_meta"] = pair[1]
                 for vp, block in self._build_transcribe_meta_map(paths, exp_cfg).items():
                     prefill.setdefault(vp, {})["extra_meta"] = block
                 if tagger_active:
@@ -489,7 +492,7 @@ class PipelineRunner:
                         return
                     _llama_vram_warning(_log_cb)
                 try:
-                    pt = prompts.load_tag_library()
+                    pt = prompts.load_term_library()
                     # 停用组过滤：黑名单命中组的条目不进入检索（"" 为默认分组）
                     pt_disabled = set(pt["disabled_groups"])
                     pt_items = [it for it in pt["items"] if it["group"] not in pt_disabled]
@@ -505,41 +508,39 @@ class PipelineRunner:
                         else:
                             engine_logger.info("[RAG] 向量检索已启用但 ort-embedding 未就绪，"
                                                "增强档本次降级为开启（仅首轮字面召回）")
-                    from .tagger import TAGGER_GROUP
-                    tag_recall = TagRecall(items=pt_items,
+                    term_recall = TermRecall(items=pt_items,
                                            # GUI 三档值与内部模式同名直传
                                            #（on=首轮字面召回注入，enhanced=字面+第二轮向量召回）
                                            mode=pt_mode,
                                            top_k=engine_cfg.rag_top_k,
                                            dense=dense,
                                            vec_threshold=engine_cfg.rag_vec_threshold,
-                                           vec_top_n=engine_cfg.rag_vec_top_n,
-                                           strict_groups=(TAGGER_GROUP,))
+                                           vec_top_n=engine_cfg.rag_vec_top_n)
                     if dense is not None:
                         engine_logger.info(f"[RAG] 正在加载嵌入模型: {dense.model_title}"
                                            f"（device={dense.device}）…")
                         try:
-                            tag_recall.warmup_dense()  # 预构建索引，首个视频不承担耗时
+                            term_recall.warmup_dense()  # 预构建索引，首个视频不承担耗时
                         except Exception as e:
                             engine_logger.info(f"[RAG] 向量索引构建失败，增强档本次降级为开启: {e}")
-                    if tag_recall.mode != "off":
-                        if tag_recall.mode == "enhanced" and not tag_recall.has_dense:
+                    if term_recall.mode != "off":
+                        if term_recall.mode == "enhanced" and not term_recall.has_dense:
                             mode_label = "增强（向量不可用，本次降级为开启）"
                         else:
                             mode_label = {"on": "开启（单轮·字面召回注入）",
-                                          "enhanced": "增强（首轮字面注入+第二轮向量召回）"}[tag_recall.mode]
+                                          "enhanced": "增强（首轮字面注入+第二轮向量召回）"}[term_recall.mode]
                         skip_note = f"（停用组跳过 {pt_skipped} 条）" if pt_skipped else ""
                         engine_logger.info(
-                            f"[RAG] 标签检索模式: {mode_label} | 标签库 {tag_recall.total_items} 条{skip_note}")
+                            f"[RAG] 词条检索模式: {mode_label} | 词条库 {term_recall.total_items} 条{skip_note}")
                     elif pt_mode != "off":
-                        engine_logger.info("[RAG] 标签检索已开启但启用组内无标签，本次不注入")
+                        engine_logger.info("[RAG] 词条检索已开启但启用组内无标签，本次不注入")
                     pipeline = BatchPipeline(
                         paths, engine_cfg, self._client, self._stop,
                         on_file_done=_emit_file_done,
                         # NFO 缓存模式（nfo_target_dir 非空）下直接以 stable_id 命名写入，
                         # 避免不同目录下同 stem 视频映射到同一文件互相覆盖
                         nfo_namer=lambda vp: f"{stable_id(vp)}.nfo",
-                        tag_recall=tag_recall,
+                        term_recall=term_recall,
                         aux_stages=aux_stages,
                         aux_workers=aux_workers,
                         prefill=prefill,

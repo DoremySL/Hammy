@@ -42,11 +42,15 @@ MODEL_DIR = TAGGER_DIR / "models"  # 模型根目录（魔搭 作者/仓库 布�
 REPO_ID = "DoremySL/Hammy-tagger-onnx"  # v5 单引擎动态五档仓库
 
 TAG_THRESHOLD = 0.75
-PRESET_TAGS_FILE = "preset_tags.json"  # 模型仓库预设标签包（安装时导入标签检索）
-TAGGER_GROUP = "Hammy-tagger"  # 导入条目固定分组
+PRESET_TERMS_FILE = "preset_terms.json"  # 模型仓库预设标签包（安装时导入词条检索）
+# 库分组：A=角色/IP（preset char/ip 段，置顶注入）；C=preset general 段（查询词召回）
+GROUP_CHAR_IP = "Hammy-tagger"
+GROUP_GENERAL = "Hammy-tagger-G"
+_TAGGER_GROUPS = (GROUP_CHAR_IP, GROUP_GENERAL)
+_SEC_KEYS = (("char", "character_tags"), ("ip", "ip_tags"), ("general", "general_tags"))
 
 # 仓库文件：ONNX 与构建脚本仅安装期需要，共享文件长期保留
-SHARED_FILES = ("config.json", "char_ip_map.json", PRESET_TAGS_FILE, "manifest.json",
+SHARED_FILES = ("config.json", "char_ip_map.json", PRESET_TERMS_FILE, "manifest.json",
                 "hammy_tagger.py", "hammy_server.py", "build_trt.py")
 _CRITICAL_SHARED = ("config.json", "char_ip_map.json", "hammy_tagger.py", "hammy_server.py")
 
@@ -111,30 +115,30 @@ def resolve_precision(setting: str = "auto", gpu: Optional[Dict[str, Any]] = Non
 _lib_cache: Dict[str, Any] = {"mtime": None, "map": None}
 
 
-def load_tag_library_map() -> Optional[Dict[str, str]]:
-    """Hammy-tagger 组 英文标签名→中文名 映射（mtime 缓存）。
+def load_term_library_map() -> Optional[Dict[str, Dict[str, str]]]:
+    """词条库英文标签名 → {zh, desc, group}（三组全量，mtime 缓存）。
 
-    返回 None = 库缺失/损坏/无该组条目（不加过滤）；同 related 重复取首见。
+    返回 None = 库缺失/损坏/无已知分组条目（不加过滤）；同 related 重复取首见。
     """
-    from .workspace_paths import TAG_LIBRARY_FILE
+    from .workspace_paths import TERM_LIBRARY_FILE
     from .workspace_store import read_json
     global _lib_cache
     try:
-        mtime = TAG_LIBRARY_FILE.stat().st_mtime
+        mtime = TERM_LIBRARY_FILE.stat().st_mtime
     except OSError:
         _lib_cache = {"mtime": None, "map": None}
         return None
     if _lib_cache["mtime"] == mtime:
         return _lib_cache["map"]
-    mapping: Optional[Dict[str, str]] = None
+    mapping: Optional[Dict[str, Dict[str, str]]] = None
     try:
-        data = read_json(TAG_LIBRARY_FILE, None)
+        data = read_json(TERM_LIBRARY_FILE, None)
         items = data.get("items") if isinstance(data, dict) else None
         if isinstance(items, list):
-            lib: Dict[str, str] = {}
+            lib: Dict[str, Dict[str, str]] = {}
             dup: List[str] = []
             for it in items:
-                if not isinstance(it, dict) or str(it.get("group") or "") != TAGGER_GROUP:
+                if not isinstance(it, dict) or str(it.get("group") or "") not in _TAGGER_GROUPS:
                     continue
                 en = str(it.get("related") or "").strip()
                 zh = str(it.get("keyword") or "").strip()
@@ -143,26 +147,27 @@ def load_tag_library_map() -> Optional[Dict[str, str]]:
                 if en in lib:
                     dup.append(en)
                     continue  # 首见为准
-                lib[en] = zh
+                lib[en] = {"zh": zh, "desc": str(it.get("description") or "").strip(),
+                           "group": str(it.get("group") or "")}
             if lib:
                 mapping = lib
             if dup:
-                _log("[标签检索] Hammy-tagger 组存在重复英文名（取首见为准，请清理）: "
+                _log("[词条检索] 词条库存在重复英文名（取首见为准，请清理）: "
                      + ", ".join(sorted(set(dup))))
     except Exception as e:
-        _log(f"[标签检索] 标签库解析失败，本次不过滤降级为仅英文: {e}")
+        _log(f"[词条检索] 词条库解析失败，本次不过滤降级为仅英文: {e}")
         mapping = None
     _lib_cache = {"mtime": mtime, "map": mapping}
     return mapping
 
 
-def import_preset_tags(log_fn: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
-    """安装尾部导入预设标签包到标签检索库（幂等，按英文名去重）；关闭态顺带切换为开启。"""
-    from .prompts import load_tag_library, save_tag_library
+def import_preset_terms(log_fn: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
+    """安装尾部导入预设标签包到词条检索库（幂等，按英文名去重）；关闭态顺带切换为开启。"""
+    from .prompts import load_term_library, save_term_library
     from .workspace_store import read_json
-    src = _repo_dir() / PRESET_TAGS_FILE
+    src = _repo_dir() / PRESET_TERMS_FILE
     if not src.is_file():
-        _log("[标签检索] 预设标签包缺失，跳过导入", log_fn)
+        _log("[词条检索] 预设标签包缺失，跳过导入", log_fn)
         return {"imported": 0, "skipped": 0, "missing": True}
     data = read_json(src, None)
     entries = data if isinstance(data, list) else None
@@ -173,15 +178,19 @@ def import_preset_tags(log_fn: Optional[Callable[[str], None]] = None) -> Dict[s
         except Exception:
             entries = None
     if not entries:
-        _log("[标签检索] 预设标签包格式无效，跳过导入", log_fn)
+        _log("[词条检索] 预设标签包格式无效，跳过导入", log_fn)
         return {"imported": 0, "skipped": 0}
-    lib = load_tag_library()  # {mode, disabled_groups, items}
+    lib = load_term_library()  # {mode, disabled_groups, items}
     items = lib["items"]
-    lib_en = {it["related"] for it in items if it["group"] == TAGGER_GROUP}
+    lib_en = {it["related"] for it in items if it.get("group") in _TAGGER_GROUPS}
     lib_kw = {it["keyword"] for it in items}
-    fresh, skipped = [], 0
+    fresh, skipped, unknown = [], 0, []
     for it in entries:
         if not isinstance(it, dict):
+            continue
+        g = str(it.get("group") or "")
+        if g not in _TAGGER_GROUPS:
+            unknown.append(g)
             continue
         en = str(it.get("related") or "").strip()
         zh = str(it.get("keyword") or "").strip()
@@ -193,40 +202,55 @@ def import_preset_tags(log_fn: Optional[Callable[[str], None]] = None) -> Dict[s
         entry = {"keyword": zh,
                  "description": str(it.get("description") or "").strip(),
                  "related": en,
-                 "group": TAGGER_GROUP}
+                 "group": g}
         items.append(entry)
         lib_en.add(en)
         lib_kw.add(zh)
         fresh.append(entry)
+    if unknown:
+        _log("[词条检索] 预设含未知分组条目（已跳过）: "
+             + ", ".join(sorted(set(unknown))), log_fn)
     # 缺省开功能：off 档切换为 on，on/enhanced 不动
     mode = "on" if lib["mode"] == "off" else lib["mode"]
     mode_changed = mode != lib["mode"]
     if fresh or mode_changed:
-        save_tag_library(items, mode, lib["disabled_groups"])
-    _log(f"[标签检索] 预设标签导入完成: 新增 {len(fresh)} 条，跳过 {skipped} 条（已存在）"
-         + ("，标签检索已自动开启" if mode_changed else ""), log_fn)
+        save_term_library(items, mode, lib["disabled_groups"])
+    _log(f"[词条检索] 预设标签导入完成: 新增 {len(fresh)} 条，跳过 {skipped} 条（已存在）"
+         + ("，词条检索已自动开启" if mode_changed else ""), log_fn)
     return {"imported": len(fresh), "skipped": skipped, "mode": mode}
 
 
-def tagger_entry_query(entry: Dict[str, Any], lib: Optional[Dict[str, str]],
-                       gen_n: int) -> str:
-    """单个 tags entry → 召回查询词（英文名+中文名，库外标签过滤）；手动/集成两路径共用。"""
-    names: List[str] = []
-    for group in ("character_tags", "ip_tags", "general_tags"):
-        tags = entry.get(group) or []
-        if group == "general_tags":
-            tags = tags[:max(0, gen_n)]
-        for t in tags:
+def tagger_injection(entry: Dict[str, Any], lib: Optional[Dict[str, Dict[str, str]]],
+                     gen_n: int) -> Tuple[List[Dict[str, str]], str]:
+    """entry → (置顶注入条目[分数序], C 段查询词)；手动/集成两路径共用。
+
+    Hammy-tagger 组（角色/IP）直接成条目不与文件名竞争；G 组走查询词经
+    字面召回返回；库外丢弃；lib 缺失时退化为原始英文名查询词。"""
+    if lib is None:
+        names: List[str] = []
+        for _, key in _SEC_KEYS:
+            tags = entry.get(key) or []
+            if key == "general_tags":
+                tags = tags[:max(0, gen_n)]
+            names += [str(t.get("name")) for t in tags if t.get("name")]
+        return [], " ".join(names)
+    hits, c_words = [], []
+    for _, key in _SEC_KEYS:
+        for t in (entry.get(key) or []):
             name = str(t.get("name") or "")
-            if not name:
-                continue
-            if lib is not None and name not in lib:
-                continue
-            names.append(name)
-            z = lib.get(name) if lib is not None else None
-            if z and z not in names:
-                names.append(z)
-    return " ".join(names)
+            v = lib.get(name)
+            if v is None:
+                continue                      # 白名单外丢弃
+            score = -float(t.get("score") or 0)
+            if v["group"] == GROUP_CHAR_IP:
+                hits.append((score, {"keyword": v["zh"], "related": name,
+                                     "description": v["desc"], "group": v["group"]}))
+            else:
+                c_words.append((score, name, v["zh"]))
+    hits.sort(key=lambda h: h[0])
+    query = " ".join(x for _, en, zh in sorted(c_words)[:max(0, gen_n)]
+                     for x in (en, zh) if x)
+    return [h[1] for h in hits], query
 
 
 def save_tag_results(results: Dict[str, Any]) -> None:

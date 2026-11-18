@@ -359,12 +359,12 @@ def _handle_retryable_error(e: Exception, attempt: int, max_attempts: int,
 
 
 _REFINE_INSTRUCTION = (
-    "请结合画面对首轮 JSON 做整体修订，候选仅供参考，一切以画面为准：\n"
-    "1. tags：确实匹配视频内容的候选，按候选关键词原文并入；无法确认匹配的不要采用；"
-    "与候选同义的首轮自造表述统一为候选写法；若无任何候选确实匹配，保持首轮 tags 不变。\n"
-    "2. plot：仅当候选用词确实更准确时，用它润色与补充首轮 plot；"
+    "请结合画面对首轮 JSON 做整体修订，候选词条仅供参考，一切以画面为准：\n"
+    "1. tags：以画面为准自行判断；角色/IP 等专名确实出现时采用词条中文名写法，"
+    "与词条同义的首轮自造表述统一为词条写法；其余词条不要求并入 tags。\n"
+    "2. plot：仅当词条用词确实更准确时，用它润色与补充首轮 plot；"
     "不得提及候选列表或检索来源本身。\n"
-    "3. title：可用候选优化用词。\n"
+    "3. title：可用词条优化用词。\n"
 )
 _REFINE_TAIL = "输出修订后的完整 JSON（结构、字段顺序与首轮要求完全一致），不要输出任何其他内容。"
 
@@ -373,7 +373,7 @@ def _refine_round(client: OpenAIClient, model: str, messages: list,
                   result: AnalyzeResult, config: Config,
                   stop_event: threading.Event, video_path: str,
                   container_title: str, extra_meta: str,
-                  slot_id: Optional[int], tag_recall,
+                  slot_id: Optional[int], term_recall,
                   literal_keywords: Sequence[str] = ()) -> AnalyzeResult:
     """第二轮：纯向量召回（排除首轮已注入关键词）→ 追加候选请求修订，失败沿用首轮。"""
     parts = {
@@ -382,7 +382,7 @@ def _refine_round(client: OpenAIClient, model: str, messages: list,
         "filename": " ".join(x for x in (Path(video_path).stem, container_title) if x),
         "aux": extra_meta,
     }
-    candidates = tag_recall.recall_dense(parts, exclude=literal_keywords)
+    candidates = term_recall.recall_dense(parts, exclude=literal_keywords)
     if stop_event.is_set():
         return AnalyzeResult("", "", [], 0, "已取消", "cancel")
     if not candidates:
@@ -391,7 +391,7 @@ def _refine_round(client: OpenAIClient, model: str, messages: list,
 
     # frame_time_tags==2 时提示模板才含 thumb_time 字段，修订项随之插入
     thumb_line = "4. thumb_time：保持首轮结果不变。\n" if config.frame_time_tags == 2 else ""
-    refine_prompt = (tag_recall.build_candidates_section(candidates) + "\n\n"
+    refine_prompt = (term_recall.build_candidates_section(candidates) + "\n\n"
                      + _REFINE_INSTRUCTION + thumb_line + _REFINE_TAIL)
     msgs = messages + [
         {"role": "assistant", "content": result.raw},
@@ -426,21 +426,22 @@ def analyze_frames(
     stop_event: threading.Event, video_path: str, duration: float,
     container_title: str = "", extra_meta: str = "",
     literal_meta: Optional[str] = None,
-    slot_id: Optional[int] = None, tag_recall=None,
+    tagger_hits: Optional[List[Dict[str, str]]] = None,
+    slot_id: Optional[int] = None, term_recall=None,
 ) -> AnalyzeResult:
-    """调用 AI 分析关键帧；literal_meta（tagger 名单）仅作检索查询词不注入，
-    enhanced 且向量可用时追加第二轮向量召回修订（失败沿用首轮）。"""
+    """调用 AI 分析关键帧；literal_meta（tagger C 段名单）作字面召回查询词，
+    tagger_hits（A/B 优先条目）直接置顶注入；enhanced 追加第二轮向量召回修订。"""
     if not frames:
         logger.warning("无有效帧可发送")
         return AnalyzeResult("", "", [], 0, "无有效帧", "other")
 
     recall_section = ""
     lit_keywords: List[str] = []
-    if tag_recall is not None:
-        recall_section, lit_keywords = tag_recall.literal_injection({
+    if term_recall is not None:
+        recall_section, lit_keywords = term_recall.merged_injection({
             "filename": " ".join(x for x in (Path(video_path).stem, container_title) if x),
             "aux": literal_meta or "",
-        })
+        }, tagger_hits)
     messages = _build_messages(frames, config, video_path, duration,
                                container_title, extra_meta,
                                recall_section=recall_section)
@@ -473,10 +474,10 @@ def analyze_frames(
     if result is None:
         return AnalyzeResult("", "", [], config.retry_times, last_error, last_error_kind)
 
-    if tag_recall is not None and tag_recall.has_dense \
+    if term_recall is not None and term_recall.has_dense \
             and result.title and not stop_event.is_set():
         result = _refine_round(client, model, messages, result, config, stop_event,
                                video_path, container_title, extra_meta,
-                               slot_id, tag_recall, lit_keywords)
+                               slot_id, term_recall, lit_keywords)
     # 首轮字面注入不计入 recalled（完成日志不追加召回后缀）
     return result._replace(retries=attempt)

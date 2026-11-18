@@ -75,7 +75,8 @@ class TaskContext:
     """
 
     def __init__(self, vp: str, index: int, aux_stages: Optional[Set[str]] = None,
-                 extra_meta: str = "", literal_meta: Optional[str] = None):
+                 extra_meta: str = "", literal_meta: Optional[str] = None,
+                 tagger_hits: Optional[List[Dict[str, str]]] = None):
         self.vp = vp
         self.index = index
         self.aux_stages = frozenset(aux_stages or ())
@@ -84,6 +85,7 @@ class TaskContext:
         # LLM 组 prompt 用的辅助上下文（辅助 worker 完成时回填；prefill 直接携带）
         self.extra_meta = extra_meta
         self.literal_meta = literal_meta
+        self.tagger_hits = tagger_hits  # A/B 优先注入条目（分数序）
         # 缩略图缓存：int(ts + 0.5) 秒 → Frame（与提示词时间标签同一取整口径）
         self.thumb_lookup: Optional[Dict[int, Frame]] = None
         # 帧缓存额度（FrameProducer 信号量）：提交抽帧前置位，release 时归位
@@ -290,7 +292,7 @@ class AIWorker:
                  on_file_done: Optional[OnFileDone] = None,
                  nfo_namer: Optional[Callable[[str], str]] = None,
                  slot_id: Optional[int] = None,
-                 tag_recall=None):
+                 term_recall=None):
         self.client = client
         self.config = config
         self.stats = stats
@@ -301,12 +303,12 @@ class AIWorker:
         self._nfo_namer = nfo_namer
         self.slot_id = slot_id   # llama 集成时 worker i → slot i，两轮同槽命中缓存
         # on/enhanced 都下发给 analyze_frames；两轮耗时估算只看 enhanced+向量可用
-        self.tag_recall = (tag_recall
-                           if tag_recall is not None
-                           and getattr(tag_recall, "mode", "") in ("on", "enhanced")
+        self.term_recall = (term_recall
+                           if term_recall is not None
+                           and getattr(term_recall, "mode", "") in ("on", "enhanced")
                            else None)
-        self.two_round = bool(self.tag_recall is not None
-                              and getattr(self.tag_recall, "has_dense", False))
+        self.two_round = bool(self.term_recall is not None
+                              and getattr(self.term_recall, "has_dense", False))
 
     def _move_failed_hint(self) -> str:
         return "，稍后将移至 _failed"
@@ -425,8 +427,9 @@ class AIWorker:
                         container_title=(ctx.info or {}).get("container_title", ""),
                         extra_meta=ctx.extra_meta,
                         literal_meta=ctx.literal_meta,
+                        tagger_hits=ctx.tagger_hits,
                         slot_id=self.slot_id,
-                        tag_recall=self.tag_recall,
+                        term_recall=self.term_recall,
                     )
                     if result.title:
                         if result.thumb_time:
@@ -487,7 +490,7 @@ class BatchPipeline:
                  stop_event: threading.Event,
                  on_file_done: Optional[OnFileDone] = None,
                  nfo_namer: Optional[Callable[[str], str]] = None,
-                 tag_recall=None,
+                 term_recall=None,
                  aux_stages: Optional[Set[str]] = None,
                  aux_workers: Optional[List[Any]] = None,
                  prefill: Optional[Dict[str, Dict[str, Any]]] = None):
@@ -497,7 +500,7 @@ class BatchPipeline:
         self.stop_event = stop_event
         self.on_file_done = on_file_done
         self.nfo_namer = nfo_namer
-        self.tag_recall = tag_recall
+        self.term_recall = term_recall
         self.aux_stages = set(aux_stages or ())
         self.aux_workers = aux_workers or []
         self._prefill = prefill or {}
@@ -506,8 +509,8 @@ class BatchPipeline:
         self.producer: Optional[FrameProducer] = None
         self.producer_done = threading.Event()  # 抽帧生产者收尾信号
         # 两轮耗时估算：enhanced 且向量后端可用（不可用时增强档降级为单轮）
-        self._two_round = tag_recall is not None and getattr(tag_recall, "mode", "") == "enhanced" \
-            and getattr(tag_recall, "has_dense", False)
+        self._two_round = term_recall is not None and getattr(term_recall, "mode", "") == "enhanced" \
+            and getattr(term_recall, "has_dense", False)
         # 暴露 stats 给外部（GUI 完成后读取真实计数）
         self.stats: Optional[PipelineStats] = None
         self._videos: List[str] = []
@@ -521,7 +524,8 @@ class BatchPipeline:
     def _build_contexts(self, videos: List[str]) -> List[TaskContext]:
         return [TaskContext(vp=vp, index=i, aux_stages=self.aux_stages,
                             extra_meta=(self._prefill.get(vp) or {}).get("extra_meta", ""),
-                            literal_meta=(self._prefill.get(vp) or {}).get("literal_meta"))
+                            literal_meta=(self._prefill.get(vp) or {}).get("literal_meta"),
+                            tagger_hits=(self._prefill.get(vp) or {}).get("tagger_hits"))
                 for i, vp in enumerate(videos)]
 
     def run(self):
@@ -647,7 +651,7 @@ class BatchPipeline:
                            f"同槽视频将交替覆盖缓存，两轮同槽收益下降")
         workers = [AIWorker(self.client, self.config, stats, ready_queue, self.stop_event,
                             on_file_done=self.on_file_done, nfo_namer=self.nfo_namer,
-                            slot_id=slot_ids[i], tag_recall=self.tag_recall)
+                            slot_id=slot_ids[i], term_recall=self.term_recall)
                    for i in range(self.config.ai_workers)]
         # AI worker 设为 daemon：网络调用失效时可防进程退出挂死
         worker_threads = [threading.Thread(target=w.run, name=f"ai-{i}", daemon=True)

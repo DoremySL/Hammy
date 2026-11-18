@@ -1,4 +1,4 @@
-"""ConfigPresetMixin — 配置读写、提示词预设 CRUD、标签检索管理/导入导出。"""
+"""ConfigPresetMixin — 配置读写、提示词预设 CRUD、词条检索管理/导入导出。"""
 from __future__ import annotations
 
 import json
@@ -57,17 +57,17 @@ class ConfigPresetMixin:
                 frame_time_tags=2 if enabled else 0))
         return {"ok": True, "thumb_optimize": bool(enabled)}
 
-    # ── 标签检索 ──
+    # ── 词条检索 ──
 
-    def get_tag_library(self) -> Dict[str, Any]:
-        return prompts.load_tag_library()
+    def get_term_library(self) -> Dict[str, Any]:
+        return prompts.load_term_library()
 
-    def save_tag_library(self, items: Any, mode: Any,
+    def save_term_library(self, items: Any, mode: Any,
                            disabled_groups: Any = None) -> Dict[str, Any]:
-        return prompts.save_tag_library(items, mode, disabled_groups)
+        return prompts.save_term_library(items, mode, disabled_groups)
 
-    def import_tag_library(self) -> Dict[str, Any]:
-        """弹出文件选择对话框导入标签检索 JSON（不落地，返回给前端载入页面）。"""
+    def import_term_library(self) -> Dict[str, Any]:
+        """弹出文件选择对话框导入词条检索 JSON（不落地，返回给前端载入页面）。"""
         import webview
         from ..mainthread import run_on_ui_thread
 
@@ -100,14 +100,14 @@ class ConfigPresetMixin:
             items = data.get("items", [])
         else:
             return {"ok": False, "error": "JSON 结构不符合预期"}
-        items = prompts.normalize_tag_library_items(items)
+        items = prompts.normalize_term_library_items(items)
         if not items:
             return {"ok": False, "error": "文件中没有有效标签"}
         self._remember_dir([path])
         return {"ok": True, "items": items}
 
-    def export_tag_library(self, items: Any) -> Dict[str, Any]:
-        """弹出保存对话框，把当前标签检索导出为 JSON 文件。"""
+    def export_term_library(self, items: Any) -> Dict[str, Any]:
+        """弹出保存对话框，把当前词条检索导出为 JSON 文件。"""
         import webview
         from ..mainthread import run_on_ui_thread
 
@@ -118,7 +118,7 @@ class ConfigPresetMixin:
             return self._window.create_file_dialog(
                 save_type,
                 directory=self._initial_dir(),
-                save_filename="tag_library.json",
+                save_filename="term_library.json",
                 file_types=("JSON 文件 (*.json)",),
             )
 
@@ -129,7 +129,7 @@ class ConfigPresetMixin:
         if not result:
             return {"ok": False, "cancelled": True}
         path = result[0] if isinstance(result, (list, tuple)) else result
-        data = prompts.normalize_tag_library_items(items)
+        data = prompts.normalize_term_library_items(items)
         try:
             Path(path).write_text(
                 json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")

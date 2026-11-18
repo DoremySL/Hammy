@@ -244,16 +244,15 @@ function _bindManageButtons(uvStatus, llamaStatus, pStatus, wStatus, rvStatus) {
     const injectOpts = modelOpts.map(m => ({ ...m, recommended: m.value === 'sensevoice' }));
     const sel = await showMirrorSelectDialog({
       api: 'get_transcribe_mirrors',
+      gpuNote: 'GPU 加速经 Vulkan，NVIDIA/AMD/Intel 通用；不支持时自动回退 CPU',
       modelSections: [
         { title: '右键转录模型', name: 'w-model',
           hint: '安装时下载所选模型，其余模型可在安装后下载切换', models: modelOpts },
         { title: '辅助重命名模型', name: 'inject-model', models: injectOpts },
       ],
-      githubProxy: true,
     });
     if (sel) startTranscribeInstall(sel.pypi || 'sjtu',
-      sel.sel['w-model'] || 'whisper-turbo', sel.sel['inject-model'] || 'sensevoice',
-      sel.github_proxy || '');
+      sel.sel['w-model'] || 'whisper-turbo', sel.sel['inject-model'] || 'sensevoice');
   });
 
   const wRemoveBtn = $('#btn-transcribe-remove');
@@ -381,11 +380,10 @@ async function showMirrorSelectDialog(opts) {
   const devices = Array.isArray(opts.devices) ? opts.devices : [];
 
   let gpuBanner = '';
-  if (gpu) {
-    // bannerSub 未传时按转录场景给默认副标题；传空串则只显示驱动信息
-    const sub = opts.bannerSub !== undefined ? opts.bannerSub
-      : (gpu.has_nvidia ? '转录使用 GPU 加速' : '转录使用 CPU 模式');
-    gpuBanner = gpuBannerHtml(gpu, sub, sub);
+  if (opts.gpuNote) {
+    gpuBanner = `<div class="mirror-gpu-banner"><div><strong>${esc(opts.gpuNote)}</strong></div></div>`;
+  } else if (gpu) {
+    gpuBanner = gpuBannerHtml(gpu, opts.bannerSub || '');
   }
 
   const sections = [];
@@ -408,29 +406,6 @@ async function showMirrorSelectDialog(opts) {
       items: mirrors.pypi.map(m => ({ value: m.id, name: m.name, desc: m.desc || m.url || '', recommended: m.id === mirrors.default_pypi })),
     }));
   }
-  if (opts.githubProxy && gpu && gpu.has_nvidia) {
-    sections.push(`
-    <div class="mirror-section">
-      <div class="mirror-section-head">
-        <strong>GitHub 引擎下载</strong>
-        <span class="mirror-section-hint">CUDA 引擎 wheel，约 200MB</span>
-      </div>
-      <div class="mirror-opts">
-        <label class="mirror-opt selected">
-          <input type="radio" name="gh-method" value="direct" checked/>
-          <span class="mirror-opt-name">GitHub 直连<small class="mirror-opt-url">官方 Release，国内访问不稳定</small></span>
-        </label>
-        <label class="mirror-opt">
-          <input type="radio" name="gh-method" value="proxy"/>
-          <span class="mirror-opt-name">使用加速代理<small class="mirror-opt-url">使用代理加速站，直连下载受限时可尝试</small></span>
-          <input type="text" id="gh-proxy-input" class="mirror-url-input" spellcheck="false"
-                 style="display:none" value="${esc(LLAMA_DEFAULT_PROXY)}"
-                 placeholder="${esc(LLAMA_DEFAULT_PROXY)}"
-                 data-tip="当前代理失效时请自行查找最新可用GitHub加速站地址填入"/>
-        </label>
-      </div>
-    </div>`);
-  }
 
   const dlg = openMirrorDialog(`
     <div class="mirror-body">${gpuBanner}${sections.join('')}</div>
@@ -438,22 +413,13 @@ async function showMirrorSelectDialog(opts) {
       <button class="btn" id="mirrorCancel">取消</button>
       <button class="btn primary" id="mirrorOk">${esc(opts.confirmText || '开始安装')}</button>
     </div>`);
-  bindMirrorRadios(dlg.box, () => {
-    const inp = dlg.box.querySelector('#gh-proxy-input');
-    if (inp) {
-      const m = dlg.box.querySelector('input[name="gh-method"]:checked');
-      inp.style.display = (m && m.value === 'proxy') ? '' : 'none';
-    }
-  });
+  bindMirrorRadios(dlg.box);
 
   return new Promise(resolve => {
     $('#mirrorCancel').addEventListener('click', () => { dlg.close(); resolve(null); });
     $('#mirrorOk').addEventListener('click', () => {
       const device = dlg.box.querySelector('input[name="device"]:checked');
       const pypi = dlg.box.querySelector('input[name="pypi-mirror"]:checked');
-      const gh = dlg.box.querySelector('input[name="gh-method"]:checked');
-      const ghInput = dlg.box.querySelector('#gh-proxy-input');
-      const ghProxy = (gh && gh.value === 'proxy' && ghInput) ? ghInput.value.trim() : '';
       const sel = {};
       (opts.modelSections || []).forEach(ms => {
         const el = dlg.box.querySelector(`input[name="${ms.name}"]:checked`);
@@ -462,8 +428,7 @@ async function showMirrorSelectDialog(opts) {
       dlg.close();
       resolve({ device: device ? device.value : null,
                 pypi: pypi ? pypi.value : 'sjtu',
-                sel,
-                github_proxy: ghProxy });
+                sel });
     });
   });
 }
@@ -651,7 +616,7 @@ function _renderTaggerSection(exp, pStatus) {
             <input type="number" id="tagger-general-count" min="1" max="200" value="${exp.tagger_general_count || 15}"/>
           </div>
           <div class="field">
-            <label data-tip="开启后自动重命名时同步识别标签，作为标签检索查询词">集成到自动重命名</label>
+            <label data-tip="开启后自动重命名时同步识别标签，作为词条检索查询词">集成到自动重命名</label>
             ${_boolDd('tagger-integration-dd', !!exp.tagger_integration)}
           </div>
         </div>
@@ -903,10 +868,10 @@ function _bindTranscribeEvents() {
   });
 }
 
-async function startTranscribeInstall(pypiMirror, model, injectModel, githubProxy) {
+async function startTranscribeInstall(pypiMirror, model, injectModel) {
   await runInstallTask(
     () => apiCall('install_transcribe', pypiMirror || 'sjtu',
-                  model || 'whisper-turbo', injectModel || 'sensevoice', githubProxy || ''),
+                  model || 'whisper-turbo', injectModel || 'sensevoice'),
     async () => {
       await apiCall('set_transcribe_enabled', true);
       state.transcribeEnabled = true;
@@ -2183,12 +2148,12 @@ function _showXargMenu(e, idx) {
 }
 function _editXarg(idx) {
   const bg = document.createElement('div');
-  bg.className = 'pt-editor-bg';
+  bg.className = 'tm-editor-bg';
   bg.innerHTML = `
-    <div class="pt-editor">
+    <div class="tm-editor">
       <h3>编辑启动参数</h3>
       <div class="field"><label class="hint-label">值含空格需用引号包裹</label><input type="text" id="xarg-ed-input" value="${esc(state.llamaXargs[idx].map(t => /\s/.test(t) ? '"' + t + '"' : t).join(' '))}"/></div>
-      <div class="pt-editor-foot">
+      <div class="tm-editor-foot">
         <button class="btn" id="xarg-ed-cancel">取消</button>
         <button class="btn primary" id="xarg-ed-save">确定</button>
       </div>

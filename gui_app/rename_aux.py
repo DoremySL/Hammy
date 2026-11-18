@@ -102,7 +102,7 @@ class TaggerInjectWorker:
         results: Dict[str, Any] = {}   # vid → tags entry（含 error，仅用于统计）
         stream = None
         sent: Dict[int, Any] = {}
-        lib = tagger_mod.load_tag_library_map()
+        lib = tagger_mod.load_term_library_map()
         try:
             while not self.stop_event.is_set():
                 try:
@@ -200,7 +200,8 @@ class TaggerInjectWorker:
         if vr.get("category"):
             entry["category"] = str(vr["category"])
         results[vid] = entry
-        ctx.literal_meta = tagger_mod.tagger_entry_query(entry, lib, self.general_count)
+        ctx.tagger_hits, ctx.literal_meta = tagger_mod.tagger_injection(
+            entry, lib, self.general_count)
         ctx.complete_stage(self.stage_key)
 
     def _mark(self, ctx, results, vid: Optional[str], error: str) -> None:

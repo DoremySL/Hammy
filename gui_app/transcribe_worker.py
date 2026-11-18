@@ -47,6 +47,16 @@ def _vad_regions(audio, sr):
         return whole
 
 
+def _join_cjk(parts):
+    # 边界任一侧为 CJK/全角则直接拼接，否则补空格
+    out = ''
+    for t in parts:
+        if t and out and out[-1].isascii() and t[0].isascii():
+            out += ' '
+        out += t
+    return out
+
+
 def _windowed_text(audio, sr, regions, win, stop_at=0):
     # 区段内分窗推理拼接文本；stop_at>0 时累计达标提前结束
     texts, acc = [], 0
@@ -55,15 +65,15 @@ def _windowed_text(audio, sr, regions, win, stop_at=0):
         while pos < b - 0.1:
             end = min(pos + win, b)
             res = sess.run(audio[int(pos * sr): int(end * sr)], **run_kw)
-            t = ' '.join(s.text.strip() for s in (res.segments or [])
-                         if s.text.strip()) or (res.text or '').strip()
+            t = _join_cjk(s.text.strip() for s in (res.segments or [])
+                          if s.text.strip()) or (res.text or '').strip()
             if t:
                 texts.append(t)
                 acc += len(t) + 1
             if stop_at and acc >= stop_at:
-                return ' '.join(texts).strip()
+                return _join_cjk(texts)
             pos = end
-    return ' '.join(texts).strip()
+    return _join_cjk(texts)
 
 
 def _srt_ts(ms):
@@ -175,7 +185,7 @@ def transcribe_one(i, vp):
 
 def main():
     global params, video_paths, model_path, family, has_ts, language
-    global backend, ffmpeg, site_packages, max_chars, vad_model_path, mode
+    global ffmpeg, site_packages, max_chars, vad_model_path, mode
     global model, sess, run_kw, tc, sf
 
     params_file = sys.argv[1]
@@ -187,7 +197,6 @@ def main():
     family = params.get('family', 'whisper')
     has_ts = bool(params.get('timestamps', True))  # 无逐句时间戳 → SRT 合成整段单条字幕
     language = params.get('language', '') or None
-    backend = params.get('backend', 'cpu')
     ffmpeg = params.get('ffmpeg', '')
     site_packages = params.get('venv_site_packages', '')
     max_chars = int(params.get('max_chars', 0) or 0)  # 注入模式的提前停止阈值
@@ -196,13 +205,6 @@ def main():
     if not vad_model_path:
         plog('VAD 模型未配置，本次跳过静音判断')
 
-    # nvidia pip 包的 CUDA DLL 注入 PATH
-    if site_packages:
-        for sub in ('cublas', 'cuda_runtime', 'cuda_nvrtc', 'nvjitlink'):
-            dll_dir = os.path.join(site_packages, 'nvidia', sub, 'bin')
-            if os.path.isdir(dll_dir):
-                os.environ['PATH'] = dll_dir + os.pathsep + os.environ.get('PATH', '')
-
     # venv 库优先于脚本目录（gui_app/ 下存在同名项目模块，防止遮蔽 wheel 库）
     if site_packages:
         sys.path.insert(0, site_packages)
@@ -210,7 +212,7 @@ def main():
     import soundfile as sf
 
     # 按后端优先级初始化，失败逐级回退
-    backends = ['cuda', 'cpu'] if backend == 'cuda' else ['vulkan', 'cpu']
+    backends = ['vulkan', 'cpu']
     model = None
     for be in backends:
         try:

@@ -289,15 +289,22 @@ async function detectSpeech(ids) {
   if (!r) { $('#prog-bar').className = ''; return; }
   if (r.results) {
     for (const [vid, d] of Object.entries(r.results)) {
-      if (!d.error) state.transcribeTranscribedIds.add(vid);
+      if (d.srt) state.transcribeTranscribedIds.add(vid);
     }
   }
   const stopped = r.error === '已停止';
   if (r.ok || stopped) {
     const okN = r.ok_count || 0;
+    const skipped = r.skipped || 0;
     $('#prog-bar').style.width = '100%';
     $('#prog-bar').className = 'done';
-    toast(`语音转录${stopped ? '已停止' : '完成'}: 成功 ${okN}/${r.total}`, okN > 0 ? 'ok' : 'err', true);
+    if (skipped && !r.total) {
+      toast(`已跳过 ${skipped} 个无音频视频`, 'warn', true);
+    } else {
+      const skipTxt = skipped ? `，跳过 ${skipped} 个无音频` : '';
+      toast(`语音转录${stopped ? '已停止' : '完成'}: 成功 ${okN}/${r.total}${skipTxt}`,
+        okN > 0 ? 'ok' : 'err', true);
+    }
     refreshGridData();
   } else {
     $('#prog-bar').className = '';
@@ -311,16 +318,14 @@ async function ensureTranscribed(ids) {
   if (need.length) {
     toast(`其中 ${need.length} 个尚未转录，先自动转录…`, 'info');
     await detectSpeech(need.map(v => v.id));
-    return need.every(v => state.transcribeTranscribedIds.has(v.id));
   }
-  return true;
 }
 
 async function exportSrt(ids) {
   if (state.gpuBusy) { toast('GPU 正忙，请等待当前操作完成', 'err'); return; }
   const videos = ids.map(id => findVideoById(id)).filter(v => v && v.path);
   if (!videos.length) { toast('未选中有效视频', 'err'); return; }
-  if (!(await ensureTranscribed(ids))) { toast('转录未完成，已取消导出', 'warn'); return; }
+  await ensureTranscribed(ids);
   const items = videos.map(v => [v.id, v.path]);
   toastBusy(`正在导出 ${items.length} 个字幕…`);
   const r = await callApi('export_srt', items);
@@ -496,5 +501,5 @@ document.addEventListener('click', e => {
   if (!e.target.closest('#ctxmenu')) hideContextMenu();
 });
 document.addEventListener('contextmenu', e => {
-  if (!e.target.closest('.card') && !e.target.closest('.pt-item')) { hideContextMenu(); }
+  if (!e.target.closest('.card') && !e.target.closest('.tm-item')) { hideContextMenu(); }
 });

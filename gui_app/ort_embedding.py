@@ -326,7 +326,7 @@ def _embed_text(it: Dict[str, str]) -> str:
     return f"{base}。关联词：{related}" if base and related else (base or related)
 
 class OrtEmbedBackend:
-    """TagRecall.dense 协议实现：build_index(items) + search(parts, top_k)。"""
+    """TermRecall.dense 协议实现：build_index(items) + search(parts, top_k)。"""
 
     def __init__(self, device: str = "",
                  log_fn: Optional[Callable[[str], None]] = None):

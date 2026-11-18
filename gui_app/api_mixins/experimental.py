@@ -244,8 +244,8 @@ class ExperimentalMixin:
             if r.get("ok"):
                 self._auto_clean_uv_cache()
                 try:
-                    from ..tagger import import_preset_tags
-                    imp = import_preset_tags(log_fn=_push_log)
+                    from ..tagger import import_preset_terms
+                    imp = import_preset_terms(log_fn=_push_log)
                     r["import"] = imp
                 except Exception as e:
                     msg = f"预设标签导入失败（不影响标签生成，可卸载重装重试）: {e}"
@@ -500,19 +500,19 @@ class ExperimentalMixin:
         entry = _load_tags().get(video_id)
         if not entry:
             return {"ok": False, "character_tags": [], "ip_tags": [], "general_tags": []}
-        from ..tagger import load_tag_library_map
-        lib = load_tag_library_map()
+        from ..tagger import _SEC_KEYS, load_term_library_map
+        lib = load_term_library_map()
         gen_n = self._general_count()
         data = {"ok": True, **entry}
-        for group in ("character_tags", "ip_tags", "general_tags"):
-            tags = list(data.get(group) or [])
+        for _, key in _SEC_KEYS:
+            tags = list(entry.get(key) or [])
             if lib is not None:
                 # 拷贝 tag 再附 zh：cached 读取的嵌套对象与缓存共享
-                tags = [{**t, "zh": lib[name]} for t in tags
+                tags = [{**t, "zh": lib[name]["zh"]} for t in tags
                         if (name := str(t.get("name") or "")) in lib]
-            if group == "general_tags":
+            if key == "general_tags":
                 tags = tags[:gen_n]
-            data[group] = tags
+            data[key] = tags
         return data
 
     def clear_tagger_tags(self) -> Dict[str, Any]:
@@ -546,26 +546,24 @@ class ExperimentalMixin:
 
     def get_tagger_all_tags(self) -> Dict[str, List[str]]:
         """视频 ID → 可展示标签名列表（resolver 过滤未映射；英文名+中文名，供待处理搜索）。"""
-        from ..tagger import load_tag_library_map
-        lib = load_tag_library_map()
+        from ..tagger import _SEC_KEYS, load_term_library_map
+        lib = load_term_library_map()
         gen_n = self._general_count()
         out: Dict[str, List[str]] = {}
         for vid, data in _load_tags().items():
             names: List[str] = []
-            for group in ("character_tags", "ip_tags", "general_tags"):
-                tags = data.get(group) or []
-                if group == "general_tags":
+            for _, key in _SEC_KEYS:
+                tags = data.get(key) or []
+                if key == "general_tags":
                     tags = tags[:gen_n]
                 for t in tags:
                     n = str(t.get("name") or "")
-                    if not n:
-                        continue
-                    if lib is not None and n not in lib:
+                    if not n or (lib is not None and n not in lib):
                         continue
                     if n not in names:
                         names.append(n)
                     if lib is not None:
-                        z = lib[n]
+                        z = lib[n]["zh"]
                         if z and z not in names:
                             names.append(z)
             if names:
@@ -602,15 +600,12 @@ class ExperimentalMixin:
 
     def get_transcribe_mirrors(self) -> Dict[str, Any]:
         """获取语音转录安装可选镜像。"""
-        from ..installer import detect_gpu, get_mirror_groups
-        info = get_mirror_groups(["pypi"])
-        info["gpu"] = detect_gpu()
-        return info
+        from ..installer import get_mirror_groups
+        return get_mirror_groups(["pypi"])
 
     def install_transcribe(self, pypi_mirror: str = DEFAULT_PYPI_MIRROR,
                            model: str = "whisper-turbo",
-                           inject_model: str = "sensevoice",
-                           github_proxy: str = "") -> Dict[str, Any]:
+                           inject_model: str = "sensevoice") -> Dict[str, Any]:
         """安装语音转录依赖（model=右键转录模型，inject_model=辅助重命名模型）。"""
         from ..transcribe_cpp import install_dependencies
 
@@ -620,7 +615,6 @@ class ExperimentalMixin:
         try:
             r = install_dependencies(pypi_mirror=pypi_mirror, model=model,
                                      inject_model=inject_model,
-                                     github_proxy=github_proxy,
                                      log_fn=_push_log,
                                      stop_event=_install_stop_event)
             if r.get("ok"):
@@ -682,12 +676,24 @@ class ExperimentalMixin:
 
     def _transcribe_videos(self, vid_list: List, video_paths: List) -> Dict[str, Any]:
         """批量转录并保存 SRT（索引记录生成模型）。需持有 _gpu_task_lock。"""
+        from .. import discovery
         from ..transcribe_cpp import get_current_model, run_transcription_batch
+
+        pairs = [(vid, path) for vid, path in zip(vid_list, video_paths)
+                 if discovery.probe_video(path).get("has_audio") is not False]
+        skipped = len(vid_list) - len(pairs)
+        vid_list = [p[0] for p in pairs]
+        video_paths = [p[1] for p in pairs]
+        total = len(video_paths)
+        if skipped:
+            _push_log(f"跳过 {skipped} 个无音频视频")
+        if not video_paths:
+            return {"ok": True, "results": {}, "ok_count": 0,
+                    "total": 0, "skipped": skipped, "error": None}
 
         cfg_exp = load_config().get("experimental", {})
         language = cfg_exp.get("transcribe_language", "")
         model = get_current_model()
-        total = len(video_paths)
         results: Dict[str, Any] = {}
 
         try:
@@ -720,7 +726,7 @@ class ExperimentalMixin:
                     _push_log(f"  [{done}/{total}] {name} — 转录失败"
                               + (f": {err_txt[:200]}" if err_txt else ""), "err")
                     if err_txt and any(k in err_txt.lower()
-                                       for k in ("out of memory", "cuda", "oom", "alloc")):
+                                       for k in ("out of memory", "oom", "alloc")):
                         _push_log("    （显存不足，可关闭其他占显存的功能后重试）", "warn")
                 js_pusher.push("setProgress", done, total)
 
@@ -737,7 +743,9 @@ class ExperimentalMixin:
                 err_txt = str(batch_result.get("error") or "")
                 if not has_done:
                     _push_log(f"  转录失败: {err_txt[:200]}", "err")
-                    return {"ok": False, "results": {}, "error": batch_result.get("error")}
+                    return {"ok": False, "results": {}, "ok_count": 0,
+                            "total": total, "skipped": skipped,
+                            "error": batch_result.get("error")}
                 _push_log(f"  转录中止（{err_txt}），保留已完成的 {sum(1 for tr in per_video if (tr or {}).get('ok'))} 个结果", "warn")
 
             for idx, vid in enumerate(vid_list):
@@ -759,13 +767,14 @@ class ExperimentalMixin:
                 err_txt = "已停止" if str(batch_result.get("error") or "") == "已取消" \
                     else batch_result.get("error")
                 return {"ok": False, "results": results, "ok_count": ok_count,
-                        "total": total, "error": err_txt}
-            return {"ok": True, "results": results, "ok_count": ok_count, "total": total, "error": None}
+                        "total": total, "skipped": skipped, "error": err_txt}
+            return {"ok": True, "results": results, "ok_count": ok_count,
+                    "total": total, "skipped": skipped, "error": None}
         except Exception as e:
             ok_count = sum(1 for r in results.values() if not r.get("error"))
             _push_log(f"转录失败：{str(e)[:200]}", "err")
             return {"ok": False, "results": results, "ok_count": ok_count,
-                    "total": total, "error": str(e)}
+                    "total": total, "skipped": skipped, "error": str(e)}
 
     def get_transcribe_transcript(self, video_id: str) -> Dict[str, Any]:
         """获取指定视频的转录内容（读 SRT 文件）。"""

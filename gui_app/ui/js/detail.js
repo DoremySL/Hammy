@@ -101,11 +101,11 @@ async function showPendingDetail(v, quiet) {
   d.innerHTML = html;
   d.querySelectorAll('.chip[data-tagger-tag]').forEach(ch => {
     ch.addEventListener('click', () => onTaggerTagClick(ch.dataset.taggerTag));
-    // 右键：映射态=编辑标签；降级态=加入标签检索（related 预填英文名）
+    // 右键：映射态=编辑标签；降级态=加入词条检索（related 预填英文名）
     const mapped = !!ch.dataset.zh;
     ch.addEventListener('contextmenu', e => showChipMenu(e, ch.dataset.taggerTag,
       { webSearch: true, edit: mapped, asRelated: !mapped,
-        group: mapped ? '' : 'Hammy-tagger',
+        group: mapped ? '' : 'Hammy-tagger-G',
         taggerDel: { vid: v.id, group: ch.dataset.group } }));
   });
 }

@@ -1,7 +1,7 @@
 /* ════════════════════════════════════════════════════════════
-   设置 Modal - 标签检索页（双栏管理器，修改即时写盘）
+   设置 Modal - 词条检索页（双栏管理器，修改即时写盘）
    ════════════════════════════════════════════════════════════ */
-function ptNormItems(items) {
+function tmNormItems(items) {
   return (items || []).map(x => ({
     keyword: x.keyword || '',
     description: x.description || '',
@@ -10,12 +10,12 @@ function ptNormItems(items) {
   }));
 }
 
-function ptAllGroups(items) {
+function tmAllGroups(items) {
   return [...new Set(items.map(x => x.group).filter(Boolean))].sort();
 }
 
 async function persistTagLibrary() {
-  const r = await callApi('save_tag_library', state.ptItems, state.ptMode, [...state.ptDisabled]);
+  const r = await callApi('save_term_library', state.tmItems, state.tmMode, [...state.tmDisabled]);
   if (!r || !r.ok) {
     toast('保存失败: ' + ((r && r.error) || '未知错误'), 'err');
     return false;
@@ -23,125 +23,125 @@ async function persistTagLibrary() {
   return true;
 }
 
-async function ptLeaveGuard() {
-  if (!state.ptDirty) return true;
+async function tmLeaveGuard() {
+  if (!state.tmDirty) return true;
   if (!await showConfirm('当前标签有未保存的修改，确定丢弃？', { okText: '丢弃修改' })) return false;
-  state.ptDirty = false;
+  state.tmDirty = false;
   return true;
 }
 
 function renderTagsTab(pt) {
-  state.ptItems = ptNormItems(pt.items);
-  state.ptMode = ['off', 'on', 'enhanced'].includes(pt.mode) ? pt.mode : 'off';
-  state.ptDisabled = new Set(pt.disabled_groups || []);
-  state.ptSelected = new Set();
-  state.ptSelAnchor = null;
-  state.ptSearch = '';
-  state.ptGroupFilter = '';
-  state.ptEditIdx = -1;
-  state.ptAddMode = true;
-  state.ptDirty = false;
+  state.tmItems = tmNormItems(pt.items);
+  state.tmMode = ['off', 'on', 'enhanced'].includes(pt.mode) ? pt.mode : 'off';
+  state.tmDisabled = new Set(pt.disabled_groups || []);
+  state.tmSelected = new Set();
+  state.tmSelAnchor = null;
+  state.tmSearch = '';
+  state.tmGroupFilter = '';
+  state.tmEditIdx = -1;
+  state.tmAddMode = true;
+  state.tmDirty = false;
   const body = $('#modal-body');
   body.innerHTML = `
     <div class="tag-mgr">
       <div class="tag-cols">
         <div class="tag-left">
           <div class="tag-left-top">
-            <span id="pt-mode-seg" class="mode-switch">
-              <button type="button" class="pill clickable${state.ptMode === 'off' ? ' active' : ''}" data-mode="off" data-tip="标签库不参与分析">关闭</button>
+            <span id="tm-mode-seg" class="mode-switch">
+              <button type="button" class="pill clickable${state.tmMode === 'off' ? ' active' : ''}" data-mode="off" data-tip="词条库不参与分析">关闭</button>
               <span class="pill-sep"></span>
-              <button type="button" class="pill clickable${state.ptMode === 'on' ? ' active' : ''}" data-mode="on" data-tip="按文件名与角色标签做字面检索，命中标签注入首轮提示词，只跑一轮">开启</button>
+              <button type="button" class="pill clickable${state.tmMode === 'on' ? ' active' : ''}" data-mode="on" data-tip="按文件名与角色标签做字面检索，命中标签注入首轮提示词，只跑一轮">开启</button>
               <span class="pill-sep"></span>
-              <button type="button" class="pill clickable${state.ptMode === 'enhanced' ? ' active' : ''}" data-mode="enhanced" data-tip="在开启档基础上，第二轮用嵌入模型按首轮输出语义检索候选标签让AI修订；未装嵌入模型时等同开启档">增强</button>
+              <button type="button" class="pill clickable${state.tmMode === 'enhanced' ? ' active' : ''}" data-mode="enhanced" data-tip="在开启档基础上，第二轮用嵌入模型按首轮输出语义检索候选标签让AI修订；未装嵌入模型时等同开启档">增强</button>
             </span>
             <div class="tag-seg">
-              <button type="button" id="btn-pt-import">导入</button>
-              <button type="button" id="btn-pt-export">导出</button>
+              <button type="button" id="btn-tm-import">导入</button>
+              <button type="button" id="btn-tm-export">导出</button>
             </div>
           </div>
-          <div class="search-widget pt-search-widget" id="ptSearchWidget">
-            <div class="dd search-mode" id="pt-group-dd"></div>
+          <div class="search-widget tm-search-widget" id="tmSearchWidget">
+            <div class="dd search-mode" id="tm-group-dd"></div>
             <span class="search-sep"></span>
-            <input type="text" id="pt-search" placeholder="搜索标签、描述或关联词…" spellcheck="false"/>
-            <button type="button" id="btn-pt-clear-search" aria-label="清除"><svg class="ic"><use href="#ic-close"></use></svg></button>
+            <input type="text" id="tm-search" placeholder="搜索标签、描述或关联词…" spellcheck="false"/>
+            <button type="button" id="btn-tm-clear-search" aria-label="清除"><svg class="ic"><use href="#ic-close"></use></svg></button>
           </div>
-          <div class="tag-list-wrap"><div class="pt-list" id="pt-list"></div></div>
+          <div class="tag-list-wrap"><div class="tm-list" id="tm-list"></div></div>
         </div>
-        <div class="tag-right" id="pt-editor"></div>
+        <div class="tag-right" id="tm-editor"></div>
       </div>
     </div>`;
-  $$('#pt-mode-seg .pill').forEach(p => p.addEventListener('click', async () => {
-    if (state.ptMode === p.dataset.mode) return;
-    state.ptMode = p.dataset.mode;
-    $$('#pt-mode-seg .pill').forEach(x => x.classList.toggle('active', x.dataset.mode === state.ptMode));
+  $$('#tm-mode-seg .pill').forEach(p => p.addEventListener('click', async () => {
+    if (state.tmMode === p.dataset.mode) return;
+    state.tmMode = p.dataset.mode;
+    $$('#tm-mode-seg .pill').forEach(x => x.classList.toggle('active', x.dataset.mode === state.tmMode));
     await persistTagLibrary();
   }));
   let _ptSearchTimer = null;
-  $('#pt-search').addEventListener('input', e => {
+  $('#tm-search').addEventListener('input', e => {
     const v = e.target.value;
-    $('#ptSearchWidget').classList.toggle('has-text', !!v);
+    $('#tmSearchWidget').classList.toggle('has-text', !!v);
     clearTimeout(_ptSearchTimer);
     _ptSearchTimer = setTimeout(() => {
-      state.ptSearch = v.trim().toLowerCase();
+      state.tmSearch = v.trim().toLowerCase();
       renderTagRows();
     }, 150);
   });
-  $('#btn-pt-clear-search').addEventListener('click', () => {
+  $('#btn-tm-clear-search').addEventListener('click', () => {
     clearTimeout(_ptSearchTimer);
-    state.ptSearch = '';
-    $('#pt-search').value = '';
-    $('#ptSearchWidget').classList.remove('has-text');
+    state.tmSearch = '';
+    $('#tm-search').value = '';
+    $('#tmSearchWidget').classList.remove('has-text');
     renderTagRows();
-    $('#pt-search').focus();
+    $('#tm-search').focus();
   });
   /* 列表事件委托 + 滚动驱动窗口渲染 */
-  const list = $('#pt-list');
+  const list = $('#tm-list');
   list.addEventListener('click', e => {
-    const row = e.target.closest('.pt-item');
-    if (row && list.contains(row)) ptRowClick(e, Number(row.dataset.i));
+    const row = e.target.closest('.tm-item');
+    if (row && list.contains(row)) tmRowClick(e, Number(row.dataset.i));
   });
   list.addEventListener('contextmenu', e => {
-    const row = e.target.closest('.pt-item');
+    const row = e.target.closest('.tm-item');
     if (!row || !list.contains(row)) return;
-    ptRowMenu(e, Number(row.dataset.i));
+    tmRowMenu(e, Number(row.dataset.i));
   });
   let _ptScrollRaf = null;
   list.addEventListener('scroll', () => {
     if (_ptScrollRaf) return;
-    _ptScrollRaf = requestAnimationFrame(() => { _ptScrollRaf = null; ptRenderWindow(); });
+    _ptScrollRaf = requestAnimationFrame(() => { _ptScrollRaf = null; tmRenderWindow(); });
   }, { passive: true });
-  ptRenderGroupDd();
-  ptBindGroupDd($('#pt-group-dd'));
-  $('#btn-pt-import').onclick = importTags;
-  $('#btn-pt-export').onclick = exportTags;
+  tmRenderGroupDd();
+  tmBindGroupDd($('#tm-group-dd'));
+  $('#btn-tm-import').onclick = importTags;
+  $('#btn-tm-export').onclick = exportTags;
   renderTagRows();
-  ptRenderEditor();
+  tmRenderEditor();
 }
 
-function ptGroupDdRow(val, label, group) {
-  const off = state.ptDisabled.has(group);
-  return `<div class="dd-opt${state.ptGroupFilter === val ? ' active' : ''}${off ? ' grp-off' : ''}"` +
+function tmGroupDdRow(val, label, group) {
+  const off = state.tmDisabled.has(group);
+  return `<div class="dd-opt${state.tmGroupFilter === val ? ' active' : ''}${off ? ' grp-off' : ''}"` +
     ` data-value="${esc(val)}" data-toggle-group="${esc(group)}" data-tip="右键启用/停用该分组">` +
-    `<span class="pt-g-label">${esc(label)}</span><span class="pt-g-dot${off ? ' off' : ''}"></span></div>`;
+    `<span class="tm-g-label">${esc(label)}</span><span class="tm-g-dot${off ? ' off' : ''}"></span></div>`;
 }
 
-function ptGroupDdOptions() {
-  return ['<div class="dd-opt' + (state.ptGroupFilter === '' ? ' active' : '') + '" data-value="">全部标签</div>',
-    ptGroupDdRow('__default__', '默认分组', ''),
-    ...ptAllGroups(state.ptItems).map(g => ptGroupDdRow(g, g, g)),
+function tmGroupDdOptions() {
+  return ['<div class="dd-opt' + (state.tmGroupFilter === '' ? ' active' : '') + '" data-value="">全部标签</div>',
+    tmGroupDdRow('__default__', '默认分组', ''),
+    ...tmAllGroups(state.tmItems).map(g => tmGroupDdRow(g, g, g)),
     '<div class="dd-hint">右键分组行启用/停用组控制是否参与检索</div>'].join('');
 }
 
-function ptRenderGroupDd() {
-  const dd = $('#pt-group-dd');
+function tmRenderGroupDd() {
+  const dd = $('#tm-group-dd');
   if (!dd) return;
-  const curLabel = state.ptGroupFilter === '' ? '全部标签'
-    : state.ptGroupFilter === '__default__' ? '默认分组' : state.ptGroupFilter;
+  const curLabel = state.tmGroupFilter === '' ? '全部标签'
+    : state.tmGroupFilter === '__default__' ? '默认分组' : state.tmGroupFilter;
   dd.innerHTML = `<button class="dd-btn" type="button"><span class="dd-label">${esc(curLabel)}</span>${ddArrow()}</button>
-    <div class="dd-panel">${ptGroupDdOptions()}</div>`;
+    <div class="dd-panel">${tmGroupDdOptions()}</div>`;
 }
 
-function ptBindGroupDd(dd) {
+function tmBindGroupDd(dd) {
   if (!dd) return;
   dd.addEventListener('click', e => {
     if (e.target.closest('.dd-btn')) {
@@ -157,7 +157,7 @@ function ptBindGroupDd(dd) {
     const opt = e.target.closest('.dd-opt');
     if (!opt || !dd.contains(opt) || opt.classList.contains('disabled')) return;
     e.stopPropagation();
-    state.ptGroupFilter = opt.dataset.value;
+    state.tmGroupFilter = opt.dataset.value;
     dd.querySelector('.dd-label').textContent =
       opt.dataset.value === '' ? '全部标签'
         : opt.dataset.value === '__default__' ? '默认分组' : opt.dataset.value;
@@ -170,29 +170,29 @@ function ptBindGroupDd(dd) {
     if (!opt || !dd.contains(opt)) return;
     e.preventDefault();
     e.stopPropagation();
-    ptToggleGroup(opt.dataset.toggleGroup);
+    tmToggleGroup(opt.dataset.toggleGroup);
   });
 }
 
-async function ptToggleGroup(g) {
-  const old = new Set(state.ptDisabled);
+async function tmToggleGroup(g) {
+  const old = new Set(state.tmDisabled);
   const next = new Set(old);
   next.has(g) ? next.delete(g) : next.add(g);
-  state.ptDisabled = next;
+  state.tmDisabled = next;
   if (!await persistTagLibrary()) {
-    state.ptDisabled = old;
+    state.tmDisabled = old;
     return;
   }
-  const dd = $('#pt-group-dd');
-  if (dd) dd.querySelector('.dd-panel').innerHTML = ptGroupDdOptions();
+  const dd = $('#tm-group-dd');
+  if (dd) dd.querySelector('.dd-panel').innerHTML = tmGroupDdOptions();
   renderTagRows();
 }
 
-function ptFilteredIndices() {
-  const q = state.ptSearch;
-  return state.ptItems.map((it, i) => ({ it, i })).filter(({ it }) => {
-    if (state.ptGroupFilter === '__default__' && it.group) return false;
-    if (state.ptGroupFilter && state.ptGroupFilter !== '__default__' && it.group !== state.ptGroupFilter) return false;
+function tmFilteredIndices() {
+  const q = state.tmSearch;
+  return state.tmItems.map((it, i) => ({ it, i })).filter(({ it }) => {
+    if (state.tmGroupFilter === '__default__' && it.group) return false;
+    if (state.tmGroupFilter && state.tmGroupFilter !== '__default__' && it.group !== state.tmGroupFilter) return false;
     if (!q) return true;
     return it.keyword.toLowerCase().includes(q)
       || it.description.toLowerCase().includes(q)
@@ -205,292 +205,292 @@ let _ptRowH = 34;
 let _ptWin = { start: -1, end: -1 };
 
 function renderTagRows() {
-  const list = $('#pt-list');
+  const list = $('#tm-list');
   if (!list) return;
-  state.ptIdxs = ptFilteredIndices();
-  if (!state.ptItems.length) {
-    list.innerHTML = '<div class="pt-list-empty">暂无标签，在右侧输入关键词后回车即可添加。</div>';
+  state.tmIdxs = tmFilteredIndices();
+  if (!state.tmItems.length) {
+    list.innerHTML = '<div class="tm-list-empty">暂无标签，在右侧输入关键词后回车即可添加。</div>';
     return;
   }
-  if (!state.ptIdxs.length) {
-    list.innerHTML = '<div class="pt-list-empty">没有匹配的标签。</div>';
+  if (!state.tmIdxs.length) {
+    list.innerHTML = '<div class="tm-list-empty">没有匹配的标签。</div>';
     return;
   }
   _ptWin = { start: -1, end: -1 };
-  list.innerHTML = '<div id="pt-list-spacer"><div id="pt-list-win"></div></div>';
-  ptRenderWindow();
+  list.innerHTML = '<div id="tm-list-spacer"><div id="tm-list-win"></div></div>';
+  tmRenderWindow();
 }
 
-function ptRenderWindow() {
-  const list = $('#pt-list'), win = $('#pt-list-win');
+function tmRenderWindow() {
+  const list = $('#tm-list'), win = $('#tm-list-win');
   if (!win) return;
-  const idxs = state.ptIdxs;
+  const idxs = state.tmIdxs;
   // 先定 spacer 高，再读 scrollTop：否则内容为空时布局会把滚动位置卡到 0
-  $('#pt-list-spacer').style.height = (idxs.length * _ptRowH) + 'px';
+  $('#tm-list-spacer').style.height = (idxs.length * _ptRowH) + 'px';
   const start = Math.max(0, Math.floor(list.scrollTop / _ptRowH) - 10);
   const end = Math.min(idxs.length, start + Math.ceil(list.clientHeight / _ptRowH) + 20);
   if (start === _ptWin.start && end === _ptWin.end) return;
   _ptWin = { start, end };
   win.style.transform = `translateY(${start * _ptRowH}px)`;
   win.innerHTML = idxs.slice(start, end)
-    .map((i, p) => ptRowHtml(i, idxs, p + start)).join('');
+    .map((i, p) => tmRowHtml(i, idxs, p + start)).join('');
   const h = win.firstElementChild && win.firstElementChild.offsetHeight;
   if (h && Math.abs(h - _ptRowH) > 0.5) {  // 首帧行高校正
     _ptRowH = h;
-    $('#pt-list-spacer').style.height = (idxs.length * _ptRowH) + 'px';
+    $('#tm-list-spacer').style.height = (idxs.length * _ptRowH) + 'px';
     win.style.transform = `translateY(${start * _ptRowH}px)`;
   }
 }
 
-function ptRowHtml(i, idxs, p) {
-  const it = state.ptItems[i];
-  const sel = state.ptSelected.has(i);
+function tmRowHtml(i, idxs, p) {
+  const it = state.tmItems[i];
+  const sel = state.tmSelected.has(i);
   let runCls = '';
   if (sel) {
-    const prev = p > 0 && state.ptSelected.has(idxs[p - 1]);
-    const next = p + 1 < idxs.length && state.ptSelected.has(idxs[p + 1]);
+    const prev = p > 0 && state.tmSelected.has(idxs[p - 1]);
+    const next = p + 1 < idxs.length && state.tmSelected.has(idxs[p + 1]);
     runCls = prev && next ? ' sel-mid' : next ? ' sel-start' : prev ? ' sel-end' : '';
   }
   const sub = it.description || it.related;
-  return `<div class="pt-item${sel ? ' selected' : ''}${runCls}${i === state.ptEditIdx && !state.ptAddMode ? ' editing' : ''}${state.ptDisabled.has(it.group) ? ' grp-off' : ''}" data-i="${i}">` +
-    `<span class="pt-kw">${esc(it.keyword)}</span>` +
-    (sub ? `<span class="pt-desc" data-tip="${esc(sub)}">${esc(sub)}</span>` : '') +
+  return `<div class="tm-item${sel ? ' selected' : ''}${runCls}${i === state.tmEditIdx && !state.tmAddMode ? ' editing' : ''}${state.tmDisabled.has(it.group) ? ' grp-off' : ''}" data-i="${i}">` +
+    `<span class="tm-kw">${esc(it.keyword)}</span>` +
+    (sub ? `<span class="tm-desc" data-tip="${esc(sub)}">${esc(sub)}</span>` : '') +
     `</div>`;
 }
 
-function ptRowClick(e, idx) {
+function tmRowClick(e, idx) {
   if (e.ctrlKey || e.metaKey || e.shiftKey) {
-    state.ptSelAnchor = pickSelection(state.ptSelected, state.ptSelAnchor, idx, e);
+    state.tmSelAnchor = pickSelection(state.tmSelected, state.tmSelAnchor, idx, e);
     renderTagRows();
     return;
   }
-  ptOpenEdit(idx);
+  tmOpenEdit(idx);
 }
 
-function ptRowMenu(e, idx) {
+function tmRowMenu(e, idx) {
   e.preventDefault();
   e.stopPropagation();
-  const multi = state.ptSelected.has(idx) && state.ptSelected.size > 1;
-  const delList = multi ? [...state.ptSelected] : [idx];
+  const multi = state.tmSelected.has(idx) && state.tmSelected.size > 1;
+  const delList = multi ? [...state.tmSelected] : [idx];
   const m = $('#ctxmenu');
-  const items = [{ label: multi ? `删除选中 (${delList.length})` : '删除', fn: () => ptDeleteIndices(delList) }];
+  const items = [{ label: multi ? `删除选中 (${delList.length})` : '删除', fn: () => tmDeleteIndices(delList) }];
   m.innerHTML = items.map((it, i) => `<button data-i="${i}">${it.label}</button>`).join('');
   m.querySelectorAll('button').forEach((b, i) => { b.onclick = () => { items[i].fn(); hideContextMenu(); }; });
   positionCtxMenu(m, e);
 }
 
-async function ptDeleteIndices(delList) {
-  const before = state.ptItems;
+async function tmDeleteIndices(delList) {
+  const before = state.tmItems;
   const delSet = new Set(delList);
   if (!await showConfirm(`确定删除选中的 ${delList.length} 个标签？`, { okText: '删除' })) return;
-  if (delSet.has(state.ptEditIdx) && !state.ptAddMode && !await ptLeaveGuard()) return;
-  state.ptItems = before.filter((_, i) => !delSet.has(i));
+  if (delSet.has(state.tmEditIdx) && !state.tmAddMode && !await tmLeaveGuard()) return;
+  state.tmItems = before.filter((_, i) => !delSet.has(i));
   if (!await persistTagLibrary()) {
-    state.ptItems = before;
+    state.tmItems = before;
     return;
   }
-  state.ptSelected.clear();
-  state.ptSelAnchor = null;
-  if (state.ptAddMode) {
-    ptRenderEditor();
-  } else if (delSet.has(state.ptEditIdx)) {
-    state.ptEditIdx = -1;
-    state.ptAddMode = true;
-    ptRenderEditor();
+  state.tmSelected.clear();
+  state.tmSelAnchor = null;
+  if (state.tmAddMode) {
+    tmRenderEditor();
+  } else if (delSet.has(state.tmEditIdx)) {
+    state.tmEditIdx = -1;
+    state.tmAddMode = true;
+    tmRenderEditor();
   } else {
-    const shift = [...delSet].filter(i => i < state.ptEditIdx).length;
-    state.ptEditIdx -= shift;
+    const shift = [...delSet].filter(i => i < state.tmEditIdx).length;
+    state.tmEditIdx -= shift;
   }
   renderTagRows();
 }
 
-async function ptOpenEdit(idx) {
-  if (!state.ptAddMode && state.ptEditIdx === idx) return;
-  if (!await ptLeaveGuard()) return;
-  state.ptAddMode = false;
-  state.ptEditIdx = idx;
-  state.ptSelected.clear();
-  state.ptSelAnchor = idx;
-  state.ptDirty = false;
+async function tmOpenEdit(idx) {
+  if (!state.tmAddMode && state.tmEditIdx === idx) return;
+  if (!await tmLeaveGuard()) return;
+  state.tmAddMode = false;
+  state.tmEditIdx = idx;
+  state.tmSelected.clear();
+  state.tmSelAnchor = idx;
+  state.tmDirty = false;
   renderTagRows();
-  ptRenderEditor();
+  tmRenderEditor();
 }
 
-async function ptSetAddMode(guard = true) {
-  if (guard && !await ptLeaveGuard()) return;
-  state.ptAddMode = true;
-  state.ptEditIdx = -1;
-  state.ptSelected.clear();
-  state.ptSelAnchor = null;
-  state.ptDirty = false;
+async function tmSetAddMode(guard = true) {
+  if (guard && !await tmLeaveGuard()) return;
+  state.tmAddMode = true;
+  state.tmEditIdx = -1;
+  state.tmSelected.clear();
+  state.tmSelAnchor = null;
+  state.tmDirty = false;
   renderTagRows();
-  ptRenderEditor(true);
+  tmRenderEditor(true);
 }
 
-function ptGroupOptions(cur) {
-  const groups = ptAllGroups(state.ptItems);
+function tmGroupOptions(cur) {
+  const groups = tmAllGroups(state.tmItems);
   if (cur && !groups.includes(cur)) groups.push(cur);
   return ['<div class="dd-opt' + (cur ? '' : ' active') + '" data-value="">默认分组</div>',
     ...groups.map(g => `<div class="dd-opt${g === cur ? ' active' : ''}" data-value="${esc(g)}">${esc(g)}</div>`)].join('');
 }
 
-function ptSyncEditorGroupDd(group) {
-  const dd = $('#pt-f-group');
+function tmSyncEditorGroupDd(group) {
+  const dd = $('#tm-f-group');
   if (!dd) return;
-  dd.querySelector('.dd-panel').innerHTML = ptGroupOptions(group);
+  dd.querySelector('.dd-panel').innerHTML = tmGroupOptions(group);
   setDropdownValue(dd, group);
 }
 
-function ptBuildFields(container, it, opts = {}) {
+function tmBuildFields(container, it, opts = {}) {
   const readonlyRelated = !!opts.readonlyRelated;
   container.innerHTML = `
-    <div class="field"><label>关键词</label><input type="text" id="pt-f-kw" value="${esc(it.keyword || '')}" spellcheck="false"/></div>
-    <div class="field"><label>描述 <span class="pt-lbl-hint">将连同关键词一起发送给AI</span></label><textarea id="pt-f-desc" rows="6">${esc(it.description || '')}</textarea></div>
-    <div class="field"><label>关联 <span class="pt-lbl-hint">字面检索与向量检索的匹配文本${readonlyRelated ? '；tagger 条目固定为识别的英文名' : '；Hammy-tagger 组须为唯一英文标签名'}</span></label><input type="text" id="pt-f-related" value="${esc(it.related || '')}" spellcheck="false"${readonlyRelated ? ' readonly' : ''}/></div>
+    <div class="field"><label>关键词</label><input type="text" id="tm-f-kw" value="${esc(it.keyword || '')}" spellcheck="false"/></div>
+    <div class="field"><label>描述 <span class="tm-lbl-hint">将连同关键词一起发送给AI</span></label><textarea id="tm-f-desc" rows="6">${esc(it.description || '')}</textarea></div>
+    <div class="field"><label>关联 <span class="tm-lbl-hint">字面检索与向量检索的匹配文本${readonlyRelated ? '；tagger 条目固定为识别的英文名' : '；tagger 分组须为唯一英文标签名'}</span></label><input type="text" id="tm-f-related" value="${esc(it.related || '')}" spellcheck="false"${readonlyRelated ? ' readonly' : ''}/></div>
     <div class="tag-ed-group">
       <div class="field"><label>分组</label>
-        <div class="dd" id="pt-f-group"><button class="dd-btn" type="button"><span class="dd-label">${esc(it.group || '默认分组')}</span>${ddArrow()}</button>
-          <div class="dd-panel">${ptGroupOptions(it.group || '')}</div></div>
+        <div class="dd" id="tm-f-group"><button class="dd-btn" type="button"><span class="dd-label">${esc(it.group || '默认分组')}</span>${ddArrow()}</button>
+          <div class="dd-panel">${tmGroupOptions(it.group || '')}</div></div>
       </div>
-      <div class="field"><label>新分组</label><input type="text" id="pt-f-newgroup" placeholder="输入即新建分组" spellcheck="false"/></div>
+      <div class="field"><label>新分组</label><input type="text" id="tm-f-newgroup" placeholder="输入即新建分组" spellcheck="false"/></div>
     </div>`;
-  initDropdown(container.querySelector('#pt-f-group'), () => {
-    const ng = container.querySelector('#pt-f-newgroup');
+  initDropdown(container.querySelector('#tm-f-group'), () => {
+    const ng = container.querySelector('#tm-f-newgroup');
     if (ng && ng.value) ng.value = '';
-    ptMarkDirty(container);
+    tmMarkDirty(container);
   });
   ['input', 'change'].forEach(ev => container.addEventListener(ev, e => {
-    if (e.target.closest('#pt-editor, .pt-editor')) ptMarkDirty(container);
+    if (e.target.closest('#tm-editor, .tm-editor')) tmMarkDirty(container);
   }));
 }
 
-function ptMarkDirty(container) {
-  if (container.id === 'pt-editor' || container.closest('#pt-editor')) state.ptDirty = true;
+function tmMarkDirty(container) {
+  if (container.id === 'tm-editor' || container.closest('#tm-editor')) state.tmDirty = true;
 }
 
-function ptCollectFields(container) {
+function tmCollectFields(container) {
   const g = s => container.querySelector(s);
-  const newGroup = ((g('#pt-f-newgroup') && g('#pt-f-newgroup').value) || '').trim();
+  const newGroup = ((g('#tm-f-newgroup') && g('#tm-f-newgroup').value) || '').trim();
   return {
-    keyword: ((g('#pt-f-kw') && g('#pt-f-kw').value) || '').trim(),
-    description: ((g('#pt-f-desc') && g('#pt-f-desc').value) || '').trim(),
-    related: ((g('#pt-f-related') && g('#pt-f-related').value) || '').trim(),
-    group: newGroup || (g('#pt-f-group') ? getDropdownValue(g('#pt-f-group')) : ''),
+    keyword: ((g('#tm-f-kw') && g('#tm-f-kw').value) || '').trim(),
+    description: ((g('#tm-f-desc') && g('#tm-f-desc').value) || '').trim(),
+    related: ((g('#tm-f-related') && g('#tm-f-related').value) || '').trim(),
+    group: newGroup || (g('#tm-f-group') ? getDropdownValue(g('#tm-f-group')) : ''),
   };
 }
 
-function ptRenderEditor(focusKw) {
-  const ed = $('#pt-editor');
+function tmRenderEditor(focusKw) {
+  const ed = $('#tm-editor');
   if (!ed) return;
-  let isAdd = state.ptAddMode || state.ptEditIdx < 0;
-  if (!isAdd && !state.ptItems[state.ptEditIdx]) {
-    state.ptAddMode = isAdd = true;
-    state.ptEditIdx = -1;
+  let isAdd = state.tmAddMode || state.tmEditIdx < 0;
+  if (!isAdd && !state.tmItems[state.tmEditIdx]) {
+    state.tmAddMode = isAdd = true;
+    state.tmEditIdx = -1;
   }
   const it = isAdd
     ? { keyword: '', description: '', related: '',
-        group: (state.ptGroupFilter && state.ptGroupFilter !== '__default__') ? state.ptGroupFilter : '' }
-    : state.ptItems[state.ptEditIdx];
+        group: (state.tmGroupFilter && state.tmGroupFilter !== '__default__') ? state.tmGroupFilter : '' }
+    : state.tmItems[state.tmEditIdx];
   ed.innerHTML = `
-    <div class="tag-ed-body" id="pt-ed-body"></div>
+    <div class="tag-ed-body" id="tm-ed-body"></div>
     <div class="tag-ed-foot">
-      <span class="pt-ed-help">检索将使用关键词或关联词匹配</span>
+      <span class="tm-ed-help">检索将使用关键词或关联词匹配</span>
       ${isAdd
-        ? '<button class="btn primary" id="pt-add">新建</button>'
-        : `<button class="btn" id="pt-to-add">切换至新建</button>
-           <button class="btn danger" id="pt-del">删除</button>
-           <button class="btn primary" id="pt-save">保存</button>`}
+        ? '<button class="btn primary" id="tm-add">新建</button>'
+        : `<button class="btn" id="tm-to-add">切换至新建</button>
+           <button class="btn danger" id="tm-del">删除</button>
+           <button class="btn primary" id="tm-save">保存</button>`}
     </div>`;
-  ptBuildFields(ed.querySelector('#pt-ed-body'), it);
-  const kwEl = ed.querySelector('#pt-f-kw');
+  tmBuildFields(ed.querySelector('#tm-ed-body'), it);
+  const kwEl = ed.querySelector('#tm-f-kw');
   kwEl.addEventListener('keydown', e => {
     if (e.key !== 'Enter') return;
     e.preventDefault();
-    if (isAdd) ptApplyAdd();
-    else ed.querySelector('#pt-f-desc').focus();
+    if (isAdd) tmApplyAdd();
+    else ed.querySelector('#tm-f-desc').focus();
   });
   ed.onkeydown = e => {
     if (e.key !== 'Escape' || isAdd) return;
     e.stopPropagation();
-    ptLeaveGuard().then(ok => { if (ok) ptSetAddMode(false); });
+    tmLeaveGuard().then(ok => { if (ok) tmSetAddMode(false); });
   };
   if (isAdd) {
-    ed.querySelector('#pt-add').onclick = ptApplyAdd;
+    ed.querySelector('#tm-add').onclick = tmApplyAdd;
     if (focusKw) kwEl.focus();
   } else {
-    ed.querySelector('#pt-to-add').onclick = () => ptSetAddMode(true);
-    ed.querySelector('#pt-del').onclick = () => ptDeleteIndices([state.ptEditIdx]);
-    ed.querySelector('#pt-save').onclick = ptApplyEdit;
+    ed.querySelector('#tm-to-add').onclick = () => tmSetAddMode(true);
+    ed.querySelector('#tm-del').onclick = () => tmDeleteIndices([state.tmEditIdx]);
+    ed.querySelector('#tm-save').onclick = tmApplyEdit;
   }
 }
 
-function ptDupCheck(kw, excludeIdx) {
-  return state.ptItems.some((x, i) => i !== excludeIdx && x.keyword.toLowerCase() === kw.toLowerCase());
+function tmDupCheck(kw, excludeIdx) {
+  return state.tmItems.some((x, i) => i !== excludeIdx && x.keyword.toLowerCase() === kw.toLowerCase());
 }
 
-async function ptApplyAdd() {
-  const f = ptCollectFields($('#pt-editor'));
-  if (!f.keyword) { $('#pt-editor #pt-f-kw').focus(); return; }
-  if (ptDupCheck(f.keyword, -1)) { toast('标签已存在: ' + f.keyword, 'err'); return; }
-  if (ptRelatedDupCheck(state.ptItems, f.group, f.related, -1)) {
-    toast('该英文名在 Hammy-tagger 组已存在: ' + f.related, 'err'); return;
+async function tmApplyAdd() {
+  const f = tmCollectFields($('#tm-editor'));
+  if (!f.keyword) { $('#tm-editor #tm-f-kw').focus(); return; }
+  if (tmDupCheck(f.keyword, -1)) { toast('标签已存在: ' + f.keyword, 'err'); return; }
+  if (tmRelatedDupCheck(state.tmItems, f.group, f.related, -1)) {
+    toast('该英文名在 tagger 分组已存在: ' + f.related, 'err'); return;
   }
   const item = { keyword: f.keyword, description: f.description, related: f.related, group: f.group };
-  state.ptItems.unshift(item);
+  state.tmItems.unshift(item);
   if (!await persistTagLibrary()) {
-    state.ptItems.shift();
+    state.tmItems.shift();
     return;
   }
-  state.ptDirty = false;
-  if (state.ptGroupFilter && state.ptGroupFilter !== '__default__' && state.ptGroupFilter !== f.group) {
-    state.ptGroupFilter = f.group;
+  state.tmDirty = false;
+  if (state.tmGroupFilter && state.tmGroupFilter !== '__default__' && state.tmGroupFilter !== f.group) {
+    state.tmGroupFilter = f.group;
   }
-  ptSyncEditorGroupDd(f.group);
-  ptRenderGroupDd();
+  tmSyncEditorGroupDd(f.group);
+  tmRenderGroupDd();
   renderTagRows();
-  const ed = $('#pt-editor');
-  ['pt-f-kw', 'pt-f-desc', 'pt-f-related'].forEach(id => { const el = ed.querySelector('#' + id); if (el) el.value = ''; });
-  ed.querySelector('#pt-f-kw').focus();
+  const ed = $('#tm-editor');
+  ['tm-f-kw', 'tm-f-desc', 'tm-f-related'].forEach(id => { const el = ed.querySelector('#' + id); if (el) el.value = ''; });
+  ed.querySelector('#tm-f-kw').focus();
   toast(`已添加: ${f.keyword}`, 'ok');
 }
 
-async function ptApplyEdit() {
-  const idx = state.ptEditIdx;
-  if (idx < 0 || !state.ptItems[idx]) return;
-  const f = ptCollectFields($('#pt-editor'));
-  if (!f.keyword) { $('#pt-editor #pt-f-kw').focus(); return; }
-  if (ptDupCheck(f.keyword, idx)) { toast('标签已存在: ' + f.keyword, 'err'); return; }
-  if (ptRelatedDupCheck(state.ptItems, f.group, f.related, idx)) {
-    toast('该英文名在 Hammy-tagger 组已存在: ' + f.related, 'err'); return;
+async function tmApplyEdit() {
+  const idx = state.tmEditIdx;
+  if (idx < 0 || !state.tmItems[idx]) return;
+  const f = tmCollectFields($('#tm-editor'));
+  if (!f.keyword) { $('#tm-editor #tm-f-kw').focus(); return; }
+  if (tmDupCheck(f.keyword, idx)) { toast('标签已存在: ' + f.keyword, 'err'); return; }
+  if (tmRelatedDupCheck(state.tmItems, f.group, f.related, idx)) {
+    toast('该英文名在 tagger 分组已存在: ' + f.related, 'err'); return;
   }
-  const old = { ...state.ptItems[idx] };
-  state.ptItems[idx] = { keyword: f.keyword, description: f.description, related: f.related, group: f.group };
+  const old = { ...state.tmItems[idx] };
+  state.tmItems[idx] = { keyword: f.keyword, description: f.description, related: f.related, group: f.group };
   if (!await persistTagLibrary()) {
-    state.ptItems[idx] = old;
+    state.tmItems[idx] = old;
     return;
   }
-  state.ptDirty = false;
-  ptSyncEditorGroupDd(f.group);
-  ptRenderGroupDd();
+  state.tmDirty = false;
+  tmSyncEditorGroupDd(f.group);
+  tmRenderGroupDd();
   renderTagRows();
   toast(`已保存: ${f.keyword}`, 'ok');
 }
 
 async function importTags() {
-  const res = await callApi('import_tag_library');
+  const res = await callApi('import_term_library');
   if (!res || res.cancelled) return;
   if (!res.ok) { toast('导入失败: ' + (res.error || ''), 'err'); return; }
-  const incoming = ptNormItems(res.items);
-  const existing = new Set(state.ptItems.map(x => x.keyword.toLowerCase()));
-  const existingRel = new Set(state.ptItems
-    .filter(x => x.group === TAGGER_LIB_GROUP).map(x => (x.related || '').toLowerCase()));
+  const incoming = tmNormItems(res.items);
+  const existing = new Set(state.tmItems.map(x => x.keyword.toLowerCase()));
+  const existingRel = new Set(state.tmItems
+    .filter(x => TAGGER_LIB_GROUPS.includes(x.group)).map(x => (x.related || '').toLowerCase()));
   let relSkipped = 0;
   const fresh = [];
   for (const it of incoming) {
     const key = it.keyword.toLowerCase();
     if (existing.has(key)) continue;
     existing.add(key);
-    if (it.group === TAGGER_LIB_GROUP) {
+    if (TAGGER_LIB_GROUPS.includes(it.group)) {
       const rel = (it.related || '').toLowerCase();
       if (rel && existingRel.has(rel)) { relSkipped++; continue; }
       existingRel.add(rel);
@@ -499,35 +499,35 @@ async function importTags() {
   }
   if (!fresh.length) { toast('没有可导入的新标签（关键词均已存在）', 'err'); return; }
   const skipped = incoming.length - fresh.length;
-  if (state.ptItems.length &&
+  if (state.tmItems.length &&
       !await showConfirm(`将追加 ${fresh.length} 个新标签${skipped ? `（跳过已存在 ${skipped} 个）` : ''}，确定继续？`, { okText: '追加导入' })) return;
-  const before = state.ptItems;
-  state.ptItems = [...fresh, ...before];
+  const before = state.tmItems;
+  state.tmItems = [...fresh, ...before];
   if (!await persistTagLibrary()) {
-    state.ptItems = before;
+    state.tmItems = before;
     return;
   }
-  state.ptSelected.clear();
-  state.ptSelAnchor = null;
-  state.ptEditIdx = -1;
-  state.ptAddMode = true;
-  state.ptDirty = false;
-  ptRenderGroupDd();
+  state.tmSelected.clear();
+  state.tmSelAnchor = null;
+  state.tmEditIdx = -1;
+  state.tmAddMode = true;
+  state.tmDirty = false;
+  tmRenderGroupDd();
   renderTagRows();
-  ptRenderEditor();
+  tmRenderEditor();
   refreshTaggerSearchCache();
   toast(`已导入 ${fresh.length} 个新标签` +
-    (relSkipped ? `，另跳过 ${relSkipped} 个英文名重复的 Hammy-tagger 条目` : ''), 'ok');
+    (relSkipped ? `，另跳过 ${relSkipped} 个英文名重复的 tagger 条目` : ''), 'ok');
 }
 
 async function exportTags() {
-  const res = await callApi('export_tag_library', ptNormItems(state.ptItems));
+  const res = await callApi('export_term_library', tmNormItems(state.tmItems));
   if (!res || res.cancelled) return;
   if (res.ok) toast('已导出到: ' + (res.path || ''), 'ok');
   else toast('导出失败: ' + (res.error || ''), 'err');
 }
 
-/* ── 主界面标签 chip 右键菜单与「加入标签检索 / 编辑标签」弹窗 ── */
+/* ── 主界面标签 chip 右键菜单与「加入词条检索 / 编辑标签」弹窗 ── */
 function showChipMenu(e, name, { webSearch = false, asRelated = false, edit = false, group = '', taggerDel = null } = {}) {
   e.preventDefault();
   e.stopPropagation();
@@ -535,7 +535,7 @@ function showChipMenu(e, name, { webSearch = false, asRelated = false, edit = fa
   if (webSearch) items.push({ label: '网页搜索', fn: () => webSearchTag(name) });
   items.push(edit
     ? { label: '编辑标签', fn: () => openTaggerTagEdit(name) }
-    : { label: '加入标签检索', fn: () => openTagAddToSearch(name, asRelated, group) });
+    : { label: '加入词条检索', fn: () => openTagAddToSearch(name, asRelated, group) });
   if (taggerDel) items.push({ label: '删除此标签', fn: () => deleteTaggerTag(taggerDel.vid, taggerDel.group, name) });
   const m = $('#ctxmenu');
   m.innerHTML = items.map((it, i) => `<button data-i="${i}">${it.label}</button>`).join('');
@@ -543,47 +543,47 @@ function showChipMenu(e, name, { webSearch = false, asRelated = false, edit = fa
   positionCtxMenu(m, e);
 }
 
-const TAGGER_LIB_GROUP = 'Hammy-tagger';
+const TAGGER_LIB_GROUPS = ['Hammy-tagger', 'Hammy-tagger-G'];
 
-function ptRelatedDupCheck(items, group, related, excludeIdx) {
+function tmRelatedDupCheck(items, group, related, excludeIdx) {
   /* tagger 英文名组内唯一（重复会造成映射歧义） */
-  if (group !== TAGGER_LIB_GROUP || !related) return false;
+  if (!TAGGER_LIB_GROUPS.includes(group) || !related) return false;
   return items.some((x, i) =>
-    i !== excludeIdx && x.group === TAGGER_LIB_GROUP &&
+    i !== excludeIdx && TAGGER_LIB_GROUPS.includes(x.group) &&
     (x.related || '').toLowerCase() === related.toLowerCase());
 }
 
 async function openTagLibraryEditor(prefill, targetIdx = -1) {
-  const cur = await callApi('get_tag_library');
+  const cur = await callApi('get_term_library');
   if (!cur) return;
-  const items = ptNormItems(cur.items);
+  const items = tmNormItems(cur.items);
   const isEdit = targetIdx >= 0;
   const bg = document.createElement('div');
-  bg.className = 'pt-editor-bg';
+  bg.className = 'tm-editor-bg';
   bg.innerHTML = `
-    <div class="pt-editor">
-      <h3>${isEdit ? '编辑标签' : '加入标签检索'}</h3>
-      <div class="tag-ed-body" id="pt-add-body"></div>
-      <div class="pt-editor-foot">
-        <button class="btn" id="pt-add-cancel">取消</button>
-        <button class="btn primary" id="pt-add-save">保存</button>
+    <div class="tm-editor">
+      <h3>${isEdit ? '编辑标签' : '加入词条检索'}</h3>
+      <div class="tag-ed-body" id="tm-add-body"></div>
+      <div class="tm-editor-foot">
+        <button class="btn" id="tm-add-cancel">取消</button>
+        <button class="btn primary" id="tm-add-save">保存</button>
       </div>
     </div>`;
   document.body.appendChild(bg);
-  const body = bg.querySelector('#pt-add-body');
-  ptBuildFields(body, prefill, { readonlyRelated: isEdit });
-  const kwEl = body.querySelector('#pt-f-kw');
+  const body = bg.querySelector('#tm-add-body');
+  tmBuildFields(body, prefill, { readonlyRelated: isEdit });
+  const kwEl = body.querySelector('#tm-f-kw');
   kwEl.focus();
   if (!isEdit && prefill.keyword) kwEl.select();
   bg.addEventListener('keydown', e => {
     if (e.key === 'Escape') { e.stopPropagation(); bg.remove(); }
   });
   kwEl.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); bg.querySelector('#pt-add-save').click(); }
+    if (e.key === 'Enter') { e.preventDefault(); bg.querySelector('#tm-add-save').click(); }
   });
-  bg.querySelector('#pt-add-cancel').onclick = () => bg.remove();
-  bg.querySelector('#pt-add-save').onclick = async () => {
-    const f = ptCollectFields(body);
+  bg.querySelector('#tm-add-cancel').onclick = () => bg.remove();
+  bg.querySelector('#tm-add-save').onclick = async () => {
+    const f = tmCollectFields(body);
     if (isEdit) f.related = items[targetIdx].related;  // 英文映射键只读
     if (!f.keyword) { kwEl.focus(); return; }
     if (items.some((x, i) => i !== targetIdx && x.keyword.toLowerCase() === f.keyword.toLowerCase())) {
@@ -591,19 +591,19 @@ async function openTagLibraryEditor(prefill, targetIdx = -1) {
       kwEl.focus(); kwEl.select();
       return;
     }
-    if (ptRelatedDupCheck(items, f.group, f.related, targetIdx)) {
-      toast('该英文名在 Hammy-tagger 组已存在: ' + f.related, 'err');
+    if (tmRelatedDupCheck(items, f.group, f.related, targetIdx)) {
+      toast('该英文名在 tagger 分组已存在: ' + f.related, 'err');
       return;
     }
     const entry = { keyword: f.keyword, description: f.description, related: f.related, group: f.group };
     if (isEdit) items.splice(targetIdx, 1, entry);
     else items.unshift(entry);
-    const saveBtn = bg.querySelector('#pt-add-save');
+    const saveBtn = bg.querySelector('#tm-add-save');
     saveBtn.disabled = true;
-    const r = await callApi('save_tag_library', items, cur.mode || 'off', cur.disabled_groups || []);
+    const r = await callApi('save_term_library', items, cur.mode || 'off', cur.disabled_groups || []);
     if (r && r.ok) {
       bg.remove();
-      toast(isEdit ? `已保存: ${f.keyword}` : `已加入标签检索: ${f.keyword}`, 'ok');
+      toast(isEdit ? `已保存: ${f.keyword}` : `已加入词条检索: ${f.keyword}`, 'ok');
       refreshTaggerSearchCache();
     } else {
       saveBtn.disabled = false;
@@ -619,11 +619,11 @@ async function openTagAddToSearch(name, asRelated, group = '') {
 }
 
 async function openTaggerTagEdit(enName) {
-  const cur = await callApi('get_tag_library');
+  const cur = await callApi('get_term_library');
   if (!cur) return;
-  const items = ptNormItems(cur.items);
-  const idx = items.findIndex(x => x.group === TAGGER_LIB_GROUP && x.related === enName);
-  if (idx < 0) { await openTagAddToSearch(enName, true, TAGGER_LIB_GROUP); return; }
+  const items = tmNormItems(cur.items);
+  const idx = items.findIndex(x => TAGGER_LIB_GROUPS.includes(x.group) && x.related === enName);
+  if (idx < 0) { await openTagAddToSearch(enName, true, 'Hammy-tagger-G'); return; }
   return openTagLibraryEditor({ ...items[idx] }, idx);
 }
 
