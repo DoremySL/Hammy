@@ -1,0 +1,529 @@
+"""app.py — pywebview 主入口。"""
+from __future__ import annotations
+
+import atexit
+import os
+import sys
+import tempfile
+import threading
+import traceback
+from pathlib import Path
+
+# ── 确保可以 import gui_app 子模块 ──
+SCRIPT_DIR = Path(__file__).resolve().parent
+APP_ROOT = SCRIPT_DIR.parent
+if str(APP_ROOT) not in sys.path:
+    sys.path.insert(0, str(APP_ROOT))
+
+
+os.environ.pop("PYTHONNET_RUNTIME", None)
+
+# pythonw 启动时 stdout/stderr 为 None，替换为 devnull 防止各处 write 崩溃
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
+# 记录 pythonnet 是否成功初始化，供 mainthread.py 选择对话框实现（WinForms STA vs 原生 ctypes）
+try:
+    from gui_app.mainthread import set_pythonnet_status
+    __import__("clr")  # 能 import 说明 pythonnet 已就绪
+    set_pythonnet_status(True)
+except Exception:
+    try:
+        from gui_app.mainthread import set_pythonnet_status
+        set_pythonnet_status(False)
+    except Exception:
+        pass
+
+
+_TEMP_DIR = APP_ROOT / "_workspace" / "temp"
+_TEMP_DIR.mkdir(parents=True, exist_ok=True)
+os.environ["TMP"] = str(_TEMP_DIR)
+os.environ["TEMP"] = str(_TEMP_DIR)
+tempfile.tempdir = str(_TEMP_DIR)
+os.environ.setdefault("CUDA_CACHE_PATH", str(_TEMP_DIR / "cuda"))
+os.environ["WEBVIEW2_USER_DATA_FOLDER"] = str(APP_ROOT / "_workspace" / "webview")
+
+# ── 全局崩溃日志 ──
+CRASH_LOG = Path(tempfile.gettempdir()) / "video_rename_gui_crash.log"
+CRASH_LOG_PREV = Path(tempfile.gettempdir()) / "video_rename_gui_crash.prev.log"
+# GUI 就绪信号：GUI Launcher.bat 轮询到该文件后退出启动窗口
+READY_FLAG = Path(tempfile.gettempdir()) / "hammy_gui_ready.flag"
+
+
+def _crash_log(text: str) -> None:
+    try:
+        CRASH_LOG.write_text(text, encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+
+def _msgbox(msg: str, title: str = "错误", flags: int = 0x10) -> int:
+    """弹出 Win32 MessageBox；失败时输出到 stderr。"""
+    try:
+        import ctypes
+        return ctypes.windll.user32.MessageBoxW(0, msg, title, flags)
+    except Exception:
+        print(f"[{title}] {msg}", file=sys.stderr)
+        return 0
+
+
+def _setup_crash_handlers() -> None:
+    """注册全局异常钩子。"""
+    try:
+        def _report_main(exc_type, exc_value, exc_tb):
+            tb_text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+            _crash_log(tb_text)
+            _msgbox(f"程序出错:\n{tb_text[-1200:]}", "错误")
+
+        def _report_thread(args):
+            tb_text = "".join(traceback.format_exception(
+                args.exc_type, args.exc_value, args.exc_traceback))
+            _crash_log(tb_text)
+            sys.stderr.write(f"[crash] 后台线程异常 ({args.thread.name}): {args.exc_value}\n")
+
+        sys.excepthook = _report_main
+        threading.excepthook = _report_thread
+    except Exception:
+        pass
+
+
+_setup_crash_handlers()
+
+
+# ── 导入 webview ──
+try:
+    import webview
+except ImportError:
+    from gui_app.env import _resolve_python
+    _msgbox(
+        "缺少 pywebview 库。\n\n"
+        "请用当前生效的 Python 解释器安装:\n"
+        f'"{_resolve_python()}" -m pip install pywebview',
+        "依赖缺失",
+    )
+    sys.exit(1)
+
+
+from gui_app.api import Api
+from gui_app.env import check_all_startup_deps
+from gui_app.workspace_store import clear_sources, ensure_workspace
+from gui_app import ui_loader
+
+# ── 配置 ──
+WINDOW_TITLE = "Hammy"
+WINDOW_WIDTH = 1280
+WINDOW_HEIGHT = 860
+
+HTML_PATH = SCRIPT_DIR / "ui" / "index.html"
+
+
+# ── 启动期依赖检测 ──
+
+
+def _check_startup_deps() -> dict:
+    """依赖检测：返回 {ok, missing: [str], ...}。"""
+    return check_all_startup_deps()
+
+
+def _show_dep_error(deps: dict) -> None:
+    missing = deps.get("missing", [])
+    msg = "启动前缺少以下依赖：\n\n"
+    for m in missing:
+        msg += f"  • {m}\n"
+
+    needs_ffmpeg = any("ffmpeg" in m for m in missing)
+    needs_libs = any(
+        ("openai" in m or "pywebview" in m) and "未安装" in m for m in missing
+    )
+    needs_wv2 = any("WebView2" in m for m in missing)
+    needs_dotnet = any(".NET" in m for m in missing)
+
+    msg += "\n请按以下步骤处理：\n"
+    step = 1
+    if needs_ffmpeg:
+        msg += f"  {step}. 把 ffmpeg.exe / ffprobe.exe 放到 {APP_ROOT}\\ffmpeg\\ 或加入系统 PATH\n"
+        step += 1
+    if needs_libs:
+        # 用当前生效的 Python 解释器给出安装命令（portable 或系统 python 均适用）
+        py = deps.get("python_path") or sys.executable
+        msg += f"  {step}. 安装 Python 依赖库：\n     \"{py}\" -m pip install openai pywebview\n"
+        step += 1
+    if needs_wv2:
+        msg += f"  {step}. WebView2 Runtime: https://developer.microsoft.com/microsoft-edge/webview2/\n"
+        step += 1
+    if needs_dotnet:
+        msg += f"  {step}. .NET Framework 4.8: 请启用 Windows 功能或安装 .NET Framework（pythonnet 需要）\n"
+        step += 1
+    _msgbox(msg, "依赖缺失")
+
+
+# ── 单实例守卫 ──
+
+_SINGLE_INSTANCE_MUTEX = None  # 持有句柄防 GC；不 CloseHandle，进程退出时由 OS 回收
+
+
+def _ensure_single_instance() -> None:
+    """单实例守卫：已有实例运行时激活其窗口并退出本进程。"""
+    global _SINGLE_INSTANCE_MUTEX
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        import ctypes.wintypes
+        import hashlib
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateMutexW.restype = ctypes.c_void_p
+        k32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+        k32.CloseHandle.argtypes = [ctypes.c_void_p]
+        key = hashlib.sha1(
+            os.path.normcase(str(APP_ROOT)).encode("utf-8", "surrogatepass")
+        ).hexdigest()[:8]
+        handle = k32.CreateMutexW(None, False, f"Local\\Hammy_{key}")
+        if not handle:
+            return  # 创建失败：放行，不阻断启动
+        if ctypes.get_last_error() != 183:  # ERROR_ALREADY_EXISTS
+            _SINGLE_INSTANCE_MUTEX = handle  # 首个实例：持有句柄到进程退出
+            return
+        # 已有实例在运行：关闭本进程拿到的句柄，尝试激活已有窗口后退出
+        k32.CloseHandle(handle)
+        try:
+            u32 = ctypes.WinDLL("user32", use_last_error=True)
+            u32.FindWindowW.restype = ctypes.wintypes.HWND
+            u32.FindWindowW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
+            hwnd = u32.FindWindowW(None, WINDOW_TITLE)
+            if hwnd:
+                if u32.IsIconic(hwnd):
+                    u32.ShowWindow(hwnd, 9)  # SW_RESTORE：从最小化还原
+                elif not u32.IsWindowVisible(hwnd):
+                    u32.ShowWindow(hwnd, 9)  # 隐藏到托盘的窗口：还原显示
+                u32.SetForegroundWindow(hwnd)
+        except Exception:
+            pass
+        # 补写就绪标志：本进程不会走到 _on_started，需让等待本次启动的 bat 退出
+        try:
+            READY_FLAG.write_text("ok", encoding="utf-8")
+        except Exception:
+            pass
+        sys.exit(0)
+    except SystemExit:
+        raise
+    except Exception as e:
+        sys.stderr.write(f"[single-instance] 守卫异常，放行启动: {e}\n")
+
+
+# ── 主入口 ──
+
+
+def _init_workspace() -> str:
+    """依赖检测 + workspace 初始化 + 构建 HTML。返回 html_content。"""
+    # 保留上次崩溃日志（重命名为 .prev），而非无条件删除
+    try:
+        if CRASH_LOG.exists():
+            CRASH_LOG.replace(CRASH_LOG_PREV)
+    except Exception:
+        pass
+
+    deps = _check_startup_deps()
+    if not deps["ok"]:
+        _show_dep_error(deps)
+        sys.exit(1)
+
+    ensure_workspace()
+    # 启动时清除上次添加的文件夹/文件记录（NFO/缩略图保留，可手动清理）
+    try:
+        clear_sources()
+    except Exception:
+        pass
+
+    if not HTML_PATH.exists():
+        _msgbox(f"界面文件未找到:\n{HTML_PATH}", "文件缺失")
+        sys.exit(1)
+    return ui_loader.build_html()
+
+
+def _create_window(api: "Api", html_content: str):
+    """创建 pywebview 窗口（固定默认尺寸，系统默认居中）。返回 window。"""
+    window_kwargs = dict(
+        title=WINDOW_TITLE,
+        html=html_content,
+        width=WINDOW_WIDTH,
+        height=WINDOW_HEIGHT,
+        js_api=api,
+        min_size=(900, 600),
+        resizable=True,
+        easy_drag=False,
+    )
+    window = webview.create_window(**window_kwargs)
+    api.set_window(window)
+    return window
+
+
+def _bind_window_events(window, api: "Api"):
+    """绑定窗口事件（closing/closed 清理）。"""
+    # ── 关窗/退出时清理 ffmpeg 子进程（幂等：atexit + closed 只执行一次）──
+    _cleaned_up = threading.Event()
+
+    def _cleanup_subprocesses():
+        """统一清理：停止运行中的任务 + 等待 history 落盘 + 终止 ffmpeg 子进程。"""
+        if _cleaned_up.is_set():
+            return
+        _cleaned_up.set()
+        try:
+            api.stop()  # 触发 stop_event
+        except Exception:
+            pass
+        try:
+            api.stop_similar_scan()
+        except Exception:
+            pass
+        # 等待 runner 线程落盘 history：每 0.5s 轮询，最长 30s，超时则告警而非静默丢失。
+        try:
+            import time as _time
+            runner = getattr(api, "_runner", None)
+            if runner and runner._thread and runner._thread.is_alive():
+                deadline = _time.monotonic() + 30
+                flushed = getattr(runner, "_history_flushed", None)
+                while runner._thread.is_alive() and _time.monotonic() < deadline:
+                    runner._thread.join(timeout=0.5)
+                    if flushed is not None and flushed.is_set():
+                        break
+                if runner._thread.is_alive():
+                    msg = ("[cleanup] runner 未在 30s 内完成 history 落盘，"
+                           "最后一批处理记录可能丢失\n")
+                    _crash_log(msg)
+                    sys.stderr.write(msg)
+        except Exception:
+            pass
+        try:
+            from batch_rename.subprocess_registry import terminate_all_subprocesses
+            terminate_all_subprocesses()
+        except Exception as e:
+            sys.stderr.write(f"[cleanup] terminate_all_subprocesses failed: {e}\n")
+
+    # atexit 兜底（崩溃/强杀时也尽量清理）
+    atexit.register(_cleanup_subprocesses)
+
+    # ── 处理中关窗加确认 ──
+    def _on_closing():
+        """关窗前确认（处理进行中时）。返回 False 取消关闭。"""
+        try:
+            runner = getattr(api, "_runner", None)
+            if runner and runner.is_running:
+                # 弹原生确认框（前端 confirm 在 closing 事件里不可靠）
+                MB_YESNO = 0x04
+                MB_ICONQUESTION = 0x20
+                MB_DEFBUTTON2 = 0x100
+                result = _msgbox(
+                    "处理仍在进行，关闭将中断当前任务。\n\n确定关闭吗？",
+                    "确认关闭",
+                    MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2,
+                )
+                # IDYES=6, IDNO=7
+                if result != 6:
+                    return False  # 取消关闭
+        except Exception:
+            pass
+        return True  # 允许关闭
+
+    try:
+        window.events.closing += _on_closing
+    except Exception as e:
+        sys.stderr.write(f"[events] closing hook 注册失败: {e}\n")
+
+    try:
+        window.events.closed += _cleanup_subprocesses
+    except Exception as e:
+        sys.stderr.write(f"[events] closed hook 注册失败: {e}\n")
+
+
+def _find_window_icon_file():
+    """任务栏/标题栏图标：与托盘同一查找规则（gui_app/ui 下 hammy.ico / icon.ico）。"""
+    uidir = SCRIPT_DIR / "ui"
+    for name in ("hammy.ico", "icon.ico"):
+        p = uidir / name
+        if p.is_file():
+            return p
+    return None
+
+
+def _apply_window_icon_async() -> None:
+    """给主窗口设置任务栏/标题栏图标（pywebview 无此配置项，手动 WM_SETICON）。
+
+    在后台线程轮询等待窗口句柄就绪；找不到图标文件或句柄超时则静默放弃。
+    """
+    path = _find_window_icon_file()
+    if path is None:
+        return
+    try:
+        import time
+        import ctypes.wintypes
+        u32 = ctypes.WinDLL("user32", use_last_error=True)
+        u32.FindWindowW.restype = ctypes.wintypes.HWND
+        u32.FindWindowW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
+        u32.LoadImageW.restype = ctypes.wintypes.HANDLE
+        u32.LoadImageW.argtypes = [ctypes.wintypes.HINSTANCE, ctypes.wintypes.LPCWSTR,
+                                   ctypes.wintypes.UINT, ctypes.c_int, ctypes.c_int,
+                                   ctypes.wintypes.UINT]
+        u32.SendMessageW.argtypes = [ctypes.wintypes.HWND, ctypes.wintypes.UINT,
+                                     ctypes.wintypes.WPARAM, ctypes.wintypes.LPARAM]
+    except Exception:
+        return
+    hwnd = None
+    for _ in range(20):  # 最多等 5s：webview.start 回调后 HWND 可能仍需片刻就绪
+        hwnd = u32.FindWindowW(None, WINDOW_TITLE)
+        if hwnd:
+            break
+        time.sleep(0.25)
+    if not hwnd:
+        return
+    IMAGE_ICON, LR_LOADFROMFILE, LR_DEFAULTSIZE = 1, 0x10, 0x40
+    for wparam in (1, 0):  # ICON_BIG：任务栏/Alt+Tab；ICON_SMALL：标题栏
+        try:
+            hicon = u32.LoadImageW(None, str(path), IMAGE_ICON, 0, 0,
+                                   LR_LOADFROMFILE | LR_DEFAULTSIZE)
+            if hicon:
+                u32.SendMessageW(hwnd, 0x80, wparam, hicon)  # WM_SETICON
+        except Exception:
+            pass
+
+
+def _start_background_loops(api=None) -> callable:
+    """构建后台循环，返回 webview.start 的 func 回调。
+
+    """
+
+    def _on_started():
+        from gui_app.js_push import js_pusher
+        import time as _time
+
+        # 页面加载完成（窗口内容真正可见）后才通知启动器脚本退出，
+        # 避免 bat 窗口先消失、程序窗口后出现带来的"闪退感"
+        _ready_signaled = threading.Event()
+
+        def _signal_ready():
+            if _ready_signaled.is_set():
+                return
+            _ready_signaled.set()
+            try:
+                READY_FLAG.write_text("ok", encoding="utf-8")
+            except Exception:
+                pass
+
+        window = getattr(api, "_window", None) if api is not None else None
+        if window is not None:
+            try:
+                window.events.loaded += lambda *_a: _signal_ready()
+                # 兜底：loaded 不触发（订阅前已触发/注册失败）时 5s 后强制放行，
+                # 避免启动器空等 60s 超时
+                def _ready_fallback():
+                    _time.sleep(5)
+                    _signal_ready()
+                threading.Thread(
+                    target=_ready_fallback, name="ready-fallback", daemon=True
+                ).start()
+            except Exception as e:
+                sys.stderr.write(f"[events] loaded hook 注册失败，直接写就绪标志: {e}\n")
+                _signal_ready()
+        else:
+            _signal_ready()
+
+        def _flush_loop():
+            while True:
+                js_pusher.flush()
+                _time.sleep(0.06)
+
+        # flush 线程必须等页面加载完成（前端 core.js 已定义 window.__ui）再启动：
+        # 页面未就绪时 evaluate_js 会报错，连续失败会触发 js_push.py 的 5s 暂停
+        # 并清空队列，导致启动期推送事件（llama 状态等）丢失
+        _flush_started = threading.Event()
+
+        def _start_flush():
+            if _flush_started.is_set():
+                return
+            _flush_started.set()
+            t1 = threading.Thread(target=_flush_loop, name="js-flush", daemon=True)
+            t1.start()
+
+        if window is not None:
+            try:
+                window.events.loaded += lambda *_a: _start_flush()
+                # 兜底：若订阅前 loaded 已触发（pywebview 事件不重放），延迟后直接
+                # 启动；期间推送在队列中正常积压，flush 启动后统一发出，不丢事件
+                def _flush_fallback():
+                    _time.sleep(15)
+                    _start_flush()
+                threading.Thread(
+                    target=_flush_fallback, name="js-flush-fallback", daemon=True
+                ).start()
+            except Exception as e:
+                sys.stderr.write(f"[events] loaded hook 注册失败，直接启动 flush: {e}\n")
+                _start_flush()
+        else:
+            _start_flush()
+
+        # 托盘（pystray 未安装时自动降级为普通最小化）
+        if window is not None:
+            try:
+                from gui_app.tray import start_tray
+                start_tray(window)
+            except Exception as e:
+                sys.stderr.write(f"[tray] 启动失败: {e}\n")
+
+        # 任务栏/标题栏图标（pywebview 无此配置，窗口就绪后手动 WM_SETICON）
+        threading.Thread(target=_apply_window_icon_async,
+                         name="win-icon", daemon=True).start()
+
+        # 本地推理自动运行（扩展功能，未安装/未启用时在端点内直接跳过）
+        if api is not None and hasattr(api, "auto_run_llama"):
+            def _auto_run():
+                try:
+                    api.auto_run_llama()
+                except Exception as e:
+                    sys.stderr.write(f"[auto_run] 启动本地推理失败: {e}\n")
+            threading.Thread(target=_auto_run, name="llama-auto-run", daemon=True).start()
+
+    return _on_started
+
+
+def main() -> None:
+    _ensure_single_instance()  # 必须先于 _init_workspace（避免清空运行中实例的 manifest / 双进程写配置）
+    html_content = _init_workspace()
+
+    # 尽早创建作业对象（kill-on-close）：此后注册的所有子进程（ffmpeg、
+    # llama-server 等）都会挂入其中，程序以任意方式退出时由内核自动终止
+    try:
+        from batch_rename.job_object import init_job_object
+        init_job_object()
+    except Exception as e:
+        sys.stderr.write(f"[cleanup] job_object 初始化失败: {e}\n")
+
+    api = Api()
+    window = _create_window(api, html_content)
+
+    _bind_window_events(window, api)
+    on_started = _start_background_loops(api)
+
+    try:
+        # Windows 上使用 winforms backend（pywebview 6.x 唯一支持），
+        # 页面渲染由 WebView2 Runtime 提供
+        webview.start(func=on_started, private_mode=False,
+                      storage_path=str(APP_ROOT / "_workspace" / "webview"))
+    except Exception as e:
+        _crash_log(f"webview.start error: {traceback.format_exc()}")
+        _msgbox(
+            f"启动窗口失败:\n{e}\n\n"
+            "可能原因：\n"
+            "1. WebView2 Runtime 未安装或版本过旧（请从 microsoft.com 下载）\n"
+            "2. pythonnet 初始化失败（需要 Windows 自带 .NET Framework 4.8）\n"
+            "3. 被系统安全策略阻止加载.NET（解压前尝试右键属性先解锁）\n\n"
+            "请安装对应运行时后重试。",
+            "启动错误",
+        )
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

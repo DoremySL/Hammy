@@ -129,7 +129,7 @@ class TermRecall:
         return [e.item for _, _, e in hits[: self.top_k]]
 
     def merged_injection(self, parts: Dict[str, str], hits: Any) -> Tuple[str, List[str]]:
-        """A/B 优先条目在前 + 字面召回命中补足（共享 top_k、去重）→ (段落, 关键词列表)。
+        """tagger 置顶条目在前 + 字面召回命中补足（共享 top_k、去重）→ (段落, 关键词列表)。
 
         hits 为 tagger 视觉确认条目（分数序）；检索模式 off 时仅注入 hits。"""
         items = [it for it in (hits or []) if isinstance(it, dict) and it.get("keyword")]

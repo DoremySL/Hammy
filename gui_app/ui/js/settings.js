@@ -1,0 +1,463 @@
+/* ════════════════════════════════════════════════════════════
+   设置 Modal
+   ════════════════════════════════════════════════════════════ */
+let _settingsSeq = 0;
+
+async function ensureLlamaStateKnown() {
+  if (state.llamaSynced) return;
+  try { syncLlamaState(await apiCall('get_llama_status')); }
+  catch (e) {  }
+}
+
+async function openSettings(tab) {
+  await ensureLlamaStateKnown();
+  if (tab === 'ai' || tab === undefined || tab === null) {
+    const toLlama = state.llamaEnabled && state.llamaIntegration;
+    state.settings_tab = toLlama ? 'llama' : 'config';
+    state.settings_scroll_to = (tab === 'ai' && !toLlama) ? 'ai' : null;
+  } else if (['config', 'prompts', 'terms', 'experimental', 'llama', 'workspace'].includes(tab)) {
+    state.settings_tab = tab;
+  } else {
+    state.settings_tab = 'config';
+  }
+  $$('#settings-tabs .tab').forEach(x =>
+    x.classList.toggle('active', x.dataset.settingsTab === state.settings_tab));
+  $('#modal').classList.add('show');
+  _resetModalAnchor();
+  await renderSettings();
+  await _pinModalAnchor();
+}
+function _resetModalAnchor() {
+  const bg = $('#modal'), m = bg.querySelector('.modal');
+  bg.style.alignItems = '';
+  bg.style.paddingTop = '';
+  if (m) { m.style.marginTop = ''; m.style.maxHeight = ''; }
+}
+async function _pinModalAnchor() {
+  const bg = $('#modal'), m = bg.querySelector('.modal');
+  if (!bg.classList.contains('show') || !m) return;
+  try { await Promise.all(m.getAnimations().map(a => a.finished)); } catch (e) {}
+  const top = m.offsetTop;
+  bg.style.paddingTop = '0px';
+  bg.style.alignItems = 'flex-start';
+  m.style.marginTop = top + 'px';
+  m.style.maxHeight = `calc(100vh - ${top + 50}px)`;
+}
+async function settingsLeaveGuard() {
+  if (state.settings_tab === 'terms' && !await tmLeaveGuard()) return false;
+  if (state.settings_tab === 'prompts' && !await pvLeaveGuard()) return false;
+  return true;
+}
+
+async function closeSettings() {
+  if (!await settingsLeaveGuard()) return;
+  flushPendingConfigSave();
+  flushPendingExperimentalSave();
+  flushPendingLlamaSave();
+  state.settingsOpen.clear();
+  state.settingsScroll = 0;
+  $('#modal-body').innerHTML = '';
+  $('#modal').classList.remove('show');
+  _resetModalAnchor();
+}
+$('#btn-settings').addEventListener('click', () => openSettings());
+$('#btn-closemodal').addEventListener('click', closeSettings);
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && $('#modal').classList.contains('show')) closeSettings();
+});
+
+$$('#settings-tabs .tab').forEach(t => {
+  t.addEventListener('click', async () => {
+    if (t.dataset.settingsTab === state.settings_tab) return;
+    if (!await settingsLeaveGuard()) return;
+    flushPendingConfigSave();
+    flushPendingExperimentalSave();
+    flushPendingLlamaSave();
+    state.settings_tab = t.dataset.settingsTab;
+    state.settings_scroll_to = null;
+    $$('#settings-tabs .tab').forEach(x => x.classList.toggle('active', x === t));
+    renderSettings();
+  });
+});
+
+async function renderSettings() {
+  const seq = ++_settingsSeq;
+  const body = $('#modal-body');
+  state.settingsScroll = body.scrollTop;
+  let cfg;
+  if (state.settings_tab === 'config') {
+    try {
+      cfg = await apiCall('get_config');
+    } catch (e) {
+      if (seq !== _settingsSeq) return;
+      body.innerHTML = '<div class="empty">' + icon('warning') + ' 加载失败：' + esc(String(e).slice(0, 100)) +
+        '<br/><br/><button class="btn">重试</button></div>';
+      body.querySelector('button').onclick = () => renderSettings();
+      return;
+    }
+    if (seq !== _settingsSeq) return;
+  }
+  try {
+    switch (state.settings_tab) {
+      case 'config':
+        renderConfigTab(cfg);
+        break;
+      case 'prompts':
+        await renderPromptsTabWrapper();
+        break;
+      case 'terms':
+        await renderTermsTabWrapper();
+        break;
+      case 'experimental':
+        await renderExperimentalTabWrapper();
+        break;
+      case 'llama':
+        await renderLlamaTabWrapper();
+        break;
+      case 'workspace':
+        await renderWorkspaceTabWrapper();
+        break;
+    }
+  } catch (e) {
+    if (seq !== _settingsSeq) return;
+    body.innerHTML = '<div class="empty">' + icon('warning') + ' 渲染失败：' + esc(String(e).slice(0, 200)) +
+      '<br/><br/><button class="btn">重试</button></div>';
+    body.querySelector('button').onclick = () => renderSettings();
+  }
+  if (seq !== _settingsSeq) return;
+  updateLlamaTabVisibility();
+  if (state.settings_tab === 'config') {
+    animateModalBody();
+    body.scrollTop = state.settingsScroll;
+  }
+}
+
+function updateLlamaTabVisibility() {
+  const t = document.querySelector('#settings-tabs .tab[data-settings-tab="llama"]');
+  if (t) t.style.display = state.llamaEnabled ? '' : 'none';
+}
+
+function animateModalBody() {
+  const body = $('#modal-body');
+  body.classList.remove('fade-in');
+  void body.offsetWidth;
+  body.classList.add('fade-in');
+}
+
+const CFG_FIELDS_AI = [
+  { group: 'AI 服务', noTitle: true, cols: 4, connectBtn: true, fields: [
+    { sec: 'ai', key: 'model', label: '模型名称', type: 'text', span: 2, help: '需支持多模态', default: 'model' },
+    { sec: 'ai', key: 'base_url', label: 'API 地址', type: 'url', span: 2, help: 'OpenAI 兼容 /v1', default: 'http://localhost:8080/v1' },
+    { sec: 'ai', key: 'api_key', label: 'API 密钥', type: 'password', span: 2, help: '本地 AI 服务通常无需填写', default: 'not-needed' },
+    { sec: 'ai', key: 'ai_workers', label: '并发数', type: 'number', min: 1, help: '同时发起的 AI 请求数，越大越快但更占内存/显存；开启本地推理集成后由「并发线程 -np」接管', default: 4 },
+  ]},
+  { group: 'AI 生成参数', noTitle: true, cols: 3, fields: [
+    { sec: 'ai', key: 'max_tokens', label: '最大生成长度', type: 'number', min: 1, help: '单次 AI 输出的 Token 上限，改动提示词或开启思考时可按需加大', default: 3000 },
+    { sec: 'ai', key: 'temperature', label: '温度', type: 'number', min: 0, max: 2, step: 0.1, help: '越高模型输出越有创意但可能偏离主题', default: 0.6 },
+    { sec: 'ai', key: 'top_p', label: 'Top-p', type: 'number', min: 0, max: 1, step: 0.05, help: '核采样阈值，与温度共同控制输出多样性', default: 0.8 },
+    { sec: 'ai', key: 'retry_times', label: '重试次数', type: 'number', min: 0, help: '请求失败后的重试次数', default: 2 },
+    { sec: 'ai', key: 'ai_timeout', label: '超时(秒)', type: 'number', min: 1, help: '单次 AI 请求的超时时间', default: 300 },
+    { sec: 'ai', key: 'enforce_json_mode', label: 'JSON 模式', type: 'select', options: [['1', '开启'], ['0', '关闭']], default: '1', help: '增加模型以预期结构输出的几率，部分模型不支持' },
+  ]},
+];
+const CFG_FIELDS_PROCESSING = [
+  { group: '视频抽帧', noTitle: true, cols: 3, fields: [
+    { sec: 'video', key: 'sampling_points', label: '采样点位', type: 'number', min: 1, help: '均匀分布的关键帧取样位置数；采样点位*每点帧数=抽取的关键帧数量', default: 7 },
+    { sec: 'video', key: 'frames_per_point', label: '每点帧数', type: 'number', min: 1, help: '每个点位取连续关键帧数，增大此项可给AI提供连续的画面信息', default: 2 },
+    { sec: 'video', key: 'frame_max_side', label: '长边像素', type: 'number', min: 64, help: '抽帧图片长边上限', default: 672 },
+  ]},
+  { group: '命名与输出', noTitle: true, cols: 3, fields: [
+    { sec: 'naming', key: 'naming_mode', label: '日期与初始文件名', type: 'select',
+      options: [['date', '添加日期前缀'], ['original', '添加初始文件名后缀'], ['both', '添加两者'], ['none', '都不添加']], default: 'date',
+      help: '请至少添加一项，降低重名几率' },
+    { sec: '__gui', key: 'nfo_auto_export', label: 'NFO输出', type: 'bool', onText: '自动导出至同目录', offText: '手动导出', help: '自动导出：自动重命名完成即写入视频同目录' },
+    { sec: '__gui', key: 'animation_enabled', label: '动画效果', type: 'bool', default: true, help: '关闭后停用界面动画与过渡效果' },
+  ]},
+];
+
+function collectConfigData() {
+  const data = { ai: {}, video: {}, naming: {} };
+  $$('#modal-body [data-key]').forEach(el => {
+    if (el.disabled) return;
+    const sec = el.dataset.sec, key = el.dataset.key;
+    let v;
+    if (el.classList && el.classList.contains('dd')) {
+      const dv = el.dataset.value;
+      v = (el.dataset.bool && (dv === '1' || dv === '0')) ? dv === '1' : dv;
+    }
+    else if (el.type === 'checkbox') v = el.checked;
+    else if (el.type === 'number') {
+      if (el.value === '') return;
+      v = Number(el.value);
+      const min = el.min !== '' ? Number(el.min) : undefined;
+      const max = el.max !== '' ? Number(el.max) : undefined;
+      if (min !== undefined && v < min) v = min;
+      if (max !== undefined && v > max) v = max;
+    }
+    else v = el.value;
+    if (sec === '__gui') data[key] = v;
+    else data[sec][key] = v;
+  });
+  return data;
+}
+
+let aiTestToken = 0;
+
+async function saveConfigAndTest() {
+  const btn = $('#btn-save-and-test');
+  if (!btn) return;
+  if (btn.dataset.testing === '1') {
+    aiTestToken++;
+    btn.disabled = false;
+    btn.dataset.testing = '';
+    btn.textContent = '测试连接';
+    toast('已停止连接测试', 'ok');
+    return;
+  }
+  const token = ++aiTestToken;
+  btn.disabled = true; btn.textContent = '正在保存…';
+  try {
+    await _cfgSave.runNow();
+    btn.textContent = '正在测试连接…';
+    btn.disabled = false;
+    btn.dataset.testing = '1';
+    const r = await withTimeout(apiCall('check_connection'), 20000);
+    if (token !== aiTestToken) return;
+    btn.dataset.testing = '';
+    const addr = r.base_url ? '（' + r.base_url + '）' : '';
+    toast(r.ok ? r.message : '连接失败: ' + (r.message || '') + addr, r.ok ? 'ok' : 'err');
+    updateConnectionUI(r);
+  } catch (e) {
+    if (token !== aiTestToken) return;
+    if (btn.dataset.testing) btn.dataset.testing = '';
+    toast('测试失败: ' + e, 'err');
+  } finally {
+    if (token === aiTestToken && btn.isConnected) {
+      btn.disabled = false; btn.textContent = '测试连接';
+      btn.dataset.testing = '';
+    }
+  }
+}
+
+function renderConfigTab(cfg) {
+  const body = $('#modal-body');
+  body.innerHTML = '';
+  const aiMasked = !!(state.llamaEnabled && state.llamaIntegration);
+  for (const g of CFG_FIELDS_AI) {
+    const gd = renderCfgGroup(g, cfg);
+    if (g.connectBtn) {
+      const btnField = document.createElement('div');
+      btnField.className = 'field';
+      btnField.style.justifyContent = 'flex-end';
+      const saveTestBtn = document.createElement('button');
+      saveTestBtn.className = 'btn';
+      saveTestBtn.id = 'btn-save-and-test';
+      saveTestBtn.textContent = '测试连接';
+      saveTestBtn.style.width = '100%';
+      saveTestBtn.onclick = saveConfigAndTest;
+      btnField.appendChild(saveTestBtn);
+      gd.querySelector('.grid-4, .grid-3, .grid-2').appendChild(btnField);
+    }
+    if (aiMasked && g.connectBtn) {
+      const w = gd.querySelector('input[data-key="ai_workers"]');
+      if (w) {
+        w.value = Math.max(1, Number(state.llamaParallel) || 1);
+        w.disabled = true;
+      }
+      const mainGrid = gd.querySelector('.grid-4, .grid-3, .grid-2');
+      const wrap = document.createElement('div');
+      wrap.className = 'ai-mask-wrap';
+      gd.replaceChild(wrap, mainGrid);
+      wrap.appendChild(mainGrid);
+      const mask = document.createElement('div');
+      mask.className = 'ai-mask';
+      mask.innerHTML =
+        '<div class="ai-mask-title">' + icon('warning') + ' 已优先使用本地推理</div>' +
+        '<div class="ai-mask-sub">AI 请求改走本地服务，基础连接设置暂不生效，下方的参数依然生效。</div>';
+      wrap.appendChild(mask);
+    }
+    body.appendChild(gd);
+  }
+  for (const g of CFG_FIELDS_PROCESSING) {
+    body.appendChild(renderCfgGroup(g, cfg));
+  }
+  if (state.settings_scroll_to === 'ai') {
+    setTimeout(() => {
+      const target = body.querySelector('.group');
+      if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        target.classList.add('highlight-pulse');
+        target.addEventListener('animationend', () => {
+          target.classList.remove('highlight-pulse');
+        }, { once: true });
+      }
+      state.settings_scroll_to = null;
+    }, 100);
+  }
+}
+
+function renderCfgGroup(g, cfg) {
+  const gd = document.createElement('div');
+  gd.className = 'group';
+  gd.innerHTML = g.noTitle ? '' : `<h3>${g.group}</h3>`;
+  const buildGrid = (fields, cols) => {
+    const grid = document.createElement('div');
+    grid.className = cols === 4 ? 'grid-4' : (cols === 3 ? 'grid-3' : 'grid-2');
+    for (const f of fields) {
+      let val;
+      if (f.sec === '__gui') val = cfg[f.key];
+      else val = cfg[f.sec] ? cfg[f.sec][f.key] : '';
+      const field = document.createElement('div');
+      field.className = 'field';
+      if (f.full) field.style.gridColumn = '1 / -1';
+      else if (f.span) field.style.gridColumn = `span ${f.span}`;
+      if (f.type === 'bool') {
+        const on = (val === undefined || val === null || val === '') ? !!f.default : !!val;
+        const onT = f.onText || '开启', offT = f.offText || '关闭';
+        field.innerHTML = `<label ${f.help ? `data-tip="${esc(f.help)}"` : ''}>${f.label}</label>` +
+          `<div class="dd" data-bool="1" data-sec="${f.sec}" data-key="${f.key}" data-value="${on ? '1' : '0'}">` +
+          `<button class="dd-btn" type="button"><span class="dd-label">${on ? onT : offT}</span>${ddArrow()}</button>` +
+          `<div class="dd-panel">` +
+          `<div class="dd-opt${on ? ' active' : ''}" data-value="1">${onT}</div>` +
+          `<div class="dd-opt${on ? '' : ' active'}" data-value="0">${offT}</div></div></div>`;
+        const dd = field.querySelector('.dd');
+        initDropdown(dd, v => { dd.dataset.value = v; scheduleConfigSave(true); });
+      } else if (f.type === 'select') {
+        const raw = (val === undefined || val === null || val === '') ? f.default : val;
+        const cur = (raw === true || raw === '1') ? '1' : (raw === false || raw === '0') ? '0' : String(raw);
+        const opts = (f.options || []).map(([v, t]) =>
+          `<div class="dd-opt${cur === String(v) ? ' active' : ''}" data-value="${esc(v)}">${esc(t)}</div>`).join('');
+        const curLabel = ((f.options || []).find(([v]) => cur === String(v)) || [])[1] || '';
+        field.innerHTML = `<label ${f.help ? `data-tip="${esc(f.help)}"` : ''}>${f.label}</label>` +
+          `<div class="dd" data-bool="1" data-sec="${f.sec}" data-key="${f.key}" data-value="${esc(cur)}">` +
+          `<button class="dd-btn" type="button"><span class="dd-label">${esc(curLabel)}</span>${ddArrow()}</button>` +
+          `<div class="dd-panel">${opts}</div></div>`;
+        const dd = field.querySelector('.dd');
+        initDropdown(dd, v => { dd.dataset.value = v; scheduleConfigSave(true); });
+      } else {
+        const ph = f.default != null ? ` placeholder="${esc(String(f.default))}"` : '';
+        const a = `type="${f.type}" data-sec="${f.sec}" data-key="${f.key}" value="${esc(val == null ? '' : val)}"` +
+          (f.min != null ? ` min="${f.min}"` : '') + (f.max != null ? ` max="${f.max}"` : '') + (f.step != null ? ` step="${f.step}"` : '') + ph;
+        if (f.type === 'password') {
+          field.innerHTML = `<label ${f.help ? `data-tip="${esc(f.help)}"` : ''}>${f.label}</label><div class="input-wrap"><input ${a}/><button type="button" class="eye-btn" data-tip="显示/隐藏">${icon('eye')}</button></div>`;
+        } else {
+          field.innerHTML = `<label ${f.help ? `data-tip="${esc(f.help)}"` : ''}>${f.label}</label><input ${a}/>`;
+        }
+      }
+      grid.appendChild(field);
+    }
+    return grid;
+  };
+  gd.appendChild(buildGrid(g.fields, g.cols));
+  gd.querySelectorAll('.eye-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const inp = btn.parentElement.querySelector('input');
+      const show = inp.type === 'password';
+      inp.type = show ? 'text' : 'password';
+      btn.innerHTML = icon(show ? 'eye-off' : 'eye');
+    });
+  });
+  return gd;
+}
+
+async function renderTabWithLoading(bodyEl, fetchFn, renderFn, retryFn) {
+  const seq = _settingsSeq;
+  try {
+    const data = await fetchFn();
+    if (seq !== _settingsSeq) return;
+    renderFn(data);
+    animateModalBody();
+    bodyEl.scrollTop = state.settingsScroll;
+  } catch (e) {
+    if (seq !== _settingsSeq) return;
+    bodyEl.innerHTML = '<div class="empty">' + icon('warning') + ' 加载失败：' + esc(String(e).slice(0, 100)) +
+      '<br/><br/><button class="btn">重试</button></div>';
+    bodyEl.querySelector('button').onclick = retryFn;
+  }
+}
+
+async function renderPromptsTabWrapper() {
+  const body = $('#modal-body');
+  await renderTabWithLoading(body,
+    async () => {
+      const page = await apiCall('get_prompts_page');
+      state.active_preset_id = page.active.preset.id;
+      state.pvUseExample = !!page.active.use_example;
+      return { presets: page.presets, preset: page.active.preset };
+    },
+    (data) => renderPromptsTab(data.presets, data.preset),
+    () => renderSettings()
+  );
+}
+
+async function renderWorkspaceTabWrapper() {
+  const body = $('#modal-body');
+  const seq = _settingsSeq;
+  body.innerHTML = `
+    <div class="cw-page">
+      <div class="cw-grid">
+        ${'<div class="cw-skel sk-card"></div>'.repeat(6)}
+      </div>
+      <div class="cw-hero">
+        <div class="cw-bars">
+          <div class="cw-skel sk-bar"></div><div class="cw-skel sk-bar"></div>
+          <div class="cw-skel sk-bar"></div><div class="cw-skel sk-bar"></div>
+          <div class="cw-skel sk-btn"></div>
+        </div>
+      </div>
+    </div>`;
+  try {
+    const stats = await apiCall('get_workspace_stats');
+    if (seq !== _settingsSeq) return;
+    renderWorkspaceTab(stats);
+  } catch (e) {
+    if (seq !== _settingsSeq) return;
+    body.innerHTML = '<div class="empty">' + icon('warning') + ' 加载失败：' + esc(String(e).slice(0, 100)) +
+      '<br/><br/><button class="btn">重试</button></div>';
+    body.querySelector('button').onclick = () => renderSettings();
+  }
+}
+
+async function renderTermsTabWrapper() {
+  const body = $('#modal-body');
+  await renderTabWithLoading(body,
+    () => apiCall('get_term_library'),
+    (lib) => renderTermsTab(lib),
+    () => renderSettings()
+  );
+}
+
+let _cfgSaveToken = 0;
+
+async function _saveConfigNow() {
+  if (!$('#modal-body [data-key]')) return;
+  const token = ++_cfgSaveToken;
+  const data = collectConfigData();
+  try {
+    const res = await apiCall('save_config', data);
+    if (res && res.ok) {
+      if ('animation_enabled' in data) applyDisableAnimation(data.animation_enabled === false);
+    } else if (token === _cfgSaveToken) {
+      toast('保存失败: ' + ((res && res.error) || ''), 'err');
+    }
+  } catch (e) {
+    if (token === _cfgSaveToken) toast('保存失败: ' + e, 'err');
+  }
+}
+
+const _cfgSave = makeDebouncedSave(600, _saveConfigNow);
+const scheduleConfigSave = _cfgSave.schedule;
+const flushPendingConfigSave = _cfgSave.flush;
+
+$('#modal-body').addEventListener('input', e => {
+  const el = e.target;
+  if (state.settings_tab !== 'config' || !el.matches || !el.matches('[data-sec][data-key]')) return;
+  if (el.type === 'checkbox') return;
+  scheduleConfigSave();
+});
+
+$('#modal-body').addEventListener('change', e => {
+  const el = e.target;
+  if (state.settings_tab !== 'config' || !el.matches || !el.matches('[data-sec][data-key]')) return;
+  if (el.type === 'checkbox') scheduleConfigSave(true);
+});

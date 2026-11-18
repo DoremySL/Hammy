@@ -430,7 +430,7 @@ def analyze_frames(
     slot_id: Optional[int] = None, term_recall=None,
 ) -> AnalyzeResult:
     """调用 AI 分析关键帧；literal_meta（tagger C 段名单）作字面召回查询词，
-    tagger_hits（A/B 优先条目）直接置顶注入；enhanced 追加第二轮向量召回修订。"""
+    tagger_hits（A 组条目）直接置顶注入；enhanced 追加第二轮向量召回修订。"""
     if not frames:
         logger.warning("无有效帧可发送")
         return AnalyzeResult("", "", [], 0, "无有效帧", "other")

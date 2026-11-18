@@ -85,7 +85,7 @@ class TaskContext:
         # LLM 组 prompt 用的辅助上下文（辅助 worker 完成时回填；prefill 直接携带）
         self.extra_meta = extra_meta
         self.literal_meta = literal_meta
-        self.tagger_hits = tagger_hits  # A/B 优先注入条目（分数序）
+        self.tagger_hits = tagger_hits  # A 组优先注入条目（分数序）
         # 缩略图缓存：int(ts + 0.5) 秒 → Frame（与提示词时间标签同一取整口径）
         self.thumb_lookup: Optional[Dict[int, Frame]] = None
         # 帧缓存额度（FrameProducer 信号量）：提交抽帧前置位，release 时归位
@@ -302,11 +302,8 @@ class AIWorker:
         # 可选 NFO 目标命名函数（缓存模式防同 stem 冲突）
         self._nfo_namer = nfo_namer
         self.slot_id = slot_id   # llama 集成时 worker i → slot i，两轮同槽命中缓存
-        # on/enhanced 都下发给 analyze_frames；两轮耗时估算只看 enhanced+向量可用
-        self.term_recall = (term_recall
-                           if term_recall is not None
-                           and getattr(term_recall, "mode", "") in ("on", "enhanced")
-                           else None)
+        # off 档也下发：仅注入 tagger 置顶条目
+        self.term_recall = term_recall
         self.two_round = bool(self.term_recall is not None
                               and getattr(self.term_recall, "has_dense", False))
 

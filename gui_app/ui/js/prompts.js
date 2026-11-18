@@ -1,0 +1,184 @@
+/* ════════════════════════════════════════════════════════════
+   设置 Modal - 提示词模板页
+   ════════════════════════════════════════════════════════════ */
+
+async function pvLeaveGuard() {
+  if (!state.pvDirty) return true;
+  if (!await showConfirm('当前模板有未保存的修改，确定丢弃？', { okText: '丢弃修改' })) return false;
+  state.pvDirty = false;
+  return true;
+}
+
+function renderPromptsTab(presets, activePreset) {
+  const body = $('#modal-body');
+  state.pvDirty = false;
+  const isCustom = activePreset.id.startsWith('custom_');
+  const canSave = isCustom;
+  body.innerHTML = `
+    <div class="preset-wrap">
+      <input type="hidden" id="preset-editing-id" value="${esc(activePreset.id)}"/>
+      <div class="preset-hero">
+        <div class="dd" id="preset-select">
+          <button class="dd-btn"><span class="dd-label">${esc(activePreset.name)}</span>${ddArrow()}</button>
+          <div class="dd-panel">
+            ${presets.map(p => `<div class="dd-opt${p.id === activePreset.id ? ' active' : ''}" data-value="${esc(p.id)}">${esc(p.name)}</div>`).join('')}
+          </div>
+        </div>
+        <span class="exp-badge warn" id="pv-dirty-badge" style="display:none">未保存</span>
+        <div class="preset-hero-actions">
+          <button class="a-toggle${state.pvUseExample ? ' on' : ''}" id="pv-use-example" data-tip="开启后会附加示例段供模型参考，可调整示例让AI输出更符合个人需求的文风"><span class="dot"></span><span class="txt">拼接示例 · ${state.pvUseExample ? '开' : '关'}</span></button>
+          <button class="a-toggle${state.thumbOptimize ? ' on' : ''}" id="pv-thumb-opt" data-tip="开启后提示模型给出最符合视频主题的封面截图时间戳，自动重命名完成时据此重新生成缩略图；对模型能力有要求"><span class="dot"></span><span class="txt">缩略图优化 · ${state.thumbOptimize ? '开' : '关'}</span></button>
+          <button class="ws-btn" id="btn-save-as-preset">保存为新模板</button>
+          <button class="ws-btn danger" id="btn-delete-preset" ${canSave ? '' : 'disabled'}>删除</button>
+          <button class="ws-btn primary" id="btn-save-preset" ${canSave ? '' : 'disabled'} data-tip="${canSave ? '保存对该模板的修改' : '内置模板不可保存，请「保存为新模板」'}">保存</button>
+        </div>
+      </div>
+
+      <div class="group">
+      <h3><span class="tip-text" data-tip="定义 AI 的角色与行为准则，作用于所有字段的生成。">系统提示词（System Prompt）</span></h3>
+      <div class="field"><textarea id="preset-system_prompt" data-field="system_prompt" rows="2" style="min-height:0">${esc(activePreset.system_prompt || '')}</textarea></div>
+    </div>
+    <div class="group">
+      <div class="field"><label>plot 描述要求</label><textarea data-field="plot_guidance">${esc(activePreset.fields.plot_guidance)}</textarea></div>
+      <div class="field" style="margin-top:14px"><label>title 字数/格式要求</label><input type="text" data-field="title_guidance" value="${esc(activePreset.fields.title_guidance)}"/></div>
+      <div class="field" style="margin-top:14px"><label>tags 维度要求</label><input type="text" data-field="tags_dim" value="${esc(activePreset.fields.tags_dim)}"/></div>
+      <div class="field" id="pv-thumb-guide-field" style="margin-top:14px;${state.thumbOptimize ? '' : 'display:none'}">
+        <label>thumb_time 引导</label>
+        <input type="text" data-field="thumb_time_guidance" value="${esc(activePreset.fields.thumb_time_guidance || '')}"/>
+      </div>
+    </div>
+    <div class="group" id="pv-example-group" style="${state.pvUseExample ? '' : 'display:none'}">
+      <div class="field"><label>plot 示例</label><textarea data-field="plot_example" style="min-height:100px">${esc(activePreset.fields.plot_example)}</textarea></div>
+      <div class="field" style="margin-top:14px"><label>tags 示例</label><textarea data-field="tags_example" rows="2" style="min-height:0">${esc(activePreset.fields.tags_example)}</textarea></div>
+      <div class="field" style="margin-top:14px"><label>title 示例</label><input type="text" data-field="title_example" value="${esc(activePreset.fields.title_example)}"/></div>
+      <div class="field" id="pv-thumb-example-field" style="margin-top:14px;${state.thumbOptimize ? '' : 'display:none'}">
+        <label>thumb_time 示例</label>
+        <input type="text" data-field="thumb_time_example" value="${esc(activePreset.fields.thumb_time_example || '')}"/>
+      </div>
+    </div>
+  `;
+
+  body.querySelectorAll('[data-field]').forEach(el => el.addEventListener('input', () => {
+    state.pvDirty = true;
+    const b = $('#pv-dirty-badge');
+    if (b) b.style.display = '';
+  }));
+
+  $('#pv-use-example').addEventListener('click', async () => {
+    const btn = $('#pv-use-example');
+    const apply = on => {
+      btn.classList.toggle('on', on);
+      btn.querySelector('.txt').textContent = '拼接示例 · ' + (on ? '开' : '关');
+      $('#pv-example-group').style.display = on ? '' : 'none';
+    };
+    const on = !state.pvUseExample;
+    apply(on);
+    const r = await callApi('set_prompt_use_example', on);
+    if (!r || !r.ok) {
+      if (r && !r.ok) toast(r.error || '设置失败', 'err');
+      apply(!on);
+      return;
+    }
+    state.pvUseExample = on;
+  });
+
+  $('#pv-thumb-opt').addEventListener('click', async () => {
+    const btn = $('#pv-thumb-opt');
+    const apply = on => {
+      btn.classList.toggle('on', on);
+      btn.querySelector('.txt').textContent = '缩略图优化 · ' + (on ? '开' : '关');
+      const g = $('#pv-thumb-guide-field'); if (g) g.style.display = on ? '' : 'none';
+      const e = $('#pv-thumb-example-field'); if (e) e.style.display = on ? '' : 'none';
+    };
+    const on = !state.thumbOptimize;
+    apply(on);
+    const r = await callApi('set_prompt_thumb_optimize', on);
+    if (!r || !r.ok) {
+      if (r && !r.ok) toast(r.error || '设置失败', 'err');
+      apply(!on);
+      return;
+    }
+    state.thumbOptimize = on;
+  });
+
+  initDropdown($('#preset-select'), async (val) => {
+    if (val === state.active_preset_id) return;
+    if (!await pvLeaveGuard()) {
+      setDropdownValue($('#preset-select'), state.active_preset_id);
+      return;
+    }
+    const r = await callApi('set_active_preset', val);
+    if (!r) return;
+    if (!r.ok) { toast(r.error || '启用失败', 'err'); return; }
+    state.active_preset_id = val;
+    const p = await callApi('get_preset', val);
+    if (p && !p.error) renderPromptsTab(presets, p);
+  });
+  $('#btn-save-as-preset').onclick = async () => {
+    const name = await showPrompt('新模板将包含当前编辑的全部内容。', {
+      title: '保存为新模板',
+      defaultValue: activePreset.name + ' 副本',
+      okText: '保存',
+    });
+    if (!name) return;
+    const data = collectPresetData(name);
+    data.id = '';
+    const res = await callApi('save_preset', data);
+    if (!res) return;
+    if (res.ok) {
+      state.pvDirty = false;
+      toast('已保存为新模板', 'ok');
+      await callApi('set_active_preset', res.id);
+      state.active_preset_id = res.id;
+      const presets2 = await callApi('list_presets');
+      const p = await callApi('get_preset', res.id);
+      if (presets2 && p) renderPromptsTab(presets2, p);
+    } else toast('保存失败: ' + (res.error || ''), 'err');
+  };
+  $('#btn-save-preset').onclick = async () => {
+    const res = await callApi('save_preset', collectPresetData(activePreset.name));
+    if (!res) return;
+    if (res.ok) {
+      state.pvDirty = false;
+      toast('模板已保存', 'ok');
+      await callApi('set_active_preset', res.id);
+      state.active_preset_id = res.id;
+      const presets2 = await callApi('list_presets');
+      const p = await callApi('get_preset', res.id);
+      if (presets2 && p) renderPromptsTab(presets2, p);
+    } else toast('保存失败: ' + (res.error || ''), 'err');
+  };
+  $('#btn-delete-preset').onclick = async () => {
+    const sel = getDropdownValue($('#preset-select'));
+    if (sel === 'default') { toast('内置模板不允许删除', 'err'); return; }
+    if (!await showConfirm('确定删除该模板？', { okText: '删除' })) return;
+    if (sel === state.active_preset_id) {
+      const ra = await callApi('set_active_preset', 'default');
+      if (!ra || !ra.ok) { toast((ra && ra.error) || '回退默认模板失败', 'err'); return; }
+      state.active_preset_id = 'default';
+    }
+    const r = await callApi('delete_preset', sel);
+    if (!r) return;
+    if (r.ok) {
+      state.pvDirty = false;
+      const presets2 = await callApi('list_presets');
+      const active2 = await callApi('get_active_preset');
+      if (presets2 && active2) renderPromptsTab(presets2, active2.preset);
+      toast('已删除', 'ok');
+    } else toast(r.error || '失败', 'err');
+  };
+}
+
+function collectPresetData(name) {
+  const preset = {
+    id: $('#preset-editing-id') ? $('#preset-editing-id').value : '',
+    name: name || '未命名',
+    system_prompt: $('#preset-system_prompt').value,
+    fields: {},
+  };
+  $$('#modal-body [data-field]').forEach(el => {
+    if (el.dataset.field === 'system_prompt') return;
+    preset.fields[el.dataset.field] = el.value;
+  });
+  return preset;
+}

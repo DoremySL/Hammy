@@ -1,4 +1,5 @@
 """视频探测、关键帧抽取。"""
+import bisect
 import json
 import base64
 import os
@@ -6,6 +7,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from concurrent import futures
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any
 
@@ -21,6 +23,8 @@ from .types import Frame
 # ── 抽帧策略常量 ──
 _SHORT_VIDEO_THRESHOLD = 10.0   # 无关键帧的短视频走"头中尾"三帧兜底
 _MIN_KEYFRAME_GAP_SEC = 1.0    # 关键帧最小间隔（稀疏化）
+_KF_PAIR_FRAMES = 8            # 目标后此帧数内还有关键帧时 concat 段会多吐帧（B 帧 dts 滞后），跳过 concat
+_PER_FRAME_WORKERS = 4         # 逐帧抽取的并发进程数
 
 # ── 子进程超时（秒）──
 _PROBE_META_TIMEOUT_SEC = 15.0    # ffprobe 元数据 JSON 探测
@@ -288,14 +292,28 @@ def _extract_per_frame(video_path: str, timestamps: List[float], config: Config,
                        stop_event: threading.Event,
                        frame_vf: Optional[str] = None,
                        start_time: float = 0.0) -> List[Frame]:
-    """逐帧抽取兜底：单帧失败/取消跳过。"""
-    frames = []
-    for ts in timestamps:
-        f = _extract_frame(video_path, ts, config, stop_event,
-                           frame_vf=frame_vf, start_time=start_time)
-        if f:
-            frames.append(f)
-    return frames
+    """逐帧抽取兜底：并发单帧进程，结果按时间戳顺序保留；单帧失败/取消跳过。"""
+    if not timestamps:
+        return []
+    with futures.ThreadPoolExecutor(max_workers=_PER_FRAME_WORKERS) as ex:
+        results = list(ex.map(
+            lambda ts: _extract_frame(video_path, ts, config, stop_event,
+                                       frame_vf=frame_vf, start_time=start_time),
+            timestamps))
+    return [f for f in results if f]
+
+
+def _concat_vulnerable(key_ts: List[float], timestamps: List[float],
+                        frame_rate: float) -> bool:
+    """目标关键帧后极近处还有关键帧（编码器成对插入）时，concat 的 outpoint 按 dts
+    截断会漏进相邻关键帧导致配帧不齐，此类目标直接走逐帧。"""
+    tau = 1.0 / frame_rate if frame_rate > 1 else 0.033
+    limit = _KF_PAIR_FRAMES * tau
+    for t in timestamps:
+        i = bisect.bisect_right(key_ts, t)
+        if i < len(key_ts) and key_ts[i] - t <= limit:
+            return True
+    return False
 
 
 def _split_jpegs(data: bytes) -> List[bytes]:
@@ -516,17 +534,18 @@ def probe_and_extract_keyframes(video_path: str, config: Config, stop_event: thr
         # TS：逐帧
         frames = _extract_per_frame(video_path, timestamps, config, stop_event,
                                     frame_vf=frame_vf, start_time=start_time)
-    elif mode == "auto" and key_ts and aligned:
+    elif mode == "auto" and key_ts and aligned \
+            and not _concat_vulnerable(key_ts, timestamps, frame_rate):
         # auto：关键帧点位单进程多段，配帧不齐回退逐帧
         frames = _extract_frames_concat(video_path, timestamps, config, stop_event,
                                         frame_rate, frame_vf=frame_vf) or []
         if not frames:
             frames = _extract_per_frame(video_path, timestamps, config, stop_event,
-                                        frame_vf=frame_vf, start_time=start_time)
+                                         frame_vf=frame_vf, start_time=start_time)
     else:
-        # per_frame / legacy 非TS / 兜底点位（非关键帧对齐）：逐帧
+        # per_frame / legacy 非TS / 兜底点位 / 成对关键帧：逐帧
         frames = _extract_per_frame(video_path, timestamps, config, stop_event,
-                                    frame_vf=frame_vf, start_time=start_time)
+                                     frame_vf=frame_vf, start_time=start_time)
 
     # 点位归属：时间戳 → 首个声明它的点位索引
     point_of: Dict[float, int] = {}
