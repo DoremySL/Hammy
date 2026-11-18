@@ -338,8 +338,8 @@ class TestAutoRunMergesModelConfig(unittest.TestCase):
         return api, launch_mock
 
     def test_uses_last_run_model_config(self):
-        cfg = _cfg(llama_enabled=True)
-        llama = {"auto_run": True,
+        cfg = _cfg()
+        llama = {"enabled": True, "auto_run": True,
                  "last_model": "C:/m.gguf",       # 上次成功运行的模型
                  "model": "C:/other.gguf"}        # 设置页当前选中（应被忽略）
         mcfgs = {"C:/m.gguf": {"host": "0.0.0.0", "port": 9999, "ctx": 8192}}
@@ -357,8 +357,8 @@ class TestAutoRunMergesModelConfig(unittest.TestCase):
 
     def test_missing_last_model_falls_back_to_selected(self):
         # 记录的模型已不存在 → 回退设置页选中的模型
-        cfg = _cfg(llama_enabled=True)
-        llama = {"auto_run": True,
+        cfg = _cfg()
+        llama = {"enabled": True, "auto_run": True,
                  "last_model": "C:/gone.gguf",
                  "model": "C:/m.gguf"}
         mcfgs = {"C:/m.gguf": {"port": 7777}}
@@ -371,8 +371,8 @@ class TestAutoRunMergesModelConfig(unittest.TestCase):
 
     def test_no_records_falls_back_to_auto_pick(self):
         # 无记录且未选中模型 → 传空串交给 launch 自动选择
-        cfg = _cfg(llama_enabled=True)
-        llama = {"auto_run": True}
+        cfg = _cfg()
+        llama = {"enabled": True, "auto_run": True}
         api, launch_mock = self._make_api(cfg, llama,
                                           is_file=lambda self: False, mcfgs={})
         r = api.auto_run_llama()
@@ -409,7 +409,7 @@ class TestEnsureLlamaRunning(unittest.TestCase):
     def test_running_returns_ready(self):
         # 已运行 → 直接就绪，不再发起启动
         api, launch_mock = self._make_api(
-            _cfg(llama_enabled=True), {}, {"ready": True, "running": True},
+            _cfg(), {"enabled": True}, {"ready": True, "running": True},
             is_file=lambda self: True, mcfgs={})
         r = api.ensure_llama_running()
         self.assertEqual(r, {"ok": True, "ready": True})
@@ -418,7 +418,7 @@ class TestEnsureLlamaRunning(unittest.TestCase):
     def test_starting_returns_starting(self):
         # 正在启动（如本地推理页启动中）→ 返回 starting，前端轮询等待
         api, launch_mock = self._make_api(
-            _cfg(llama_enabled=True), {}, {"ready": True, "running": False, "starting": True},
+            _cfg(), {"enabled": True}, {"ready": True, "running": False, "starting": True},
             is_file=lambda self: True, mcfgs={})
         r = api.ensure_llama_running()
         self.assertEqual(r, {"ok": True, "ready": False, "starting": True})
@@ -426,7 +426,7 @@ class TestEnsureLlamaRunning(unittest.TestCase):
 
     def test_not_installed_errors(self):
         api, launch_mock = self._make_api(
-            _cfg(llama_enabled=True), {}, {"ready": False, "running": False},
+            _cfg(), {"enabled": True}, {"ready": False, "running": False},
             is_file=lambda self: True, mcfgs={})
         r = api.ensure_llama_running()
         self.assertFalse(r["ok"])
@@ -445,8 +445,8 @@ class TestEnsureLlamaRunning(unittest.TestCase):
 
     def test_launches_with_last_run_model_config(self):
         # 未运行 → 按「上次成功运行的模型 + per-model 配置」自动拉起
-        cfg = _cfg(llama_enabled=True)
-        llama = {"last_model": "C:/m.gguf",
+        cfg = _cfg()
+        llama = {"enabled": True, "last_model": "C:/m.gguf",
                  "model": "C:/other.gguf"}       # 应被忽略
         mcfgs = {"C:/m.gguf": {"port": 9999, "ctx": 8192}}
         api, launch_mock = self._make_api(
@@ -462,8 +462,8 @@ class TestEnsureLlamaRunning(unittest.TestCase):
         self.assertNotIn("model_configs", params)
 
     def test_missing_last_model_falls_back_to_selected(self):
-        cfg = _cfg(llama_enabled=True)
-        llama = {"last_model": "C:/gone.gguf",
+        cfg = _cfg()
+        llama = {"enabled": True, "last_model": "C:/gone.gguf",
                  "model": "C:/m.gguf"}
         api, launch_mock = self._make_api(
             cfg, llama, {"ready": True, "running": False},
@@ -473,7 +473,7 @@ class TestEnsureLlamaRunning(unittest.TestCase):
 
     def test_no_records_falls_back_to_auto_pick(self):
         api, launch_mock = self._make_api(
-            _cfg(llama_enabled=True), {}, {"ready": True, "running": False},
+            _cfg(), {"enabled": True}, {"ready": True, "running": False},
             is_file=lambda self: False, mcfgs={})
         r = api.ensure_llama_running()
         self.assertTrue(r["ok"])

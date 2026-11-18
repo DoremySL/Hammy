@@ -200,21 +200,21 @@ class TestMergedInjection(unittest.TestCase):
         self.assertEqual(kws, [])
 
     def test_tagger_hits_priority_and_dedup(self):
-        # A/B 条目置顶保序，字面命中排后并去重，共享 top_k
+        # tagger 条目置顶保序，字面命中排后并去重，共享 top_k
         items = [{"keyword": "制服", "description": "穿着制服"},
                  {"keyword": "海边", "description": ""}]
         hits = [{"keyword": "视觉确认", "description": "A段"},
                 {"keyword": "制服", "description": "重复条目"}]
         tr = _on(items=items, top_k=2)
         _, kws = tr.merged_injection({"filename": "【制服】【海边】"}, hits)
-        self.assertEqual(kws, ["视觉确认", "制服"])  # 预算被 A/B 吃满，海边挤出
+        self.assertEqual(kws, ["视觉确认", "制服"])  # 预算被置顶条目吃满，海边挤出
         tr3 = _on(items=items, top_k=3)
         section, kws = tr3.merged_injection({"filename": "【制服】【海边】"}, hits)
         self.assertEqual(kws, ["视觉确认", "制服", "海边"])
         self.assertLess(section.index("- 视觉确认"), section.index("- 海边"))
 
     def test_tagger_hits_only_when_off(self):
-        # 检索关闭时 A/B 条目仍注入（不依赖检索开关）
+        # 检索关闭时 tagger 条目仍注入（不依赖检索开关）
         tr = TermRecall(ITEMS, mode="off")
         section, kws = tr.merged_injection({"filename": "制服"},
                                            [{"keyword": "视觉确认", "description": ""}])

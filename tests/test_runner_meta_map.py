@@ -11,8 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from gui_app.workspace_paths import stable_id
 from gui_app.runner import PipelineRunner
 
-EXP = {"transcribe_enabled": True, "transcribe_max_chars": 800,
-       "transcribe_inject_timestamps": False}
+EXP = {"enabled": True, "max_chars": 800, "inject_timestamps": False}
 
 SRT_SAMPLE = "1\n00:00:00,000 --> 00:00:05,000\nこんにちは、世界。\n"
 
@@ -48,7 +47,7 @@ class TestBuildTranscribeMetaMap(unittest.TestCase):
 
     def test_disabled_returns_empty(self):
         r = self._make_runner()._build_transcribe_meta_map(
-            ["C:/a.mp4"], {"transcribe_enabled": False})
+            ["C:/a.mp4"], {"enabled": False})
         self.assertEqual(r, {})
 
     def test_srt_builds_block(self):

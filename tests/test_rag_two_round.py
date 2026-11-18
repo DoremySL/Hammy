@@ -222,6 +222,22 @@ class TestOnModeSingleRound(unittest.TestCase):
         self.assertNotIn("词条检索", r1_text)
         self.assertEqual(result.recalled, -1)  # 字面检索不追加召回日志
 
+    def test_off_mode_tagger_hits_still_injected(self):
+        # 检索关闭档：仅注入 tagger 置顶条目，不做字面召回
+        client = _FakeClient([R1_CITY])
+        result = analyze_frames(client, "m", _frames(), _cfg(), threading.Event(),
+                                "C:/城市夜景.mp4", 60.0,
+                                term_recall=TermRecall(ITEMS, mode="off"),
+                                tagger_hits=[{"keyword": "灵梦", "description": "红白",
+                                              "related": "hakurei_reimu",
+                                              "group": "Hammy-tagger"}])
+        self.assertEqual(len(client.calls), 1)
+        r1_text = json.dumps(client.calls[0]["messages"], ensure_ascii=False)
+        self.assertIn("【词条参考】", r1_text)
+        self.assertIn("- 灵梦：红白", r1_text)
+        self.assertNotIn("海边", r1_text)  # off 档不做字面召回
+        self.assertEqual(result.recalled, -1)
+
     def test_on_mode_no_recall_log_count(self):
         # 开启档有命中：注入生效但不计入 recalled（完成日志不显示「召回N个关键词」）
         client = _FakeClient([R1])

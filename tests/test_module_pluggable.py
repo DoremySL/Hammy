@@ -97,151 +97,54 @@ class _WorkspaceTestCase(unittest.TestCase):
 
 
 # ═══════════════════════════════════════════════════════════════
-# load_config 组装 experimental 段（前端结构不变，组装不落盘）
+# set_tagger_config / set_transcribe_config：前端按模块提交
 # ═══════════════════════════════════════════════════════════════
 
-def _TAGGER_KEYMAP_DEFAULTS():
-    from gui_app import config_store
-    # 只取映射过的键：未映射键（precision 内部状态）不进 experimental 段
-    return {config_store._TAGGER_KEY_MAP[k]: v
-            for k, v in _tagger_defaults().items() if k in config_store._TAGGER_KEY_MAP}
+class TestSetModuleConfig(unittest.TestCase):
+    """模块配置提交端点：values 原地并入模块文件。"""
+
+    def _api(self):
+        from gui_app.api_mixins.experimental import ExperimentalMixin
+        return ExperimentalMixin()
+
+    def test_set_tagger_config(self):
+        api = self._api()
+        with mock.patch("gui_app.api_mixins.experimental.update_tagger_config") as up:
+            r = api.set_tagger_config({"enabled": True, "threshold": 0.8})
+        self.assertEqual(r, {"ok": True})
+        cfg = {"enabled": False, "integration": False}
+        self.assertIsNone(up.call_args[0][0](cfg))  # 原地修改，返回 None
+        self.assertEqual(cfg, {"enabled": True, "integration": False, "threshold": 0.8})
+
+    def test_set_transcribe_config(self):
+        api = self._api()
+        with mock.patch("gui_app.api_mixins.experimental.update_transcribe_config") as up:
+            r = api.set_transcribe_config({"enabled": True, "language": "en"})
+        self.assertEqual(r, {"ok": True})
+        cfg = {"enabled": False, "model": "whisper-turbo"}
+        up.call_args[0][0](cfg)
+        self.assertEqual(cfg["enabled"], True)
+        self.assertEqual(cfg["language"], "en")
+
+    def test_empty_values_noop(self):
+        api = self._api()
+        with mock.patch("gui_app.api_mixins.experimental.update_tagger_config") as up:
+            r = api.set_tagger_config(None)
+        self.assertEqual(r, {"ok": True})
+        up.assert_called_once()
 
 
-def _TRANSCRIBE_KEYMAP_DEFAULTS():
-    from gui_app import config_store
-    return {config_store._TRANSCRIBE_KEY_MAP[k]: v
-            for k, v in _transcribe_defaults().items()}
+class TestSaveConfigPlain(_WorkspaceTestCase):
+    """save_config：纯 config.json 深合并，不再拆键路由模块文件。"""
 
-
-class TestAssemble(_WorkspaceTestCase):
-    """_assemble_experimental：模块文件夹 → experimental 段。"""
-
-    def test_assemble_defaults(self):
+    def test_experimental_rag_stays_in_config(self):
         from gui_app import config_store
         self._write_config(_cfg())
-        exp = config_store.load_config()["experimental"]
-        # tagger + 语音转录 + llama 2 开关，全部默认值
-        self.assertEqual(exp, {
-            **_TAGGER_KEYMAP_DEFAULTS(), **_TRANSCRIBE_KEYMAP_DEFAULTS(),
-            "llama_enabled": False, "llama_integrate": False,
-        })
-        # 内部状态键（precision）不进设置段
-        self.assertNotIn("precision", exp)
+        config_store.save_config({"experimental": {"rag_vec_enabled": True}})
+        self.assertEqual(self._disk_cfg()["experimental"], {"rag_vec_enabled": True})
+        self.assertFalse(self.paths["tagger"].exists())  # 模块文件不受影响
 
-    def test_assemble_reflects_module_files(self):
-        from gui_app import config_store
-        self._write("tagger", {"enabled": True, "integration": True})
-        self._write("transcribe", {"enabled": True, "language": "en"})
-        self._write("llama", {"enabled": True, "integrate": True})
-        self._write_config(_cfg())
-        exp = config_store.load_config()["experimental"]
-        self.assertIs(exp["tagger_enabled"], True)
-        self.assertIs(exp["tagger_integration"], True)
-        self.assertIs(exp["transcribe_enabled"], True)
-        self.assertEqual(exp["transcribe_language"], "en")
-        self.assertIs(exp["llama_enabled"], True)
-        self.assertIs(exp["llama_integrate"], True)
-
-    def test_assemble_not_persisted(self):
-        # 组装只发生在返回值（内存）：磁盘 config.json 不写任何模块键
-        from gui_app import config_store
-        self._write("tagger", {"enabled": True, "integration": True})
-        self._write("transcribe", {"enabled": True, "language": "en"})
-        self._write("llama", {"enabled": True, "integrate": True})
-        self._write_config(_cfg())
-        config_store.load_config()
-        disk = self._disk_cfg()
-        self.assertEqual(disk.get("experimental", {}), {})
-        self.assertEqual(
-            [k for k in disk if "tagger" in k or "transcribe" in k or "llama" in k],
-            [])
-
-    def test_module_dir_deleted_still_usable(self):
-        # 模拟卸载：模块文件夹整个删除后，load_config 用默认值组装，程序可用
-        from gui_app import config_store
-        self._write("tagger", {"enabled": True, "integration": True})
-        self._write("transcribe", {"enabled": True})
-        self._write("llama", {"enabled": True, "integrate": True})
-        self._write_config(_cfg())
-        shutil.rmtree(self.paths["tagger"].parent)   # 卸载 tagger
-        shutil.rmtree(self.paths["transcribe"].parent)  # 卸载语音转录
-        shutil.rmtree(self.paths["llama"].parent)    # 卸载 llama
-        exp = config_store.load_config()["experimental"]
-        self.assertIs(exp["tagger_enabled"], False)
-        self.assertIs(exp["transcribe_enabled"], False)
-        self.assertIs(exp["llama_enabled"], False)
-        self.assertIs(exp["llama_integrate"], False)
-        # 磁盘 config.json 的 experimental 段仍为空（无模块键残留）
-        self.assertEqual(self._disk_cfg().get("experimental", {}), {})
-
-
-# ═══════════════════════════════════════════════════════════════
-# save_config 拆键路由
-# ═══════════════════════════════════════════════════════════════
-
-class TestSaveConfigSplit(_WorkspaceTestCase):
-    """save_config：experimental 提交的 tagger_*/transcribe_* 路由到模块文件。"""
-
-    def test_tagger_keys_route_to_module_file(self):
-        from gui_app import config_store
-        self._write_config(_cfg())
-        r = config_store.save_config({
-            "experimental": {"tagger_enabled": True, "tagger_integration": True},
-        })
-        self.assertTrue(r["ok"])
-        # 模块文件：默认值 + 提交值
-        self.assertEqual(self._read("tagger")["enabled"], True)
-        self.assertIs(self._read("tagger")["integration"], True)
-        # config.json：experimental 段为空（模块键不落盘）
-        self.assertEqual(self._disk_cfg().get("experimental", {}), {})
-
-    def test_transcribe_keys_route_to_module_file(self):
-        from gui_app import config_store
-        self._write_config(_cfg())
-        config_store.save_config({
-            "experimental": {"transcribe_enabled": True, "transcribe_language": "en"},
-        })
-        self.assertEqual(self._read("transcribe")["enabled"], True)
-        self.assertEqual(self._read("transcribe")["language"], "en")
-        self.assertEqual(self._disk_cfg().get("experimental", {}), {})
-
-    def test_mixed_exp_routes(self):
-        from gui_app import config_store
-        self._write_config(_cfg())
-        config_store.save_config({
-            "experimental": {"tagger_threshold": 0.8, "transcribe_language": "ja"},
-        })
-        self.assertEqual(self._read("tagger")["threshold"], 0.8)
-        self.assertEqual(self._read("transcribe")["language"], "ja")
-        self.assertEqual(self._disk_cfg().get("experimental", {}), {})
-
-    def test_rest_keys_stay_in_config(self):
-        from gui_app import config_store
-        self._write_config(_cfg())
-        config_store.save_config({
-            "experimental": {"custom_key": 1, "tagger_frames": 7},  # frames 已废弃：非模块键
-        })
-        self.assertFalse(self.paths["tagger"].exists())  # 废弃键不路由，模块文件不创建
-        self.assertEqual(self._disk_cfg()["experimental"],
-                         {"custom_key": 1, "tagger_frames": 7})  # 非模块键仍在 config.json
-
-    def test_llama_switches_dropped_not_persisted(self):
-        # llama 开关不经 save_config（权威在 llama/config.json，只走
-        # set_llama_enabled/set_llama_config）：提交即丢弃，config.json 不残留
-        from gui_app import config_store
-        self._write_config(_cfg())
-        config_store.save_config({
-            "experimental": {"llama_enabled": True, "llama_integrate": True},
-        })
-        disk = self._disk_cfg()
-        self.assertNotIn("llama_enabled", disk.get("experimental", {}))
-        self.assertNotIn("llama_integrate", disk.get("experimental", {}))
-        self.assertFalse(self.paths["llama"].exists())  # 不写模块文件
-        # 组装仍以模块文件为准（默认 False）
-        exp = config_store.load_config()["experimental"]
-        self.assertIs(exp["llama_enabled"], False)
-
-    def test_no_exp_noop(self):
+    def test_theme_only(self):
         from gui_app import config_store
         self._write_config(_cfg())
         config_store.save_config({"theme": "dark"})

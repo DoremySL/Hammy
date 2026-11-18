@@ -87,21 +87,28 @@ class TestExtractRouting(unittest.TestCase):
                            concat_frames=None)   # 配帧不齐 → None
         _, frames = h.run(_make_cfg("auto"))
         self.assertEqual(len(h.concat_calls), 1)
-        self.assertEqual([ts for ts, _ in h.per_frame_calls], [0.0, 50.0])
+        self.assertEqual(sorted(ts for ts, _ in h.per_frame_calls), [0.0, 50.0])
         self.assertEqual(frames, [])
+
+    def test_auto_paired_keyframes_skip_concat(self):
+        # 目标后 1 帧处还有关键帧（编码器成对插入）→ concat 段会多吐帧，直接逐帧
+        h = _RouterHarness(_META_MP4, [0.0, 50.0, 50.042], [0.0, 50.0])
+        h.run(_make_cfg("auto"))
+        self.assertEqual(h.concat_calls, [])
+        self.assertEqual(sorted(ts for ts, _ in h.per_frame_calls), [0.0, 50.0])
 
     def test_auto_non_aligned_targets_go_per_frame(self):
         # key_ts 为空（时长均分兜底点位）不许 concat
         h = _RouterHarness(_META_MP4, [], [25.0, 75.0])
         h.run(_make_cfg("auto"))
         self.assertEqual(h.concat_calls, [])
-        self.assertEqual([ts for ts, _ in h.per_frame_calls], [25.0, 75.0])
+        self.assertEqual(sorted(ts for ts, _ in h.per_frame_calls), [25.0, 75.0])
 
     def test_auto_partially_aligned_go_per_frame(self):
         h = _RouterHarness(_META_MP4, [0.0, 50.0], [0.0, 61.7])
         h.run(_make_cfg("auto"))
         self.assertEqual(h.concat_calls, [])
-        self.assertEqual([ts for ts, _ in h.per_frame_calls], [0.0, 61.7])
+        self.assertEqual(sorted(ts for ts, _ in h.per_frame_calls), [0.0, 61.7])
 
     def test_auto_ts_go_per_frame_with_start_time(self):
         h = _RouterHarness(_META_TS, [0.0, 50.0], [0.0, 50.0])
@@ -122,7 +129,7 @@ class TestExtractRouting(unittest.TestCase):
         h = _RouterHarness(_META_TS, [0.0, 50.0], [0.0, 50.0])  # ts_pass 返回 None
         _, frames = h.run(_make_cfg("legacy"))
         self.assertEqual(h.ts_pass_calls, 1)
-        self.assertEqual([ts for ts, _ in h.per_frame_calls], [0.0, 50.0])
+        self.assertEqual(sorted(ts for ts, _ in h.per_frame_calls), [0.0, 50.0])
         self.assertEqual(frames, [])
 
     def test_legacy_mp4_no_concat(self):

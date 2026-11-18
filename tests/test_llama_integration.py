@@ -10,73 +10,53 @@ from gui_app import llama_integration as li
 from gui_app import llama_cpp
 from gui_app.config_store import _default_config
 
-
-def _cfg(**over):
-    """构造一份基础配置 dict，over 可覆盖 experimental 段。"""
-    c = _default_config()
-    c["experimental"].update(over)
-    return c
+_ACTIVE = {"enabled": True, "integrate": True}
 
 
 class TestIsActive(unittest.TestCase):
     """集成生效条件：llama 模块启用 + 集成开关开启 + llama.cpp 已安装。"""
 
+    def _is_active(self, llama_cfg, is_file=True):
+        with mock.patch("gui_app.config_store.load_llama_config",
+                        return_value=llama_cfg), \
+             mock.patch("gui_app.llama_cpp.LLAMA_DIR", Path("C:/fake/llama")), \
+             mock.patch("gui_app.llama_cpp.EXE_NAME", "llama-server.exe"), \
+             mock.patch("pathlib.Path.is_file", return_value=is_file):
+            return li.is_active()
+
     def test_default_off(self):
-        # 默认配置：未启用模块、未开集成 → 不激活
-        self.assertFalse(li.is_active(_cfg()))
-        self.assertIsNone(li.ai_override(_cfg()))
-
-    def test_integrate_on_but_module_disabled(self):
-        c = _cfg()
-        c["experimental"]["llama_integrate"] = True  # 开了集成但总开关未开
-        self.assertFalse(li.is_active(c))
-
-    def test_module_on_but_integrate_off(self):
-        c = _cfg(llama_enabled=True)
-        self.assertFalse(li.is_active(c))
+        # 未启用模块 → 不激活
+        self.assertFalse(self._is_active({}))
+        self.assertFalse(self._is_active({"integrate": True}))  # 开了集成但总开关未开
+        self.assertFalse(self._is_active({"enabled": True}))   # 开了总开关但集成未开
+        with mock.patch("gui_app.config_store.load_llama_config", return_value={}):
+            self.assertIsNone(li.ai_override())
 
     def test_active_when_installed(self):
-        c = _cfg(llama_enabled=True)
-        c["experimental"]["llama_integrate"] = True
-        with mock.patch("gui_app.llama_cpp.LLAMA_DIR", Path("C:/fake/llama")), \
-             mock.patch("gui_app.llama_cpp.EXE_NAME", "llama-server.exe"), \
-             mock.patch("pathlib.Path.is_file", return_value=True):
-            self.assertTrue(li.is_active(c))
+        self.assertTrue(self._is_active(_ACTIVE))
 
     def test_inactive_when_exe_missing(self):
         # 可插拔：开关全开但 llama-server.exe 不存在（未安装/被删）→ 自动失效
-        c = _cfg(llama_enabled=True)
-        c["experimental"]["llama_integrate"] = True
-        with mock.patch("gui_app.llama_cpp.LLAMA_DIR", Path("C:/fake/llama")), \
-             mock.patch("gui_app.llama_cpp.EXE_NAME", "llama-server.exe"), \
-             mock.patch("pathlib.Path.is_file", return_value=False):
-            self.assertFalse(li.is_active(c))
-            self.assertIsNone(li.ai_override(c))
+        self.assertFalse(self._is_active(_ACTIVE, is_file=False))
 
 
 class TestAiOverride(unittest.TestCase):
     def setUp(self):
-        self.c = _cfg(llama_enabled=True)
-        self.c["experimental"]["llama_integrate"] = True
         self.llama_dir = mock.patch("gui_app.llama_cpp.LLAMA_DIR", Path("C:/fake/llama"))
         self.exe = mock.patch("gui_app.llama_cpp.EXE_NAME", "llama-server.exe")
         self.is_file = mock.patch("pathlib.Path.is_file", return_value=True)
-        # host/port 从独立文件 llama_config.json 读（ai_override 内延迟导入）
-        self.llama_cfg = mock.patch("gui_app.config_store.load_llama_config",
-                                    return_value={})
-        self.llama_dir.start()
-        self.exe.start()
-        self.is_file.start()
-        self.llama_cfg.start()
-
-    def tearDown(self):
-        self.llama_dir.stop()
-        self.exe.stop()
-        self.is_file.stop()
-        self.llama_cfg.stop()
+        for p in (self.llama_dir, self.exe, self.is_file):
+            p.start()
+            self.addCleanup(p.stop)
+        # load_llama_config 在 ai_override 内两次延迟导入调用，返回已启动的 mock
+        # 实例，测试内可改 return_value
+        patcher = mock.patch("gui_app.config_store.load_llama_config",
+                             return_value=dict(_ACTIVE))
+        self.llama_cfg = patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_default_endpoint(self):
-        ov = li.ai_override(self.c)
+        ov = li.ai_override()
         self.assertEqual(ov, {
             "model": "model",
             "api_key": "not-needed",
@@ -85,42 +65,19 @@ class TestAiOverride(unittest.TestCase):
         })
 
     def test_workers_follow_parallel(self):
-        self.llama_cfg.stop()
-        self.llama_cfg = mock.patch("gui_app.config_store.load_llama_config",
-                                    return_value={"parallel": 4})
-        self.llama_cfg.start()
-        ov = li.ai_override(self.c)
+        self.llama_cfg.return_value = {**_ACTIVE, "parallel": 4}
+        ov = li.ai_override()
         self.assertEqual(ov["ai_workers"], 4)
 
     def test_custom_host_port(self):
         # 0.0.0.0 是监听地址，本机调用须归一为回环（_local_host）；端口仍取配置值
-        self.llama_cfg.stop()
-        self.llama_cfg = mock.patch("gui_app.config_store.load_llama_config",
-                                    return_value={"host": "0.0.0.0", "port": 11434})
-        self.llama_cfg.start()
-        ov = li.ai_override(self.c)
+        self.llama_cfg.return_value = {**_ACTIVE, "host": "0.0.0.0", "port": 11434}
+        ov = li.ai_override()
         self.assertEqual(ov["base_url"], "http://127.0.0.1:11434/v1")
         # 非监听地址的自定义 host 原样保留
-        self.llama_cfg.stop()
-        self.llama_cfg = mock.patch("gui_app.config_store.load_llama_config",
-                                    return_value={"host": "192.168.1.5", "port": 8081})
-        self.llama_cfg.start()
-        ov = li.ai_override(self.c)
+        self.llama_cfg.return_value = {**_ACTIVE, "host": "192.168.1.5", "port": 8081}
+        ov = li.ai_override()
         self.assertEqual(ov["base_url"], "http://192.168.1.5:8081/v1")
-
-    def test_override_does_not_mutate_input(self):
-        before = dict(self.c)
-        li.ai_override(self.c)
-        self.assertEqual(self.c, before)  # 磁盘配置/传入 dict 完全不动
-
-    def test_user_ai_params_untouched(self):
-        # 用户填写的远程参数仍在 cfg["ai"] 中，覆盖只发生在返回值里
-        self.c["ai"] = {"model": "my-remote-model", "base_url": "https://remote.example/v1",
-                        "api_key": "sk-secret"}
-        ov = li.ai_override(self.c)
-        self.assertEqual(ov["model"], "model")
-        self.assertEqual(ov["api_key"], "not-needed")
-        self.assertEqual(self.c["ai"]["model"], "my-remote-model")
 
 
 class TestBuildEngineConfigOverride(unittest.TestCase):
@@ -128,14 +85,13 @@ class TestBuildEngineConfigOverride(unittest.TestCase):
 
     def test_override_applied(self):
         from gui_app import runner
-        c = _cfg(llama_enabled=True)
-        c["experimental"]["llama_integrate"] = True
+        c = _default_config()
         c["ai"] = {"model": "remote-model", "base_url": "https://remote/v1", "api_key": "sk-x"}
         with mock.patch("gui_app.llama_cpp.LLAMA_DIR", Path("C:/fake/llama")), \
              mock.patch("gui_app.llama_cpp.EXE_NAME", "llama-server.exe"), \
              mock.patch("pathlib.Path.is_file", return_value=True), \
              mock.patch("gui_app.config_store.load_llama_config",
-                        return_value={"port": 9999}), \
+                        return_value={**_ACTIVE, "port": 9999}), \
              mock.patch("gui_app.runner.prompts.get_active",
                         return_value={"preset": {}, "prompt": "p", "system_prompt": "s"}):
             eng = runner.build_engine_config(c)
@@ -147,9 +103,10 @@ class TestBuildEngineConfigOverride(unittest.TestCase):
 
     def test_no_override_when_inactive(self):
         from gui_app import runner
-        c = _cfg()
+        c = _default_config()
         c["ai"] = {"model": "remote-model", "base_url": "https://remote/v1", "api_key": "sk-x"}
-        with mock.patch("gui_app.runner.prompts.get_active",
+        with mock.patch("gui_app.config_store.load_llama_config", return_value={}), \
+             mock.patch("gui_app.runner.prompts.get_active",
                         return_value={"preset": {}, "prompt": "p", "system_prompt": "s"}):
             eng = runner.build_engine_config(c)
         self.assertEqual(eng.model, "remote-model")

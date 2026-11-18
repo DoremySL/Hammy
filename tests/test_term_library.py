@@ -149,7 +149,7 @@ class TestSaveLoadRoundtrip(unittest.TestCase):
 
 
 class TestImportPresetTags(unittest.TestCase):
-    """安装尾部的预设导入：按英文名幂等 / keyword 全局撞车跳过 / off 档自动开启。"""
+    """安装尾部的预设导入：按英文名幂等 / keyword 全局撞车跳过 / 不改动模式。"""
 
     def _run(self, preset, existing=None):
         tmp = tempfile.TemporaryDirectory()
@@ -167,13 +167,13 @@ class TestImportPresetTags(unittest.TestCase):
         disk = json.loads(lib_file.read_text(encoding="utf-8")) if lib_file.is_file() else None
         return r, disk
 
-    def test_off_mode_imports_and_enables(self):
+    def test_off_mode_imports_keeps_off(self):
         preset = [{"keyword": "博丽灵梦", "description": "", "related": "hakurei_reimu",
                    "group": "Hammy-tagger"}]
         r, disk = self._run(preset)
         self.assertEqual(r["imported"], 1)
-        self.assertEqual(r["mode"], "on")
-        self.assertEqual(disk["mode"], "on")
+        self.assertEqual(r["mode"], "off")
+        self.assertEqual(disk["mode"], "off")  # 导入不自动开启
         self.assertEqual(disk["items"][0]["keyword"], "博丽灵梦")
         self.assertEqual(disk["items"][0]["group"], "Hammy-tagger")
 
@@ -201,7 +201,7 @@ class TestImportPresetTags(unittest.TestCase):
         self.assertEqual(r["mode"], "enhanced")  # 非关闭档不动
         self.assertEqual(len(disk["items"]), 1)  # 无新增
 
-    def test_off_mode_duplicate_still_enables(self):
+    def test_off_mode_duplicate_no_save(self):
         preset = [{"keyword": "博丽灵梦", "description": "", "related": "hakurei_reimu",
                    "group": "Hammy-tagger"}]
         existing = {"mode": "off", "disabled_groups": [],
@@ -209,8 +209,8 @@ class TestImportPresetTags(unittest.TestCase):
                                "related": "hakurei_reimu", "group": "Hammy-tagger"}]}
         r, disk = self._run(preset, existing)
         self.assertEqual(r["imported"], 0)
-        self.assertEqual(r["mode"], "on")
-        self.assertEqual(disk["mode"], "on")
+        self.assertEqual(r["mode"], "off")
+        self.assertEqual(disk["mode"], "off")
 
 
 class TestTaggerInjection(unittest.TestCase):
