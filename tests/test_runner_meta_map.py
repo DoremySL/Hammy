@@ -1,0 +1,82 @@
+"""runner._build_transcribe_meta_map：已有 SRT → 辅助上下文块（缺失视频由 ASR worker 交付）。"""
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from gui_app.workspace_paths import stable_id
+from gui_app.runner import PipelineRunner
+
+EXP = {"transcribe_enabled": True, "transcribe_max_chars": 800,
+       "transcribe_inject_timestamps": False}
+
+SRT_SAMPLE = "1\n00:00:00,000 --> 00:00:05,000\nこんにちは、世界。\n"
+
+
+class TestBuildTranscribeMetaMap(unittest.TestCase):
+    """已有右键转录的 SRT → 辅助上下文块。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        td = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+        self.srt_dir = td / "srt"
+        self.tx_file = td / "transcripts.json"
+        patchers = [
+            mock.patch("gui_app.workspace_paths.TRANSCRIBE_SRT_DIR", self.srt_dir),
+            mock.patch("gui_app.workspace_paths.TRANSCRIBE_TRANSCRIPTS_FILE", self.tx_file),
+        ]
+        for p in patchers:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _make_runner(self):
+        return PipelineRunner()
+
+    def _write_srt(self, vp: str, content: str = SRT_SAMPLE):
+        self.srt_dir.mkdir(parents=True, exist_ok=True)
+        (self.srt_dir / f"{stable_id(vp)}.srt").write_text(content, encoding="utf-8")
+
+    def _write_store(self, vp: str, lang: str = "ja"):
+        self.tx_file.parent.mkdir(parents=True, exist_ok=True)
+        self.tx_file.write_text(json.dumps(
+            {stable_id(vp): {"language": lang}}), encoding="utf-8")
+
+    def test_disabled_returns_empty(self):
+        r = self._make_runner()._build_transcribe_meta_map(
+            ["C:/a.mp4"], {"transcribe_enabled": False})
+        self.assertEqual(r, {})
+
+    def test_srt_builds_block(self):
+        vp = "C:/a.mp4"
+        self._write_srt(vp)
+        self._write_store(vp, "ja")
+        r = self._make_runner()._build_transcribe_meta_map([vp], EXP)
+        self.assertIn("こんにちは、世界。", r[vp])
+        self.assertIn("【语音辅助参考】", r[vp])
+        self.assertIn("- 语言: ja", r[vp])
+
+    def test_truncated_to_max_chars(self):
+        vp = "C:/d.mp4"
+        self._write_srt(vp, "1\n00:00:00,000 --> 00:00:05,000\n" + "字" * 1200 + "\n")
+        r = self._make_runner()._build_transcribe_meta_map([vp], EXP)
+        self.assertIn("…（已截断）", r[vp])
+        self.assertNotIn("字" * 801, r[vp])
+
+    def test_missing_srt_skipped(self):
+        r = self._make_runner()._build_transcribe_meta_map(["C:/e.mp4"], EXP)
+        self.assertEqual(r, {})
+
+    def test_empty_srt_skipped(self):
+        vp = "C:/c.mp4"
+        self._write_srt(vp, "")
+        r = self._make_runner()._build_transcribe_meta_map([vp], EXP)
+        self.assertEqual(r, {})
+
+
+if __name__ == "__main__":
+    unittest.main()
