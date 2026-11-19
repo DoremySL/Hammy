@@ -65,7 +65,7 @@ DEFAULT_INJECT_MODEL = "sensevoice"
 INJECT_WIN_SEC = {"sensevoice": 30.0, "whisper": 60.0, "moss": 300.0}
 
 # ── 官方 Silero VAD（transcribe.cpp 内置，与 ASR 同引擎零新依赖）──
-# 注入模式区段跳过静音/底噪/纯音乐（防幻觉）；模型缺失时整段推理
+# 区段级推理跳过静音/底噪/纯音乐（防幻觉）；模型缺失时整段推理
 VAD_MODEL_META = {
     "gguf": "silero-vad-v6.2-F32.gguf",
     "hf_repo": "handy-computer/silero-vad-v6.2-gguf",
@@ -180,7 +180,7 @@ def _download_model(model_key: str,
     log_fn = log_fn or (lambda s: None)
     cancel = cancel_event or models_downloader.get_cancel_event()
     try:
-        log_fn(f"模型 {meta['title']}：{meta['gguf']}（{meta['size_label']}，hf-mirror）")
+        log_fn(f"模型 {meta['title']}：{meta['gguf']}（{meta['size_label']}）")
         return models_downloader.download_files(
             "hf", repo, [meta["gguf"]], str(MODEL_DIR),
             log_fn=log_fn, progress_cb=progress_cb,
@@ -244,7 +244,7 @@ def install_dependencies(pypi_mirror: str = DEFAULT_PYPI_MIRROR,
 
     # ── 步骤 3：安装引擎 ──
     steps.push(3)
-    _log("━━ 步骤 3/4：安装引擎（CPU/Vulkan，PyPI）━━", log_fn)
+    _log("━━ 步骤 3/4：安装引擎 ━━", log_fn)
     rc, out = _run_subprocess_streaming(
         [uv, "pip", "install", "--python", venv_py,
          "transcribe_cpp", "numpy", "soundfile",
@@ -259,12 +259,13 @@ def install_dependencies(pypi_mirror: str = DEFAULT_PYPI_MIRROR,
 
     # ── 步骤 4：下载模型 ──
     steps.push(4)
-    # 官方 Silero VAD（1.2MB）：注入模式区段跳过静音/音乐；失败不阻断安装
     if not vad_ready():
-        _log(f"  ── 官方 Silero VAD（hf-mirror，{VAD_MODEL_META['size_label']}，"
-             f"注入模式静音跳过用）──", log_fn)
+        _log("  ── Silero VAD ──", log_fn)
         if not _download_vad(log_fn=log_fn, stop_event=stop_event):
-            _log("  VAD 模型下载失败（不影响转录安装；注入模式将整段推理，静音不跳过）", log_fn)
+            r = _cancelled()
+            if r:
+                return r
+            return {"ok": False, "error": "Silero VAD 模型下载失败"}
     todo = [k for k in models_to_install if not is_model_installed(k)]
     if not todo:
         _log("━━ 步骤 4/4：模型已存在，跳过下载 ━━", log_fn)
@@ -276,8 +277,7 @@ def install_dependencies(pypi_mirror: str = DEFAULT_PYPI_MIRROR,
 
         for n, mk in enumerate(todo):
             meta = TRANSCRIBE_MODELS[mk]
-            src_label = "hf-mirror"
-            _log(f"  ── {meta['title']}（{src_label}，{meta['size_label']}）──", log_fn)
+            _log(f"  ── {meta['title']}（{meta['size_label']}）──", log_fn)
 
             def _install_progress(ev: Dict[str, Any]):
                 if ev.get("type") == "progress" and ev.get("total") and ev.get("pct") is not None:

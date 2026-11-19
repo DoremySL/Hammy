@@ -4,6 +4,7 @@
 transcribe_cpp._run_batch_script）。业务全局量由 main() 赋值，import 无副作用。"""
 import sys, json, os, shutil, subprocess
 
+# 超长区段分块上限（VAD 缺失回退成整段区段时生效）
 FAMILY_CHUNK_SEC = {'moss': 1800}
 VAD_MIN_SPEECH_SEC = 0.3  # 总语音时长低于此值视为无语音
 
@@ -57,6 +58,18 @@ def _join_cjk(parts):
     return out
 
 
+def _run_region(seg_audio):
+    # 单次区段推理；OutputTruncated（短区段解码超限）对半切分重试
+    try:
+        return [(sess.run(seg_audio, **run_kw), 0)]
+    except tc.OutputTruncated:
+        if len(seg_audio) < 8000:
+            return []
+        mid = len(seg_audio) // 2
+        return (_run_region(seg_audio[:mid])
+                + [(r, o + mid) for r, o in _run_region(seg_audio[mid:])])
+
+
 def _windowed_text(audio, sr, regions, win, stop_at=0):
     # 区段内分窗推理拼接文本；stop_at>0 时累计达标提前结束
     texts, acc = [], 0
@@ -64,14 +77,14 @@ def _windowed_text(audio, sr, regions, win, stop_at=0):
         pos = a
         while pos < b - 0.1:
             end = min(pos + win, b)
-            res = sess.run(audio[int(pos * sr): int(end * sr)], **run_kw)
-            t = _join_cjk(s.text.strip() for s in (res.segments or [])
-                          if s.text.strip()) or (res.text or '').strip()
-            if t:
-                texts.append(t)
-                acc += len(t) + 1
-            if stop_at and acc >= stop_at:
-                return _join_cjk(texts)
+            for r, _off in _run_region(audio[int(pos * sr): int(end * sr)]):
+                t = _join_cjk(s.text.strip() for s in (r.segments or [])
+                              if s.text.strip()) or (r.text or '').strip()
+                if t:
+                    texts.append(t)
+                    acc += len(t) + 1
+                if stop_at and acc >= stop_at:
+                    return _join_cjk(texts)
             pos = end
     return _join_cjk(texts)
 
@@ -151,28 +164,23 @@ def transcribe_one(i, vp):
                 entry = {'ok': True, 'srt': srt, 'language': '', 'text': '',
                          'duration': round(dur, 1), 'error': None}
             else:
-                chunk = FAMILY_CHUNK_SEC.get(family, 0)
-                if chunk and dur <= chunk + 0.5:
-                    chunk = 0
+                # 逐句时间戳：逐 VAD 区段推理，时间戳加区段偏移；超长区段按家族上限分块
+                chunk = FAMILY_CHUNK_SEC.get(family) or dur
                 max_ms = int(dur * 1000)
-                if not chunk:
-                    res = sess.run(audio, **run_kw)
-                    srt, _ = _to_srt(res.segments, max_ms=max_ms)
-                    lang = getattr(res, 'language', '') or ''
-                else:
-                    parts = []
-                    lang = ''
-                    pos = 0.0
-                    idx = 1
-                    while pos < dur - 0.1:
-                        seg_audio = audio[int(pos * sr): int((pos + chunk) * sr)]
-                        res = sess.run(seg_audio, **run_kw)
-                        part, idx = _to_srt(res.segments, offset_ms=int(pos * 1000),
-                                            idx=idx, max_ms=max_ms)
-                        parts.append(part)
-                        lang = lang or (getattr(res, 'language', '') or '')
-                        pos += chunk
-                    srt = '\n'.join(parts)
+                parts, lang, idx = [], '', 1
+                for a, b in regions:
+                    pos = a
+                    while pos < b - 0.1:
+                        end = min(pos + chunk, b)
+                        p0 = int(pos * sr)
+                        for r, off in _run_region(audio[p0: int(end * sr)]):
+                            part, idx = _to_srt(r.segments,
+                                                offset_ms=int((p0 + off) * 1000 / sr),
+                                                idx=idx, max_ms=max_ms)
+                            parts.append(part)
+                            lang = lang or (getattr(r, 'language', '') or '')
+                        pos = end
+                srt = '\n'.join(p for p in parts if p)
                 entry = {'ok': True, 'srt': srt, 'language': lang, 'text': '',
                          'duration': round(dur, 1), 'error': None}
     except Exception as e:

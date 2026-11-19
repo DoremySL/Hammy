@@ -438,7 +438,7 @@ def video_sampling_config() -> Config:
     from .config_store import load_config
     video = load_config().get("video") or {}
     cfg = Config(
-        sampling_points=max(1, safe_int(video.get("sampling_points"), 7)),
+        sampling_points=max(1, safe_int(video.get("sampling_points"), 10)),
         frames_per_point=max(1, safe_int(video.get("frames_per_point"), 2)),
         frame_max_side=max(64, safe_int(video.get("frame_max_side"), 672)),
     )
@@ -461,13 +461,14 @@ def _per_point_frames(frames):
 def extract_frames_for_tagger(video_path: str,
                               stop_event: Optional[threading.Event] = None,
                               config: Optional[Config] = None) -> List[str]:
-    """复用公用抽帧与预处理（主设置页基础采样），每点位取首个存活帧。"""
+    """复用公用抽帧（点位同设置页）；右键 tagger 固定每点 1 帧，不补位（补位仅服务 LLM 集成模式）。"""
     if stop_event is None:
         stop_event = _NO_STOP
     if stop_event.is_set():
         return []
-    _, frames = probe_and_extract_keyframes(video_path, config or video_sampling_config(),
-                                            stop_event)
+    cfg = config or video_sampling_config()
+    cfg.frames_per_point = 1
+    _, frames = probe_and_extract_keyframes(video_path, cfg, stop_event)
     return [f.b64 for f in _per_point_frames(frames)]
 
 

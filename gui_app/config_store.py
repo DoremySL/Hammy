@@ -31,7 +31,7 @@ def _default_config() -> Dict[str, Any]:
             "enforce_json_mode": True,
         },
         "video": {
-            "sampling_points": 7,
+            "sampling_points": 10,
             "frames_per_point": 2,
             "frame_max_side": 672,
             "frame_time_tags": 2,
@@ -125,7 +125,7 @@ def _transcribe_defaults() -> Dict[str, Any]:
     """语音转录模块配置默认值。"""
     return {"enabled": False, "model": "whisper-turbo", "inject_model": "sensevoice",
             "language": "", "max_chars": 2000, "inject_timestamps": False,
-            "integration": False}
+            "integration": True}
 
 
 def load_tagger_config() -> Dict[str, Any]:

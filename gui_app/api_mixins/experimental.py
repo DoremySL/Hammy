@@ -513,8 +513,9 @@ class ExperimentalMixin:
         for _, key in _SEC_KEYS:
             tags = list(entry.get(key) or [])
             if lib is not None:
-                # 拷贝 tag 再附 zh：cached 读取的嵌套对象与缓存共享
-                tags = [{**t, "zh": lib[name]["zh"]} for t in tags
+                # 拷贝 tag 再附 zh/desc（词条描述）：cached 读取的嵌套对象与缓存共享
+                tags = [{**t, "zh": lib[name]["zh"], "desc": lib[name]["desc"]}
+                        for t in tags
                         if (name := str(t.get("name") or "")) in lib]
             if key == "general_tags":
                 tags = tags[:gen_n]

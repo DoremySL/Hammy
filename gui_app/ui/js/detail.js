@@ -69,9 +69,9 @@ async function showPendingDetail(v, quiet) {
 
   let html = '';
   if (showTagger) {
-    // data-tagger-tag=英文映射键；data-group=所属段；data-zh=库中文名
+    // data-tagger-tag=英文映射键；data-group=所属段；data-zh=库中文名；data-tip=词条描述
     const tagChip = (t, group) =>
-      `<button class="chip" data-tagger-tag="${esc(t.name)}" data-group="${group}"${t.zh ? ` data-zh="${esc(t.zh)}"` : ''}>${esc(t.zh ? `${t.zh} / ${t.name}` : t.name)} <small>${t.score != null ? (t.score * 100).toFixed(0) : '—'}%</small></button>`;
+      `<button class="chip" data-tagger-tag="${esc(t.name)}" data-group="${group}"${t.zh ? ` data-zh="${esc(t.zh)}"` : ''}${t.desc ? ` data-tip="${esc(t.desc)}"` : ''}>${esc(t.zh ? `${t.zh} / ${t.name}` : t.name)} <small>${t.score != null ? (t.score * 100).toFixed(0) : '—'}%</small></button>`;
     const merged = [
       ...(tagger.ip_tags || []).map(t => tagChip(t, 'ip_tags')),
       ...(tagger.character_tags || []).map(t => tagChip(t, 'character_tags')),
