@@ -168,7 +168,7 @@ def _build_messages(frames: List[Frame], config: Config, video_path: str,
     dur_str = _fmt_hms(duration) if duration > 0 else "未知"
     meta_parts = [f"- 原始文件名: {vid_name}", f"- 视频总时长: {dur_str}"]
     if container_title:
-        meta_parts.append(f"- 容器标题: {container_title}（可能含有准确且重要的描述，可优先参考）")
+        meta_parts.append(f"- 容器标题: {container_title}")
     meta_info = "\n\n[辅助参考信息]\n" + "\n".join(meta_parts)
     if extra_meta:
         meta_info += "\n\n" + extra_meta
@@ -187,6 +187,17 @@ def _build_messages(frames: List[Frame], config: Config, video_path: str,
     user_content.append({"type": "text",
                          "text": config.prompt + ("\n\n" + recall_section if recall_section else "")})
     messages.append({"role": "user", "content": user_content})
+    if config.debug_log:
+        parts = []
+        if config.system_prompt:
+            parts.append(f"[system 预设 {len(config.system_prompt)} 字]")
+        parts += [f"{_fmt_hms(f.ts)}: [图片]" if config.frame_time_tags else "[图片]"
+                  for f in frames]
+        parts.append("\n" + meta_info.lstrip("\n"))
+        parts.append(f"[任务提示预设 {len(config.prompt)} 字]")
+        if recall_section:
+            parts.append(recall_section)
+        logger.info("[debug] LLM 输入 ━━ " + vid_name + "\n" + "\n".join(parts))
     return messages
 
 
@@ -386,13 +397,23 @@ def _refine_round(client: OpenAIClient, model: str, messages: list,
     if stop_event.is_set():
         return AnalyzeResult("", "", [], 0, "已取消", "cancel")
     if not candidates:
+        if config.debug_log:
+            logger.info("[debug] 二轮：无向量候选，跳过 ━━ " + Path(video_path).name)
         return result._replace(recalled=0, recalled_keywords=[])
     keywords = [it["keyword"] for it in candidates]
 
     # frame_time_tags==2 时提示模板才含 thumb_time 字段，修订项随之插入
     thumb_line = "4. thumb_time：保持首轮结果不变。\n" if config.frame_time_tags == 2 else ""
-    refine_prompt = (term_recall.build_candidates_section(candidates) + "\n\n"
-                     + _REFINE_INSTRUCTION + thumb_line + _REFINE_TAIL)
+    cand_sec = term_recall.build_candidates_section(candidates)
+    refine_prompt = cand_sec + "\n\n" + _REFINE_INSTRUCTION + thumb_line + _REFINE_TAIL
+    if config.debug_log:
+        n_img = sum(1 for b in messages[-1]["content"] if b.get("type") == "image_url")
+        instr_len = len(_REFINE_INSTRUCTION) + len(thumb_line) + len(_REFINE_TAIL)
+        logger.info("[debug] LLM 二轮修订 ━━ " + Path(video_path).name + "\n"
+                    + f"[沿用首轮输入：{n_img} 图片 + 预设]\n"
+                    + f"[assistant 首轮回复 {len(result.raw)} 字]:\n{result.raw}\n"
+                    + cand_sec + "\n"
+                    + f"[修订指令 {instr_len} 字]")
     msgs = messages + [
         {"role": "assistant", "content": result.raw},
         {"role": "user", "content": refine_prompt},

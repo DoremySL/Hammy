@@ -84,9 +84,10 @@ class _UIHandler(logging.Handler):
     _FILTER_PREFIXES = ("[改名]", "[NFO] 已生成",
                         "[标签辅助] 集成完成", "[语音辅助] 已生成")
 
-    def __init__(self, callback: Callable[[str, str], None]):
+    def __init__(self, callback: Callable[[str, str], None], verbose: bool = False):
         super().__init__()
         self._cb = callback
+        self._verbose = verbose  # debug 模式：跳过精简过滤，全量推送
         self.setFormatter(logging.Formatter("%(message)s"))
 
     def emit(self, record):
@@ -94,16 +95,17 @@ class _UIHandler(logging.Handler):
             msg = self.format(record)
             if not msg.strip():
                 return
-            # GUI 日志只保留 [i/N] 进度行，过滤引擎细节（明细见日志流）
-            if msg.startswith(self._FILTER_PREFIXES):
-                return
-            # 过滤纯横线分隔行（引擎的 ━/─ 分隔符）
-            stripped = msg.strip()
-            if stripped and set(stripped) <= set("━─═"):
-                return
+            # 非 debug：GUI 日志只保留精简视图，过滤引擎明细与横线分隔行
+            if not self._verbose:
+                if msg.startswith(self._FILTER_PREFIXES):
+                    return
+                stripped = msg.strip()
+                if stripped and set(stripped) <= set("━─═"):
+                    return
             lv = (
                 "err" if record.levelno >= logging.ERROR
                 else "warn" if record.levelno >= logging.WARNING
+                else "debug" if record.levelno <= logging.DEBUG or msg.startswith("[debug]")
                 else ""
             )
             self._cb(lv, msg.strip())
@@ -166,6 +168,9 @@ def build_engine_config(cfg_dict: Dict[str, Any]) -> Config:
     active = prompts.get_active(with_thumb_time=(cfg.frame_time_tags == 2))
     cfg.prompt = active["prompt"]
     cfg.system_prompt = active["system_prompt"]
+
+    # debug 模式（config.json 顶层手动开关）
+    cfg.debug_log = bool(cfg_dict.get("debug_log", False))
 
     # NFO 输出模式：默认（nfo_auto_export 关闭）缓存到 _workspace/nfo/，导出时再复制到视频目录；
     # 开启「自动输出 NFO 至视频目录」后直接写视频所在目录（nfo_target_dir=None）
@@ -377,10 +382,11 @@ class PipelineRunner:
                     pass
 
         def _runner():
-            self._handler = _UIHandler(on_log or (lambda lv, msg: None))
+            self._handler = _UIHandler(on_log or (lambda lv, msg: None),
+                                       verbose=engine_cfg.debug_log)
             engine_logger.addHandler(self._handler)
             old_level = engine_logger.level
-            engine_logger.setLevel(logging.INFO)
+            engine_logger.setLevel(logging.DEBUG if engine_cfg.debug_log else logging.INFO)
 
             try:
                 try:

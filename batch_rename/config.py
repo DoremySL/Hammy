@@ -19,6 +19,7 @@ class Config:
     frame_max_side: int = 672
     frame_time_tags: int = 2  # 0=不添加 1=添加时间标签 2=添加并用于优化缩略图
     frame_extract_mode: str = "auto"  # auto=TS逐帧+关键帧concat / per_frame=全部逐帧 / legacy=全部旧行为
+    debug_log: bool = False  # debug 模式：日志界面放行引擎明细 + LLM 输入摘要
     ai_workers: int = 4
     retry_times: int = 2
     ai_timeout: int = 60

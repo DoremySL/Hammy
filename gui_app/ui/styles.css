@@ -415,7 +415,7 @@
   .log .log-empty{margin:auto;color:var(--faint);font-size:13px;text-align:center;padding:20px;font-family:var(--font)}
   .log .ln{white-space:pre-wrap;word-break:break-all;padding:1px 0;animation:lnIn .2s ease}
   @keyframes lnIn{from{opacity:0;transform:translateY(3px)}}
-  .log .ln.err{color:var(--err)} .log .ln.warn{color:var(--warn)} .log .ln.ok{color:var(--ok)} .log .ln.dim{color:var(--faint)}
+  .log .ln.err{color:var(--err)} .log .ln.warn{color:var(--warn)} .log .ln.ok{color:var(--ok)} .log .ln.dim{color:var(--faint)} .log .ln.debug{color:var(--faint);font-size:11px}
 
   /* ── 详情 ── */
   .detail{flex:1;overflow:auto;padding:16px 10px;min-height:0;display:flex;flex-direction:column}

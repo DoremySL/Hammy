@@ -46,6 +46,7 @@ def _default_config() -> Dict[str, Any]:
         "nfo_auto_export": False,
         "animation_enabled": True,
         "experimental": {},
+        "debug_log": False,
     }
 
 
