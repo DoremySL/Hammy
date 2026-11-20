@@ -371,9 +371,9 @@ class TestInstallSyncsModel(unittest.TestCase):
                                 return_value={"inject_model": "bad-key"}):
                     self.assertEqual(tc.get_inject_model(), "sensevoice")
 
-    def test_transcribe_defaults_integration_off(self):
+    def test_transcribe_defaults_integration_on(self):
         from gui_app.config_store import _transcribe_defaults
-        self.assertIs(_transcribe_defaults()["integration"], False)
+        self.assertIs(_transcribe_defaults()["integration"], True)
         self.assertEqual(_transcribe_defaults()["max_chars"], 2000)
 
 

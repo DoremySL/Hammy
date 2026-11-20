@@ -66,45 +66,30 @@ class TestToSrt(unittest.TestCase):
 
 
 class TestVadRegions(unittest.TestCase):
-    def setUp(self):
-        self._old = (w._VAD_SESS, w._VAD_TRIED)
-
-    def tearDown(self):
-        w._VAD_SESS, w._VAD_TRIED = self._old
-
-    def _vad(self, sess):
-        w._VAD_SESS, w._VAD_TRIED = sess, True
-
     def test_maps_samples_to_seconds(self):
-        self._vad(_FakeSess(segments=[_vseg(100, 3500)]))
-        with mock.patch.object(w, "vad_model_path", "m.gguf", create=True):
-            self.assertEqual(w._vad_regions([0.0] * 5000, 1000), [(0.1, 3.5)])
+        vad = _FakeSess(segments=[_vseg(100, 3500)])
+        self.assertEqual(w._vad_regions(vad, [0.0] * 5000, 1000), [(0.1, 3.5)])
 
     def test_min_speech_threshold(self):
-        self._vad(_FakeSess(segments=[_vseg(0, 200)]))
-        with mock.patch.object(w, "vad_model_path", "m.gguf", create=True):
-            self.assertEqual(w._vad_regions([0.0] * 5000, 1000), [])
+        vad = _FakeSess(segments=[_vseg(0, 200)])
+        self.assertEqual(w._vad_regions(vad, [0.0] * 5000, 1000), [])
 
     def test_inference_failure_falls_back_to_whole(self):
-        self._vad(_FakeSess(fail=True))
-        with mock.patch.object(w, "vad_model_path", "m.gguf", create=True):
-            self.assertEqual(w._vad_regions([0.0] * 2000, 1000), [(0.0, 2.0)])
+        vad = _FakeSess(fail=True)
+        self.assertEqual(w._vad_regions(vad, [0.0] * 2000, 1000), [(0.0, 2.0)])
 
     def test_vad_unavailable_returns_whole(self):
-        self._vad(None)
-        self.assertEqual(w._vad_regions([0.0] * 2000, 1000), [(0.0, 2.0)])
+        self.assertEqual(w._vad_regions(None, [0.0] * 2000, 1000), [(0.0, 2.0)])
 
     def test_empty_audio(self):
-        self._vad(_FakeSess(segments=[]))
-        with mock.patch.object(w, "vad_model_path", "m.gguf", create=True):
-            self.assertEqual(w._vad_regions([], 1000), [])
+        vad = _FakeSess(segments=[])
+        self.assertEqual(w._vad_regions(vad, [], 1000), [])
 
 
 class TestWindowedText(unittest.TestCase):
     def _run(self, sess, audio, regions, win, stop_at=0):
-        with mock.patch.object(w, "sess", sess, create=True), \
-             mock.patch.object(w, "run_kw", {}, create=True):
-            return w._windowed_text(audio, 1, regions, win, stop_at)
+        with mock.patch.object(w, "run_kw", {}, create=True):
+            return w._windowed_text(sess, audio, 1, regions, win, stop_at)
 
     def test_steps_through_region(self):
         sess = _FakeSess(results=[["c0"], ["c1"], ["c2"]])
@@ -163,17 +148,14 @@ class TestTranscribeOneSrt(unittest.TestCase):
         if vad is None:
             vad = _FakeSess(segments=[_vseg(0, int(sr * 2))])
         with mock.patch.object(w, "sf", types.SimpleNamespace(read=sf_read), create=True), \
-             mock.patch.object(w, "sess", sess, create=True), \
              mock.patch.object(w, "mode", mode, create=True), \
              mock.patch.object(w, "has_ts", has_ts, create=True), \
              mock.patch.object(w, "family", "whisper", create=True), \
-             mock.patch.object(w, "language", None, create=True), \
-             mock.patch.object(w, "_VAD_SESS", vad), \
-             mock.patch.object(w, "_VAD_TRIED", True):
+             mock.patch.object(w, "language", None, create=True):
             for p in self._patches:
                 p.start()
             try:
-                return w.transcribe_one(0, "x.mp4")
+                return w.transcribe_one(sess, vad, 0, "x.mp4")
             finally:
                 for p in reversed(self._patches):
                     p.stop()
