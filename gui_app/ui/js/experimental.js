@@ -612,7 +612,7 @@ function _renderTaggerSection(pStatus) {
         </label>
         <div class="exp-head-main">
           <div class="exp-title-row"><strong>Hammy-tagger 辅助分类标签</strong>${_statusBadge(pStatus || {}, specBadge)}</div>
-          <div class="exp-desc">识别视频角色与作品/IP，用于整理MMD/COS视频。</div>
+          <div class="exp-desc">识别角色、作品/IP 与 General 标签，让视频可检索、可分类、可辅助重命名。</div>
         </div>
         <div class="exp-head-actions">
           ${enabled ? '<button class="ws-btn" id="btn-tagger-clear-tags">清除标签</button>' : ''}
@@ -2607,7 +2607,7 @@ function _renderRagVecSection(rvStatus) {
         </label>
         <div class="exp-head-main">
           <div class="exp-title-row"><strong>EmbeddingGemma 向量检索</strong>${deviceBadge}</div>
-          <div class="exp-desc">增强档第二轮用嵌入模型按语义检索候选标签；未就绪时增强档自动降级为开启档（仅字面检索）。</div>
+          <div class="exp-desc">增强档第二轮用嵌入模型按语义检索候选词条，暂时用处不大。</div>
         </div>
         <div class="exp-head-actions">
           ${stopBtn}

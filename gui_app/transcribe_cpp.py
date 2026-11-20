@@ -430,7 +430,7 @@ def run_transcription_batch(video_paths: List[str],
 
 
 def run_inject_batch(video_paths: List[str],
-                     max_chars: int = 800,
+                     max_chars: int,
                      on_log: Optional[Callable[[str], None]] = None,
                      stop_event=None,
                      on_video_done: Optional[Callable[[int, Dict[str, Any]], None]] = None

@@ -2,43 +2,38 @@
 
 参数经 JSON 文件传入，stdout 逐行回传 JSON（log/idx/done，解析方见
 transcribe_cpp._run_batch_script）。业务全局量由 main() 赋值，import 无副作用。"""
-import sys, json, os, shutil, subprocess
+import sys, json, os, queue, shutil, subprocess, threading
 
 # 超长区段分块上限（VAD 缺失回退成整段区段时生效）
 FAMILY_CHUNK_SEC = {'moss': 1800}
 VAD_MIN_SPEECH_SEC = 0.3  # 总语音时长低于此值视为无语音
-
-_VAD_SESS = None
-_VAD_TRIED = False
+N_WORKERS = 2  # 并发推理路数（引擎单 Model 只允许一次推理，多路各持独立 Model）
 
 
 def plog(msg):
     print(json.dumps({'log': msg}, ensure_ascii=False), flush=True)
 
 
-def _get_vad_sess():
-    # VAD 会话懒加载一次（1.2MB，CPU）；失败置 None（整段推理）
-    global _VAD_SESS, _VAD_TRIED
-    if not _VAD_TRIED:
-        _VAD_TRIED = True
-        if vad_model_path:
-            try:
-                _VAD_SESS = tc.VadSession(tc.Model(vad_model_path, backend='cpu'))
-            except Exception as e:
-                plog(f'Silero VAD 不可用（{str(e)[:80]}），本次整段推理')
-    return _VAD_SESS
+def _make_vad():
+    # Silero VAD 会话；未配置/失败返回 None（整段推理）
+    if not vad_model_path:
+        return None
+    try:
+        return tc.VadSession(tc.Model(vad_model_path, backend='cpu'))
+    except Exception as e:
+        plog(f'Silero VAD 不可用（{str(e)[:80]}），整段推理')
+        return None
 
 
-def _vad_regions(audio, sr):
+def _vad_regions(vad, audio, sr):
     # 返回 [(start_sec, end_sec)]；无语音返回 []；VAD 不可用返回整段单一区段
-    sess = _get_vad_sess()
     whole = [(0.0, len(audio) / sr)] if len(audio) else []
-    if sess is None:
+    if vad is None:
         return whole
     try:
         # max_speech 29s：长语音段在停顿处预切，单段 ≤30s 可整段送模型
-        res = sess.run(audio, min_silence_ms=2000, speech_pad_ms=300,
-                       max_speech_ms=29000)
+        res = vad.run(audio, min_silence_ms=2000, speech_pad_ms=300,
+                      max_speech_ms=29000)
         segs = [(s.start_sample / sr, s.end_sample / sr) for s in res.segments]
         if segs and sum(b - a for a, b in segs) >= VAD_MIN_SPEECH_SEC:
             return segs
@@ -58,7 +53,7 @@ def _join_cjk(parts):
     return out
 
 
-def _run_region(seg_audio):
+def _run_region(sess, seg_audio):
     # 单次区段推理；OutputTruncated（短区段解码超限）对半切分重试
     try:
         return [(sess.run(seg_audio, **run_kw), 0)]
@@ -66,18 +61,18 @@ def _run_region(seg_audio):
         if len(seg_audio) < 8000:
             return []
         mid = len(seg_audio) // 2
-        return (_run_region(seg_audio[:mid])
-                + [(r, o + mid) for r, o in _run_region(seg_audio[mid:])])
+        return (_run_region(sess, seg_audio[:mid])
+                + [(r, o + mid) for r, o in _run_region(sess, seg_audio[mid:])])
 
 
-def _windowed_text(audio, sr, regions, win, stop_at=0):
+def _windowed_text(sess, audio, sr, regions, win, stop_at=0):
     # 区段内分窗推理拼接文本；stop_at>0 时累计达标提前结束
     texts, acc = [], 0
     for a, b in regions:
         pos = a
         while pos < b - 0.1:
             end = min(pos + win, b)
-            for r, _off in _run_region(audio[int(pos * sr): int(end * sr)]):
+            for r, _off in _run_region(sess, audio[int(pos * sr): int(end * sr)]):
                 t = _join_cjk(s.text.strip() for s in (r.segments or [])
                               if s.text.strip()) or (r.text or '').strip()
                 if t:
@@ -125,7 +120,7 @@ def _extract_wav(vp, out_wav):
         raise RuntimeError(f'ffmpeg 提取音频失败: {(r.stderr or "")[-300:]}')
 
 
-def transcribe_one(i, vp):
+def transcribe_one(sess, vad, i, vp):
     # 临时目录由父进程持有（work_dir），子进程被杀后残留由父进程统一清理
     td = os.path.join(params['work_dir'], 'v%d' % i)
     os.makedirs(td, exist_ok=True)
@@ -137,27 +132,27 @@ def transcribe_one(i, vp):
             audio = audio.mean(axis=1)
         dur = len(audio) / sr
         if mode == 'text':
-            regions = _vad_regions(audio, sr)
+            regions = _vad_regions(vad, audio, sr)
             if not regions:
                 # VAD 零区段：静音/底噪/纯音乐，不送推理（防模型幻觉）
                 entry = {'ok': True, 'text': '', 'srt': '', 'language': '',
                          'duration': round(dur, 1), 'error': None, 'silent': True}
             else:
                 entry = {'ok': True,
-                         'text': _windowed_text(audio, sr, regions,
+                         'text': _windowed_text(sess, audio, sr, regions,
                                                 float(params['inject_win_sec']),
                                                 max_chars),
                          'srt': '', 'language': '',
                          'duration': round(dur, 1), 'error': None}
         else:
-            regions = _vad_regions(audio, sr)
+            regions = _vad_regions(vad, audio, sr)
             if not regions:
                 # 静音/底噪/纯音乐：跳过推理防幻觉（与注入模式同语义）
                 entry = {'ok': True, 'srt': '', 'text': '', 'language': '',
                          'duration': round(dur, 1), 'error': None, 'silent': True}
             elif not has_ts:
                 # 无逐句时间戳：分窗转录文本合成单条字幕
-                body = _windowed_text(audio, sr, regions,
+                body = _windowed_text(sess, audio, sr, regions,
                                       float(params.get('inject_win_sec') or 30.0))
                 srt = (f'1\n{_srt_ts(0)} --> {_srt_ts(int(dur * 1000))}\n{body}\n'
                        if body else '')
@@ -173,7 +168,7 @@ def transcribe_one(i, vp):
                     while pos < b - 0.1:
                         end = min(pos + chunk, b)
                         p0 = int(pos * sr)
-                        for r, off in _run_region(audio[p0: int(end * sr)]):
+                        for r, off in _run_region(sess, audio[p0: int(end * sr)]):
                             part, idx = _to_srt(r.segments,
                                                 offset_ms=int((p0 + off) * 1000 / sr),
                                                 idx=idx, max_ms=max_ms)
@@ -194,7 +189,7 @@ def transcribe_one(i, vp):
 def main():
     global params, video_paths, model_path, family, has_ts, language
     global ffmpeg, site_packages, max_chars, vad_model_path, mode
-    global model, sess, run_kw, tc, sf
+    global run_kw, tc, sf
 
     params_file = sys.argv[1]
     with open(params_file, 'r', encoding='utf-8') as f:
@@ -219,18 +214,20 @@ def main():
     import transcribe_cpp as tc
     import soundfile as sf
 
-    # 按后端优先级初始化，失败逐级回退
+    # 按后端优先级初始化，失败逐级回退；并发各路独立 Model
     backends = ['vulkan', 'cpu']
-    model = None
-    for be in backends:
-        try:
-            model = tc.Model(model_path, backend=be)
-            break
-        except Exception as e:
-            plog(f'{be} 初始化失败: {str(e).splitlines()[0]}')
-    if model is None:
-        sys.exit(1)
-    sess = model.session()
+    models = []
+    for _ in range(N_WORKERS):
+        model = None
+        for be in backends:
+            try:
+                model = tc.Model(model_path, backend=be)
+                break
+            except Exception as e:
+                plog(f'{be} 初始化失败: {str(e).splitlines()[0]}')
+        if model is None:
+            sys.exit(1)
+        models.append(model)
 
     # whisper/moss 出 SRT；sensevoice 出纯文本
     run_kw = {}
@@ -241,7 +238,27 @@ def main():
     if language:
         run_kw['language'] = language
 
-    per_video = [transcribe_one(i, vp) for i, vp in enumerate(video_paths)]
+    # K 路并发：各领一个视频直到队列取空；结果按 idx 归位（乱序完成）
+    jobs = queue.Queue()
+    for i, vp in enumerate(video_paths):
+        jobs.put((i, vp))
+    per_video = [None] * len(video_paths)
+
+    def _worker(sess, vad):
+        while True:
+            try:
+                i, vp = jobs.get_nowait()
+            except queue.Empty:
+                return
+            per_video[i] = transcribe_one(sess, vad, i, vp)
+
+    threads = [threading.Thread(target=_worker,
+                                args=(m.session(), _make_vad()))
+               for m in models]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
 
     # 最终汇总行
     print(json.dumps({'done': True, 'per_video': per_video}, ensure_ascii=False), flush=True)
