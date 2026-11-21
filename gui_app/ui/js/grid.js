@@ -821,24 +821,17 @@ function switchTab(tab) {
   $('#body-llama').classList.toggle('active', tab === 'llama');
   $('#body-detail').classList.toggle('active', tab === 'detail');
   setBottomCollapsed(false);
-}
-function gotoLog() {
-  switchTab('progress');
-  const log = $('#log');
-  requestAnimationFrame(() => {
-    log.scrollTop = log.scrollHeight;
-    requestAnimationFrame(() => { log.scrollTop = log.scrollHeight; });
-  });
-}
-$('#tab-progress').addEventListener('click', () => switchTab('progress'));
-$('#tab-llama').addEventListener('click', () => {
-  switchTab('llama');
-  const log = $('#llamaLog');
+  const log = tab === 'progress' ? $('#log') : (tab === 'llama' ? $('#llamaLog') : null);
   if (log) requestAnimationFrame(() => {
     log.scrollTop = log.scrollHeight;
     requestAnimationFrame(() => { log.scrollTop = log.scrollHeight; });
   });
-});
+}
+function gotoLog() {
+  switchTab('progress');
+}
+$('#tab-progress').addEventListener('click', () => switchTab('progress'));
+$('#tab-llama').addEventListener('click', () => switchTab('llama'));
 $('#tab-detail').addEventListener('click', () => switchTab('detail'));
 
 function updateLlamaLogTab(visible) {

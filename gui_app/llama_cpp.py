@@ -50,7 +50,12 @@ def get_models_dir() -> Path:
         return MODELS_DIR
 
 
-# 只需第一个含 win 构建的 release，per_page 过大会多传数倍 JSON
+# 稳定版：官方 release 不带预编译包，win 构建挂在其对应的 b 号构建上（nightly-tag.txt 指针）；
+# 升级正式版时同步修改这两个常量
+STABLE_VERSION = "v1.0.0"
+STABLE_BUILD_TAG = "b12359"
+GITHUB_TAG_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/"
+# 预发布版走列表取首个（通常为最新 b 号构建），per_page 过大会多传数倍 JSON
 GITHUB_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=5"
 
 # ── 默认启动参数 ──
@@ -82,6 +87,8 @@ DEFAULTS: Dict[str, Any] = {
     "spec_draft_n": "",
     # MoE 模型专用：把前 N 个专家层权重留在 CPU（0 = 全部上 GPU）
     "n_cpu_moe": 0,
+    # MoE 专家显存缓存 MiB（0 = 关闭；缓存被反复命中的 CPU 专家权重）
+    "moe_cache_mib": 0,
 }
 
 # ── 运行时状态 ──
@@ -150,7 +157,7 @@ def _fetch_json(url: str, timeout: float = 20.0,
         except urllib.error.HTTPError as e:
             if (e.code < 500 and e.code != 429) or attempt >= _FETCH_RETRIES:
                 raise
-        except Exception as e:
+        except Exception:
             if cancel_event is not None and cancel_event.is_set():
                 raise InstallCancelled()
             if attempt >= _FETCH_RETRIES:
@@ -267,7 +274,7 @@ def _parse_release_assets(data: Any) -> Optional[Tuple[str, List[Dict[str, Any]]
 
 def get_latest_release_assets(force: bool = False,
                               stop_event: Optional[threading.Event] = None) -> Dict[str, Any]:
-    """拉取最新可用 release 并解析 win 构建资源（预编译 + cudart）。"""
+    """拉取 release 并解析 win 构建资源（稳定版 + 预发布版双渠道）。"""
     global _cached_release, _cached_release_at, _release_fetching
     with _cache_lock:
         if not force and _cached_release is not None and (time.time() - _cached_release_at) < _CACHE_TTL:
@@ -286,28 +293,40 @@ def get_latest_release_assets(force: bool = False,
         releases = _fetch_json(GITHUB_API, cancel_event=stop_event)
         if not isinstance(releases, list):
             raise RuntimeError("GitHub 返回格式异常，未获取到 release 列表")
-        found = None
-        for rel in releases:
-            found = _parse_release_assets(rel)
-            if found is not None:
-                break
-        if found is None:
+        pre = next((f for f in (_parse_release_assets(rel) for rel in releases
+                                if isinstance(rel, dict)) if f is not None), None)
+        stable = None
+        try:
+            stable = _parse_release_assets(
+                _fetch_json(GITHUB_TAG_API + STABLE_BUILD_TAG, cancel_event=stop_event))
+        except Exception:
+            pass  # 稳定构建获取失败时仅提供预发布渠道
+        if stable is None and pre is None:
             raise RuntimeError("最近 release 中没有可用 win 构建资产")
-        tag, builds = found
 
         gpu = detect_gpu()
-        recommended_key = pick_cuda_version(
-            gpu.get("cuda_max", ""),
-            [(b["key"], b["ver"]) for b in builds if b["type"] == "cuda"],
-        )
-        if recommended_key is None:
-            recommended_key = next((b["key"] for b in builds if b["type"] == "cpu"), None)
+
+        def _channel(cid: str, name: str, found) -> Dict[str, Any]:
+            tag, builds = found
+            recommended_key = pick_cuda_version(
+                gpu.get("cuda_max", ""),
+                [(b["key"], b["ver"]) for b in builds if b["type"] == "cuda"],
+            )
+            if recommended_key is None:
+                recommended_key = next((b["key"] for b in builds if b["type"] == "cpu"), None)
+            return {"id": cid, "name": name, "tag": tag,
+                    "builds": builds, "recommended_key": recommended_key}
+
+        channels = []
+        if stable is not None:
+            channels.append(_channel("stable", "稳定版",
+                                     (f"{STABLE_VERSION} · {STABLE_BUILD_TAG}", stable[1])))
+        if pre is not None:
+            channels.append(_channel("pre", "预发布版", pre))
 
         result: Dict[str, Any] = {
             "ok": True,
-            "tag": tag,
-            "builds": builds,
-            "recommended_key": recommended_key,
+            "channels": channels,
             "gpu": gpu,
         }
         with _cache_lock:
@@ -569,7 +588,7 @@ def model_config_updates(params: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
     for k, v in params.items():
         if k in _GLOBAL_ONLY_KEYS:
             continue
-        if k == "n_cpu_moe":
+        if k == "n_cpu_moe" or k == "moe_cache_mib":
             try:
                 n = int(v or 0)
             except (ValueError, TypeError):
@@ -618,6 +637,7 @@ def ensure_model_configs(models: List[Dict[str, Any]]) -> Dict[str, Any]:
                          if k not in _GLOBAL_ONLY_KEYS}
                 entry["ctx"] = DEFAULTS["ctx"]  # 上下文窗口初始默认（与全局默认同源）
                 entry.pop("n_cpu_moe", None)
+                entry.pop("moe_cache_mib", None)
                 inner[p] = entry
             return inner
 
@@ -767,8 +787,9 @@ def _extract_model_info(meta: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def install(build_sel: str, log_fn=None, proxy: str = "",
-            stop_event: Optional[threading.Event] = None) -> Dict[str, Any]:
-    """安装 llama.cpp：支持 manual / cuda-<ver> / vulkan / cpu。"""
+            stop_event: Optional[threading.Event] = None,
+            channel: str = "stable") -> Dict[str, Any]:
+    """安装 llama.cpp：支持 manual / cuda-<ver> / vulkan / cpu。channel ∈ stable/pre。"""
     log_fn = log_fn or _stderr_log
     proxy = _norm_proxy(proxy)
 
@@ -818,7 +839,10 @@ def install(build_sel: str, log_fn=None, proxy: str = "",
         return {"ok": False, "error": f"获取 release 失败: {e}"}
     if not release.get("ok"):
         return {"ok": False, "error": release.get("error", "获取 release 失败")}
-    build = _parse_build_sel(build_sel, release["builds"])
+    ch = next((c for c in release.get("channels", []) if c.get("id") == channel), None)
+    if ch is None:
+        return {"ok": False, "error": f"未找到版本渠道: {channel}"}
+    build = _parse_build_sel(build_sel, ch["builds"])
     if build is None:
         return {"ok": False, "error": f"未找到构建: {build_sel}"}
 
@@ -829,7 +853,7 @@ def install(build_sel: str, log_fn=None, proxy: str = "",
     cu_zip = LLAMA_DIR / f"_cudart_{key}.zip"
     try:
         tag = build["type"] + ((" " + build["ver"]) if build["ver"] else "")
-        log_fn(f"开始安装 llama.cpp（{tag}）…")
+        log_fn(f"开始安装 llama.cpp（{ch['tag']} · {tag}）…")
         _check_cancel()
         if proxy:
             log_fn(f"下载将使用加速代理：{proxy}（构建列表仍从官方获取）")
@@ -1007,6 +1031,10 @@ def _build_args(model_path: Path, p: Dict[str, Any], layers: int = 0) -> List[st
     n_cpu_moe = num("n_cpu_moe", 0)
     if n_cpu_moe > 0:
         args += ["--n-cpu-moe", str(n_cpu_moe)]
+    # MoE 专家显存缓存（配合专家留 CPU）：0 = 不传参
+    moe_cache = num("moe_cache_mib", 0)
+    if moe_cache > 0:
+        args += ["--moe-cache-mib", str(moe_cache)]
     # 加载模式；空 = 自动（不传参）；非法值忽略
     lm = str(p.get("load_mode", DEFAULTS["load_mode"]) or "").strip().lower()
     if lm in ("mmap", "mmap+mlock", "none", "mlock", "dio"):
@@ -1018,13 +1046,14 @@ def _build_args(model_path: Path, p: Dict[str, Any], layers: int = 0) -> List[st
     imax = str(p.get("image_max_tokens", DEFAULTS["image_max_tokens"]) or "").strip()
     if imax.isdigit():
         args += ["--image-max-tokens", imax]
-    # 推理控制：off 关闭思考（默认，防复读）；auto/on 显式开关；思考深度仅文档支持的 low/medium/xhigh
+    # 推理控制：off 关闭思考（默认，防复读）；auto/on 显式开关；
+    # 思考深度 = --reasoning-effort 档位（minimal/low/medium/high/xhigh/max）
     mode = str(p.get("reasoning_mode", DEFAULTS["reasoning_mode"]) or "off").strip().lower()
     if mode == "auto":
         args += ["--reasoning", "auto"]
     elif mode == "on":
         args += ["--reasoning", "on"]
-    elif mode in ("low", "medium", "xhigh"):
+    elif mode in ("minimal", "low", "medium", "high", "xhigh", "max"):
         args += ["--reasoning-effort", mode]
     else:
         args += ["--reasoning", "off", "--reasoning-budget", "0"]
@@ -1032,12 +1061,15 @@ def _build_args(model_path: Path, p: Dict[str, Any], layers: int = 0) -> List[st
     kv = str(p.get("kv_quant", DEFAULTS["kv_quant"]) or "").strip().lower()
     if kv:
         args += ["--cache-type-k", kv, "--cache-type-v", kv]
-    # mmproj：空 = 不使用；权重放 CPU 时附加 --no-mmproj-offload
+    # mmproj：空 = 不使用（自动检测关闭时显式 --no-mmproj，防新版 llama-server 自动加载同目录 mmproj）；
+    # 权重放 CPU 时附加 --no-mmproj-offload
     mmproj = p.get("mmproj", "") or ""
     if mmproj:
         args += ["--mmproj", str(mmproj)]
         if p.get("no_mmproj_offload", DEFAULTS["no_mmproj_offload"]):
             args.append("--no-mmproj-offload")
+    elif not p.get("mmproj_auto", DEFAULTS["mmproj_auto"]):
+        args.append("--no-mmproj")
     # MTP 投机解码：不传参 = 不启用；同目录有 mtp 草稿模型时附加 --model-draft
     spec = str(p.get("spec_draft_n", DEFAULTS["spec_draft_n"]) or "").strip()
     if spec in ("1", "2", "3", "4", "5"):

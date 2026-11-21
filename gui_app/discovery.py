@@ -210,6 +210,7 @@ def flush_probe_cache(force: bool = False, debounce: float = 1.5) -> None:
 
 
 def prune_probe_cache(paths) -> None:
+    global _probe_dirty
     if not _probe_loaded:
         return
     keep = {_norm(p) for p in paths}

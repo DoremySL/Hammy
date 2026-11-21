@@ -30,7 +30,6 @@ class ModelDownloadMixin:
 
     def model_open_repo(self, source: str = "hf", repo_id: str = "") -> Dict[str, Any]:
         """用默认浏览器打开仓库页面（查看模型介绍）。"""
-        import urllib.parse
         import webbrowser
         from .. import models_downloader
         try:

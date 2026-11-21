@@ -709,7 +709,6 @@ class ExperimentalMixin:
                     "total": 0, "skipped": skipped, "skipped_ids": skipped_ids,
                     "error": None}
 
-        language = load_transcribe_config().get("language", "")
         model = get_current_model()
         results: Dict[str, Any] = {}
 
@@ -736,8 +735,7 @@ class ExperimentalMixin:
                         js_pusher.push("setProgress", done, total)
                         return
                     seg_count = entry.get("srt", "").count("-->")
-                    _push_log(f"  [{done}/{total}] {name} — 完成 {seg_count} 段，"
-                              f"语言={entry.get('language') or '未知'}")
+                    _push_log(f"  [{done}/{total}] {name} — 完成 {seg_count} 段")
                 else:
                     err_txt = str(entry.get("error", ""))
                     _push_log(f"  [{done}/{total}] {name} — 转录失败"
@@ -748,7 +746,7 @@ class ExperimentalMixin:
                 js_pusher.push("setProgress", done, total)
 
             batch_result = run_transcription_batch(
-                video_paths, language=language,
+                video_paths,
                 on_video_done=_on_done, on_log=_push_log,
                 stop_event=_gpu_stop_event,
             )
@@ -1016,8 +1014,10 @@ class ExperimentalMixin:
         except Exception as e:
             return {"ok": False, "error": f"获取 llama.cpp 发布信息失败: {e}"}
 
-    def install_llama(self, build_sel: str = "", proxy: str = "") -> Dict[str, Any]:
-        """安装 llama.cpp。build_sel: manual（仅建目录）/ cuda-<ver>（自动下载）。"""
+    def install_llama(self, build_sel: str = "", proxy: str = "",
+                      channel: str = "stable") -> Dict[str, Any]:
+        """安装 llama.cpp。build_sel: manual（仅建目录）/ cuda-<ver>（自动下载）；
+        channel ∈ stable/pre（稳定版/预发布版）。"""
         from ..llama_cpp import install as _install
 
         if not build_sel:
@@ -1027,7 +1027,7 @@ class ExperimentalMixin:
         _install_stop_event.clear()
         try:
             return _install(build_sel, log_fn=_push_log, proxy=proxy,
-                            stop_event=_install_stop_event)
+                            stop_event=_install_stop_event, channel=channel)
         except Exception as e:
             return {"ok": False, "error": f"安装过程异常: {e}"}
         finally:

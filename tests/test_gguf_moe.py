@@ -148,6 +148,19 @@ class TestBuildArgsNcpumoe(unittest.TestCase):
         self.assertEqual(llama_cpp.DEFAULTS["n_cpu_moe"], 0)
 
 
+class TestBuildArgsMoeCache(unittest.TestCase):
+    """_build_args：--moe-cache-mib 仅正值传入。"""
+
+    def test_zero_omitted(self):
+        args = llama_cpp._build_args(Path("m.gguf"), {"moe_cache_mib": 0})
+        self.assertNotIn("--moe-cache-mib", args)
+
+    def test_positive_injected(self):
+        args = llama_cpp._build_args(Path("m.gguf"), {"moe_cache_mib": 1024})
+        i = args.index("--moe-cache-mib")
+        self.assertEqual(args[i + 1], "1024")
+
+
 class TestBuildArgsKvQuant(unittest.TestCase):
     """_build_args：KV 量化小写传参；空 = 不启用（不传入参数）。"""
 
@@ -298,13 +311,14 @@ class TestLaunchMmprojAuto(unittest.TestCase):
         self.assertEqual(cmd[i + 1], "C:/models/mmproj-qwen2.5vl.gguf")
 
     def test_no_auto_detect_when_disabled(self):
-        # mmproj_auto=False（前端「不使用」）→ 不自动检测，不传 --mmproj
+        # mmproj_auto=False（前端「不使用」）→ 不自动检测，显式 --no-mmproj 防新版自动加载
         with mock.patch("gui_app.llama_cpp.scan_mmprojs") as sc, \
              mock.patch("gui_app.llama_cpp._pick_mmproj") as pk:
             cmd = self._launch_cmd({"mmproj_auto": False})
         sc.assert_not_called()
         pk.assert_not_called()
         self.assertNotIn("--mmproj", cmd)
+        self.assertIn("--no-mmproj", cmd)
 
     def test_explicit_mmproj_wins(self):
         # 显式指定投影文件 → 跳过自动检测，用显式路径

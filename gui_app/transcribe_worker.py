@@ -7,7 +7,6 @@ import sys, json, os, queue, shutil, subprocess, threading
 # 超长区段分块上限（VAD 缺失回退成整段区段时生效）
 FAMILY_CHUNK_SEC = {'moss': 1800}
 VAD_MIN_SPEECH_SEC = 0.3  # 总语音时长低于此值视为无语音
-N_WORKERS = 2  # 并发推理路数（引擎单 Model 只允许一次推理，多路各持独立 Model）
 
 
 def plog(msg):
@@ -215,9 +214,10 @@ def main():
     import soundfile as sf
 
     # 按后端优先级初始化，失败逐级回退；并发各路独立 Model
+    n_workers = max(1, int(params.get('workers', 2) or 2))
     backends = ['vulkan', 'cpu']
     models = []
-    for _ in range(N_WORKERS):
+    for _ in range(n_workers):
         model = None
         for be in backends:
             try:

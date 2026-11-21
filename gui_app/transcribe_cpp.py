@@ -132,6 +132,16 @@ def get_inject_model() -> str:
     return key if key in TRANSCRIBE_MODELS else DEFAULT_INJECT_MODEL
 
 
+def _config_workers() -> int:
+    """推理并发路数（配置 workers，1-4）。"""
+    from .config_store import load_transcribe_config
+    w = load_transcribe_config().get("workers", 2)
+    try:
+        return max(1, min(4, int(w)))
+    except (TypeError, ValueError):
+        return 2
+
+
 def get_installed_models() -> Dict[str, bool]:
     """扫描全部内置模型的安装状态 {key: bool}。"""
     return {key: is_model_installed(key) for key in TRANSCRIBE_MODELS}
@@ -387,7 +397,6 @@ def _run_batch_script(params: Dict[str, Any], per_video: List[Dict[str, Any]],
 
 
 def run_transcription_batch(video_paths: List[str],
-                            language: str = "",
                             on_video_done: Optional[Callable[[int, Dict[str, Any]], None]] = None,
                             on_log: Optional[Callable[[str], None]] = None,
                             stop_event=None) -> Dict[str, Any]:
@@ -413,7 +422,8 @@ def run_transcription_batch(video_paths: List[str],
         "family": TRANSCRIBE_MODELS[current]["family"],
         "timestamps": bool(TRANSCRIBE_MODELS[current].get("timestamps", True)),
         "inject_win_sec": INJECT_WIN_SEC[TRANSCRIBE_MODELS[current]["family"]],
-        "language": language,
+        "language": "",
+        "workers": _config_workers(),
         "ffmpeg": FFMPEG_EXE,
         "venv_site_packages": str(VENV_DIR / "Lib" / "site-packages"),
         # 官方 Silero VAD（缺失则整段推理/不做静音判断）
@@ -453,6 +463,7 @@ def run_inject_batch(video_paths: List[str],
         "model_path": str(_model_path(inject_key)),
         "family": TRANSCRIBE_MODELS[inject_key]["family"],
         "language": "",
+        "workers": _config_workers(),
         "ffmpeg": FFMPEG_EXE,
         "venv_site_packages": str(VENV_DIR / "Lib" / "site-packages"),
         "max_chars": int(max_chars),

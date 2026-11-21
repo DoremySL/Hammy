@@ -72,8 +72,8 @@ function _collectExperimentalData() {
   const tinteg = ddl('#tagger-integration-dd');
   putT('integration', tinteg === null ? null : tinteg === '1');
   putT('enabled', chk('#tagger-enable-toggle'));
-  const lang = $('#transcribe-language');
-  putW('language', lang ? lang.value.trim() : null);
+  const wkv = ddl('#transcribe-workers-dd');
+  if (wkv !== null) putW('workers', Number(wkv));
   let mc = num('#transcribe-max-chars');
   if (mc !== null) mc = Math.max(100, mc);
   putW('max_chars', mc);
@@ -622,7 +622,7 @@ function _renderTaggerSection(pStatus) {
       <div id="tagger-cfg-panel" class="exp-cfg-panel" style="display:${state.settingsOpen.has('tagger-cfg') ? 'block' : 'none'}">
         <div class="exp-input-row">
           <div class="field">
-            <label data-tip="角色/IP 标签输出阈值；0.75 为校准原值">角色/IP阈值</label>
+            <label data-tip="越高标签输出越严格，调低能减少漏报但大概率增加误报">角色/IP阈值</label>
             <input type="number" id="tagger-threshold" min="0.1" max="1" step="0.01" value="${tcfg.threshold || 0.75}"/>
           </div>
           <div class="field">
@@ -801,8 +801,8 @@ function _renderTranscribeSection(wStatus) {
         </div>
         <div class="exp-input-row">
           <div class="field">
-            <label data-tip="转录目标语言，留空自动检测；示例：ja（日语）、zh（中文）、en（英文）">预期语言</label>
-            <input type="text" id="transcribe-language" placeholder="自动检测" value="${esc(wcfg.language || '')}"/>
+            <label data-tip="转录推理并发数，调大可提升语音稀疏视频的批量处理速度，越大越吃显存">并发配置</label>
+            ${_optDd('transcribe-workers-dd', [1, 2, 3, 4], wcfg.workers || 2)}
           </div>
           <div class="field">
             <label data-tip="转录文本注入重命名提示词时发送 [MM:SS] 时间标记，AI 可结合台词时间轴理解内容">发送时间戳</label>
@@ -828,6 +828,16 @@ function _boolDd(id, on, onText = '开启', offText = '关闭') {
     </div>`;
 }
 
+function _optDd(id, values, sel) {
+  const opts = values.map(v =>
+    `<div class="dd-opt${v === sel ? ' active' : ''}" data-value="${v}">${v}</div>`).join('');
+  return `
+    <div class="dd" id="${id}">
+      <button class="dd-btn" type="button"><span class="dd-label">${sel}</span>${ddArrow()}</button>
+      <div class="dd-panel">${opts}</div>
+    </div>`;
+}
+
 function _bindTranscribeEvents() {
   const toggle = $('#transcribe-enable-toggle');
   if (toggle) toggle.addEventListener('change', () => {
@@ -841,11 +851,11 @@ function _bindTranscribeEvents() {
 
   _bindCardToggle('transcribe');
 
-  ['#transcribe-language', '#transcribe-max-chars'].forEach(sel => {
+  ['#transcribe-max-chars'].forEach(sel => {
     const el = $(sel);
     if (el) el.addEventListener('input', () => scheduleExperimentalSave());
   });
-  ['#transcribe-ts-dd', '#transcribe-integration-dd'].forEach(sel => {
+  ['#transcribe-workers-dd', '#transcribe-ts-dd', '#transcribe-integration-dd'].forEach(sel => {
     const el = $(sel);
     if (el) initDropdown(el, () => scheduleExperimentalSave(true));
   });
@@ -1470,6 +1480,7 @@ async function showLlamaCudaDialog() {
 
   let method = 'direct';
   let releases = null;
+  let channel = 'stable';
   let fetchErr = '';
   let fetching = false;
 
@@ -1546,11 +1557,12 @@ async function showLlamaCudaDialog() {
       renderBuildError();
       return;
     }
-    if (!(r.builds || []).length) {
+    if (!(r.channels || []).length) {
       fetchErr = '未找到可用的构建';
       renderBuildError();
       return;
     }
+    if (!r.channels.some(c => c.id === channel)) channel = r.channels[0].id;
     releases = r;
     renderBuildList();
   }
@@ -1575,6 +1587,8 @@ async function showLlamaCudaDialog() {
 
   function renderBuildList() {
     const gpu = releases.gpu || {};
+    const chans = releases.channels || [];
+    const cur = chans.find(c => c.id === channel) || chans[0];
     function buildLabel(b) {
       if (!b) return '';
       if (b.type === 'cuda') return 'CUDA ' + b.ver;
@@ -1582,24 +1596,38 @@ async function showLlamaCudaDialog() {
       if (b.type === 'cpu') return 'CPU';
       return b.type + (b.ver ? ' ' + b.ver : '');
     }
-    const rec = releases.builds.find(b => b.key === releases.recommended_key);
+    const rec = cur.builds.find(b => b.key === cur.recommended_key);
     const noNvidia = !gpu.has_nvidia;
-    const autoKey = noNvidia ? ((releases.builds.find(b => b.type === 'cpu') || {}).key || null) : null;
+    const autoKey = noNvidia ? ((cur.builds.find(b => b.type === 'cpu') || {}).key || null) : null;
     const gpuBanner = gpuBannerHtml(gpu,
-      releases.recommended_key ? `推荐 ${buildLabel(rec)}` : '',
+      cur.recommended_key ? `推荐 ${buildLabel(rec)}` : '',
       '请尝试选择CPU版本或 Vulkan 版「多数核显独显通用」');
     $('#llama-build-wrap').innerHTML = `
       ${gpuBanner}
       ${mirrorSection({
-        title: '可用构建', name: 'llama-build',
-        items: releases.builds.map(b => {
-          const isRec = b.key === releases.recommended_key;
-          return { value: b.key, name: buildLabel(b), desc: `llama.cpp ${releases.tag || ''}`,
-                   recommended: isRec, badge: '推荐',
-                   checked: (isRec && gpu.has_nvidia) || b.key === autoKey };
-        }),
-      })}`;
-    bindMirrorRadios($('#llama-build-wrap'));
+        title: '版本渠道', name: 'llama-channel',
+        items: chans.map(c => ({
+          value: c.id, name: c.name, desc: `llama.cpp ${c.tag || ''}`,
+          recommended: c.id === 'stable', badge: '推荐', checked: c.id === cur.id,
+        })),
+      })}
+      <div id="llama-build-list"></div>`;
+    bindMirrorRadios($('#llama-build-wrap'), radio => {
+      if (radio.name === 'llama-channel' && radio.value !== channel) {
+        channel = radio.value;
+        renderBuildList();
+      }
+    });
+    $('#llama-build-list').innerHTML = mirrorSection({
+      title: '可用构建', name: 'llama-build',
+      items: cur.builds.map(b => {
+        const isRec = b.key === cur.recommended_key;
+        return { value: b.key, name: buildLabel(b), desc: `llama.cpp ${cur.tag || ''}`,
+                 recommended: isRec, badge: '推荐',
+                 checked: (isRec && gpu.has_nvidia) || b.key === autoKey };
+      }),
+    });
+    bindMirrorRadios($('#llama-build-list'));
   }
 
   function onOk() {
@@ -1613,16 +1641,16 @@ async function showLlamaCudaDialog() {
     if (!sel) { toast('构建列表尚未就绪，请稍候或点击「重试」加载', 'dim'); return; }
     const proxy = method === 'proxy' ? proxyValue() : '';
     cleanup();
-    startLlamaInstall(sel.value, proxy);
+    startLlamaInstall(sel.value, proxy, channel);
   }
 
   renderShell();
   fetchBuilds();
 }
 
-async function startLlamaInstall(cudaVer, proxy) {
+async function startLlamaInstall(cudaVer, proxy, channel) {
   await runInstallTask(
-    () => apiCall('install_llama', cudaVer, proxy || ''),
+    () => apiCall('install_llama', cudaVer, proxy || '', channel || 'stable'),
     async r => {
       if (r.manual) toast('（手动模式）: 已创建 llama.cpp 文件夹，请自行将对应的编译版本放入其中', 'ok');
       else toast('llama.cpp 安装完成', 'ok');
@@ -1854,6 +1882,7 @@ function renderLlamaTab(llamaStatus) {
   const moeShow = !!(curModelData && curModelData.moe);
   const moeMax = moeShow ? Math.max(1, parseInt(curModelData.layers, 10) || 128) : 128;
   const moeInit = moeShow ? _clampInt(pv('n_cpu_moe', 0), 0, moeMax, 0) : 0;
+  const moeCacheInit = _clampInt(pv('moe_cache_mib', 0), 0, 999999, 0);
   const starting = !!llamaStatus.starting || !!state.llamaPendingLaunch;
   const portConflict = !running && !starting && ready && !!llamaStatus.port_conflict;
   const statusMeta = running
@@ -1922,6 +1951,10 @@ function renderLlamaTab(llamaStatus) {
           </div>
           <input type="range" id="llama-moe-range" min="0" max="${moeMax}" step="1" value="${moeInit}"/>
           <input type="hidden" id="llama-moe" value="${moeShow ? moeInit : ''}"/>
+          <div class="slider-head" style="margin-top:6px">
+            <label data-tip="专家显存缓存：为留在 CPU 的专家权重在显存开一块缓存，反复命中的专家直接 GPU 计算，减少传输瓶颈；0 = 关闭">专家显存缓存 <code>--moe-cache-mib</code></label>
+            <input type="number" class="sval" id="llama-moe-cache" value="${moeShow ? moeCacheInit : 0}" min="0" step="64"/>
+          </div>
         </div>
       </div>
       <div class="grid-3" style="margin-top:10px">
@@ -2051,7 +2084,10 @@ function _restoreLlamaEdits(e, llamaStatus) {
   set('#llama-parallel', e.parallel); set('#llama-npredict', e.npredict); set('#llama-timeout', e.timeout);
   _setSliderVal('#llama-ctx-range', '#llama-ctx', '#llama-ctx-val', parseInt(e.ctx, 10));
   _setSliderVal('#llama-ngl-range', '#llama-ngl', '#llama-ngl-val', parseInt(e.ngl, 10));
-  if (cur && cur.moe) _setSliderVal('#llama-moe-range', '#llama-moe', '#llama-moe-val', parseInt(e.n_cpu_moe, 10) || 0);
+  if (cur && cur.moe) {
+    _setSliderVal('#llama-moe-range', '#llama-moe', '#llama-moe-val', parseInt(e.n_cpu_moe, 10) || 0);
+    set('#llama-moe-cache', parseInt(e.moe_cache_mib, 10) || 0);
+  }
   const dd = (id, v) => { const el = $(id); if (el && v != null) setDropdownValue(el, v); };
   dd('#llama-kv', e.kv_quant); dd('#llama-kv-preset', e.kv_preset);
   dd('#llama-reasoning-dd', e.reasoning_mode); dd('#llama-spec', e.spec_draft_n);
@@ -2313,6 +2349,7 @@ function _applyModelParams(path, cfg, mcfgs, defaults) {
   const moeRow = $('#llama-ot-row');
   if (moeRow && moeRow.style.display !== 'none') {
     _setSliderVal('#llama-moe-range', '#llama-moe', '#llama-moe-val', _clampInt(pv('n_cpu_moe', 0), 0, 99999, 0));
+    setVal('#llama-moe-cache', _clampInt(pv('moe_cache_mib', 0), 0, 999999, 0));
   }
   _setSliderVal('#llama-ctx-range', '#llama-ctx', '#llama-ctx-val', _clampInt(pv('ctx', d.ctx), 512, 999999, d.ctx));
   _setSliderVal('#llama-ngl-range', '#llama-ngl', '#llama-ngl-val', _clampInt(pv('ngl', d.ngl), 0, 99999, d.ngl));
@@ -2352,8 +2389,9 @@ const LOAD_MODE_OPT_LABELS = [['', '自动'], ['none', 'none'], ['mmap', 'mmap']
 const _loadModeDdInner = sel => buildDdInner(LOAD_MODE_OPT_LABELS, sel);
 
 const REASONING_OPT_LABELS = [['on', '启用思考'], ['off', '关闭思考'], ['auto', '自动'],
-                              ['low', '思考深度 Low'], ['medium', '思考深度 Medium'],
-                              ['xhigh', '思考深度 Xhigh']];
+                              ['minimal', '思考深度 Minimal'], ['low', '思考深度 Low'],
+                              ['medium', '思考深度 Medium'], ['high', '思考深度 High'],
+                              ['xhigh', '思考深度 Xhigh'], ['max', '思考深度 Max']];
 function _reasoningSelectVal(v) {
   const s = String(v || '').trim().toLowerCase();
   return REASONING_OPT_LABELS.some(([val]) => val === s) ? s : 'off';
@@ -2436,6 +2474,7 @@ function _collectLlamaParams(extra) {
     extra_args: state.llamaXargs,
     alias: $('#llama-alias').value.trim(),
     n_cpu_moe: $('#llama-moe').value,
+    moe_cache_mib: $('#llama-moe-cache') ? $('#llama-moe-cache').value : 0,
   };
   return Object.assign(base, extra || {});
 }
@@ -2512,7 +2551,8 @@ function _bindLlamaTabEvents(llamaStatus) {
   }
 
   ['#llama-host', '#llama-port', '#llama-threads', '#llama-tb', '#llama-batch',
-   '#llama-ubatch', '#llama-parallel', '#llama-npredict', '#llama-timeout', '#llama-alias'].forEach(sel => {
+   '#llama-ubatch', '#llama-parallel', '#llama-npredict', '#llama-timeout', '#llama-alias',
+   '#llama-moe-cache'].forEach(sel => {
     const el = $(sel);
     if (el) el.addEventListener('input', () => scheduleLlamaSave());
   });

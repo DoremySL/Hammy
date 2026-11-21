@@ -88,7 +88,8 @@ class TestInstallPartialKeep(unittest.TestCase):
         llama_dir = Path(td.name) / "llama.cpp"
         p1 = mock.patch.object(llama_cpp, "LLAMA_DIR", llama_dir)
         p2 = mock.patch("gui_app.llama_cpp.get_latest_release_assets",
-                        return_value={"ok": True, "builds": [self._fake_build()]})
+                        return_value={"ok": True, "channels": [
+                            {"id": "stable", "tag": "b123", "builds": [self._fake_build()]}]})
         p3 = mock.patch("gui_app.llama_cpp._parse_build_sel",
                         return_value=self._fake_build())
         p1.start(); p2.start(); p3.start()
@@ -180,6 +181,12 @@ class TestInstallPartialKeep(unittest.TestCase):
         self.assertFalse(r["ok"])
         self.assertTrue(r["cancelled"])
         self.assertFalse((llama_dir / "_pre_cuda-13.zip").exists())
+
+    def test_install_unknown_channel_fails(self):
+        self._patch_env()
+        r = llama_cpp.install("cuda-13", channel="pre")
+        self.assertFalse(r["ok"])
+        self.assertIn("未找到版本渠道", r["error"])
 
     def test_release_fetch_failure_logs_manual_hint(self):
         td = tempfile.TemporaryDirectory()
@@ -281,10 +288,13 @@ class TestInstallPartialKeep(unittest.TestCase):
         upd.assert_not_called()
 
 
-def _fake_release(tag="b123"):
-    return {"tag_name": tag,
-            "assets": [{"name": "llama-b123-bin-win-cpu-x64.zip",
-                        "browser_download_url": "http://x/cpu.zip", "size": 1}]}
+def _fake_release(tag="b123", prerelease=False):
+    rel = {"tag_name": tag,
+           "assets": [{"name": f"llama-{tag}-bin-win-cpu-x64.zip",
+                       "browser_download_url": "http://x/cpu.zip", "size": 1}]}
+    if prerelease:
+        rel["prerelease"] = True
+    return rel
 
 
 class TestReleaseCache(unittest.TestCase):
@@ -345,7 +355,7 @@ class TestReleaseCache(unittest.TestCase):
             rb = llama_cpp.get_latest_release_assets()
             ta.join()
         self.assertIs(result["r"], rb)
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls), 2)  # 一轮 = 列表 + 稳定 tag 两个请求，等待者不重复抓取
 
     def test_cache_timestamp_set_after_fetch(self):
         # TTL 从抓取完成时刻起算：抓取耗时超过 TTL 后缓存仍有效
@@ -360,8 +370,50 @@ class TestReleaseCache(unittest.TestCase):
              mock.patch.object(llama_cpp, "_fetch_json", side_effect=slow_fetch), self._gpu():
             r1 = llama_cpp.get_latest_release_assets()
             r2 = llama_cpp.get_latest_release_assets()
-        self.assertIs(r2, r1)  # 若时间戳写于抓取前，age 0.35s > TTL 0.2s 会 miss 重抓
-        self.assertEqual(len(calls), 1)
+        self.assertIs(r2, r1)  # 若时间戳写于抓取前，age 0.7s > TTL 0.2s 会 miss 重抓
+        self.assertEqual(len(calls), 2)  # 一轮 = 列表 + 稳定 tag 两个请求
+
+
+class TestReleaseChannels(unittest.TestCase):
+    """get_latest_release_assets：稳定版（latest 端点）/预发布版（列表）双渠道解析。"""
+
+    def setUp(self):
+        llama_cpp._cached_release = None
+        llama_cpp._cached_release_at = 0.0
+        llama_cpp._release_fetching = False
+        self.addCleanup(setattr, llama_cpp, "_cached_release", None)
+        self.addCleanup(setattr, llama_cpp, "_cached_release_at", 0.0)
+        self.addCleanup(setattr, llama_cpp, "_release_fetching", False)
+
+    def _run(self, rels, stable_rel=None):
+        """stable_rel：按 tag 拉取的稳定构建 release；None/抛错 = 稳定渠道不可用。"""
+        def fake_fetch(url, cancel_event=None):
+            if "releases/tags/" in url:
+                if stable_rel is None:
+                    raise OSError("network down")
+                return stable_rel
+            return rels
+        with mock.patch.object(llama_cpp, "_fetch_json", side_effect=fake_fetch), \
+             mock.patch.object(llama_cpp, "detect_gpu",
+                               return_value={"cuda_max": "", "gpu_name": "x"}):
+            return llama_cpp.get_latest_release_assets()
+
+    def test_stable_first_even_if_pre_newer(self):
+        r = self._run([_fake_release("b2000", prerelease=True)],
+                      stable_rel=_fake_release("b12359"))
+        self.assertEqual([c["id"] for c in r["channels"]], ["stable", "pre"])
+        self.assertEqual(r["channels"][0]["tag"],
+                         f"{llama_cpp.STABLE_VERSION} · {llama_cpp.STABLE_BUILD_TAG}")
+        self.assertEqual(r["channels"][1]["tag"], "b2000")
+
+    def test_pre_only_when_no_stable(self):
+        r = self._run([_fake_release("b2000", prerelease=True)], stable_rel=None)
+        self.assertEqual([c["id"] for c in r["channels"]], ["pre"])
+
+    def test_no_usable_release_raises(self):
+        with self.assertRaises(RuntimeError):
+            self._run([{"tag_name": "x", "assets": []}],
+                      stable_rel={"tag_name": "y", "assets": []})
 
 
 class TestParallelDownloadBehavior(unittest.TestCase):

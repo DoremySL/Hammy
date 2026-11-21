@@ -125,7 +125,7 @@ def _tagger_defaults() -> Dict[str, Any]:
 def _transcribe_defaults() -> Dict[str, Any]:
     """语音转录模块配置默认值。"""
     return {"enabled": False, "model": "whisper-turbo", "inject_model": "sensevoice",
-            "language": "", "max_chars": 2000, "inject_timestamps": False,
+            "workers": 2, "max_chars": 2000, "inject_timestamps": False,
             "integration": True}
 
 

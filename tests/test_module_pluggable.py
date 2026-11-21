@@ -119,12 +119,12 @@ class TestSetModuleConfig(unittest.TestCase):
     def test_set_transcribe_config(self):
         api = self._api()
         with mock.patch("gui_app.api_mixins.experimental.update_transcribe_config") as up:
-            r = api.set_transcribe_config({"enabled": True, "language": "en"})
+            r = api.set_transcribe_config({"enabled": True, "workers": 3})
         self.assertEqual(r, {"ok": True})
         cfg = {"enabled": False, "model": "whisper-turbo"}
         up.call_args[0][0](cfg)
         self.assertEqual(cfg["enabled"], True)
-        self.assertEqual(cfg["language"], "en")
+        self.assertEqual(cfg["workers"], 3)
 
     def test_empty_values_noop(self):
         api = self._api()
@@ -443,7 +443,7 @@ class TestModuleConfigStore(_WorkspaceTestCase):
 
         def _seed(c):
             c["enabled"] = True
-            c["language"] = "zh"
+            c["workers"] = 3
             return c
 
         def _bump(c):
@@ -454,7 +454,7 @@ class TestModuleConfigStore(_WorkspaceTestCase):
         update_transcribe_config(_bump)
         cfg = load_transcribe_config()
         self.assertIs(cfg["enabled"], True)
-        self.assertEqual(cfg["language"], "zh")
+        self.assertEqual(cfg["workers"], 3)
         self.assertEqual(cfg["max_chars"], 1200)
         self.assertIs(cfg["inject_timestamps"], False)   # 未覆盖键保留默认
 

@@ -371,8 +371,8 @@ def _handle_retryable_error(e: Exception, attempt: int, max_attempts: int,
 
 _REFINE_INSTRUCTION = (
     "请结合画面对首轮 JSON 做整体修订，候选词条仅供参考，一切以画面为准：\n"
-    "1. tags：以画面为准自行判断；角色/IP 等专名确实出现时采用词条中文名写法，"
-    "与词条同义的首轮自造表述统一为词条写法；其余词条不要求并入 tags。\n"
+    "1. tags：角色/IP 等专名确实出现时采用词条中文名写法，"
+    "与词条同义的首轮自造表述统一为词条写法。\n"
     "2. plot：仅当词条用词确实更准确时，用它润色与补充首轮 plot；"
     "不得提及候选列表或检索来源本身。\n"
     "3. title：可用词条优化用词。\n"
