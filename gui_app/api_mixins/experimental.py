@@ -1,4 +1,4 @@
-"""ExperimentalMixin — 扩展功能 API（llama.cpp / 语音转录 / Hammy-tagger）。"""
+"""ExperimentalMixin — 扩展功能 API（llama.cpp / 语音转写 / Hammy-tagger）。"""
 from __future__ import annotations
 
 import shutil
@@ -17,7 +17,7 @@ from ..workspace_paths import (LLAMA_CONFIG_FILE, TAGGER_TAGS_FILE,
 from ..workspace_store import read_json, read_json_cached, update_json, write_json
 from batch_rename.utils import safe_float, safe_int
 
-# GPU 密集任务互斥（转录/辅助分类标签/翻译同刻只允许一个）
+# GPU 密集任务互斥（转写/辅助分类标签/翻译同刻只允许一个）
 _gpu_task_lock = threading.Lock()
 # 安装/卸载/清缓存互斥
 _install_lock = threading.Lock()
@@ -59,7 +59,7 @@ class ExperimentalMixin:
     # ── GPU 任务停止 ──
 
     def stop_gpu_task(self) -> Dict[str, Any]:
-        """停止当前运行中的 GPU 任务（转录/辅助分类标签/翻译）。"""
+        """停止当前运行中的 GPU 任务（转写/辅助分类标签/翻译）。"""
         if not _gpu_task_lock.locked():
             return {"ok": False, "error": "当前没有运行中的任务"}
         if _gpu_stop_event.is_set():
@@ -69,7 +69,7 @@ class ExperimentalMixin:
         return {"ok": True}
 
     def stop_install(self) -> Dict[str, Any]:
-        """停止当前正在进行的安装（llama.cpp / 语音转录 / Hammy-tagger）。"""
+        """停止当前正在进行的安装（llama.cpp / 语音转写 / Hammy-tagger）。"""
         if not _install_lock.locked():
             return {"ok": False, "error": "当前没有正在进行的安装"}
         if _install_stop_event.is_set():
@@ -587,10 +587,10 @@ class ExperimentalMixin:
         from ..tagger import save_tag_results
         save_tag_results(results)
 
-    # ── 语音转录（transcribe.cpp）──
+    # ── 语音转写（transcribe.cpp）──
 
     def get_transcribe_status(self) -> Dict[str, Any]:
-        """获取语音转录安装状态与模块配置。"""
+        """获取语音转写安装状态与模块配置。"""
         from ..transcribe_cpp import get_status
         cfg = load_transcribe_config()
         status = get_status()
@@ -599,12 +599,12 @@ class ExperimentalMixin:
         return status
 
     def set_transcribe_config(self, values: Dict[str, Any]) -> Dict[str, Any]:
-        """提交语音转录模块配置。"""
+        """提交语音转写模块配置。"""
         update_transcribe_config(lambda c: c.update(values or {}))
         return {"ok": True}
 
     def set_transcribe_enabled(self, enabled: bool) -> Dict[str, Any]:
-        """启用/禁用语音转录功能。"""
+        """启用/禁用语音转写功能。"""
         from ..transcribe_cpp import TRANSCRIBE_DIR
         if not TRANSCRIBE_DIR.is_dir():
             return {"ok": True, "enabled": enabled}
@@ -612,14 +612,13 @@ class ExperimentalMixin:
         return {"ok": True, "enabled": enabled}
 
     def get_transcribe_mirrors(self) -> Dict[str, Any]:
-        """获取语音转录安装可选镜像。"""
+        """获取语音转写安装可选镜像。"""
         from ..installer import get_mirror_groups
         return get_mirror_groups(["pypi"])
 
     def install_transcribe(self, pypi_mirror: str = DEFAULT_PYPI_MIRROR,
-                           model: str = "whisper-turbo",
-                           inject_model: str = "sensevoice") -> Dict[str, Any]:
-        """安装语音转录依赖（model=右键转录模型，inject_model=辅助重命名模型）。"""
+                           model: str = "whisper-turbo") -> Dict[str, Any]:
+        """安装语音转写依赖并下载所选模型。"""
         from ..transcribe_cpp import install_dependencies
 
         if not _install_lock.acquire(blocking=False):
@@ -627,7 +626,6 @@ class ExperimentalMixin:
         _install_stop_event.clear()
         try:
             r = install_dependencies(pypi_mirror=pypi_mirror, model=model,
-                                     inject_model=inject_model,
                                      log_fn=_push_log,
                                      stop_event=_install_stop_event)
             if r.get("ok"):
@@ -638,7 +636,7 @@ class ExperimentalMixin:
             _install_lock.release()
 
     def download_transcribe_model(self, model_key: str = "") -> Dict[str, Any]:
-        """下载未安装的转录模型。"""
+        """下载未安装的转写模型。"""
         from ..transcribe_cpp import _download_model
 
         if not model_key:
@@ -660,7 +658,7 @@ class ExperimentalMixin:
         return result
 
     def remove_transcribe(self) -> Dict[str, Any]:
-        """删除语音转录文件夹与模块数据。"""
+        """删除语音转写文件夹与模块数据。"""
         from ..transcribe_cpp import remove_transcribe as _remove
         if not _install_lock.acquire(blocking=False):
             return {"ok": False, "error": "已有模块正在安装，请等待完成后再卸载"}
@@ -670,12 +668,12 @@ class ExperimentalMixin:
             _install_lock.release()
 
     def detect_speech(self, items: List) -> Dict[str, Any]:
-        """对选中视频执行语音转录（items: [[video_id, video_path], ...]）。"""
+        """对选中视频执行语音转写（items: [[video_id, video_path], ...]）。"""
         from ..transcribe_cpp import get_status
 
         status = get_status()
         if not status["ready"]:
-            return {"ok": False, "results": {}, "error": "语音转录未安装或未就绪，请先在扩展功能页安装依赖"}
+            return {"ok": False, "results": {}, "error": "语音转写未安装或未就绪，请先在扩展功能页安装依赖"}
 
         if not _gpu_task_lock.acquire(blocking=False):
             return {"ok": False, "results": {}, "error": "已有 GPU 任务在运行，请等待完成后再试"}
@@ -688,7 +686,7 @@ class ExperimentalMixin:
             _gpu_task_lock.release()
 
     def _transcribe_videos(self, vid_list: List, video_paths: List) -> Dict[str, Any]:
-        """批量转录并保存 SRT（索引记录生成模型）。需持有 _gpu_task_lock。"""
+        """批量转写并保存 SRT（索引记录生成模型）。需持有 _gpu_task_lock。"""
         from .. import discovery
         from ..transcribe_cpp import get_current_model, run_transcription_batch
 
@@ -713,7 +711,7 @@ class ExperimentalMixin:
         results: Dict[str, Any] = {}
 
         try:
-            _push_log(f"正在转录 {total} 个视频的语音…")
+            _push_log(f"正在转写 {total} 个视频的语音…")
             js_pusher.push("setProgress", 0, total)
 
             # 让出显存
@@ -738,7 +736,7 @@ class ExperimentalMixin:
                     _push_log(f"  [{done}/{total}] {name} — 完成 {seg_count} 段")
                 else:
                     err_txt = str(entry.get("error", ""))
-                    _push_log(f"  [{done}/{total}] {name} — 转录失败"
+                    _push_log(f"  [{done}/{total}] {name} — 转写失败"
                               + (f": {err_txt[:200]}" if err_txt else ""), "err")
                     if err_txt and any(k in err_txt.lower()
                                        for k in ("out of memory", "oom", "alloc")):
@@ -757,23 +755,23 @@ class ExperimentalMixin:
             if not batch_result["ok"]:
                 err_txt = str(batch_result.get("error") or "")
                 if not has_done:
-                    _push_log(f"  转录失败: {err_txt[:200]}", "err")
+                    _push_log(f"  转写失败: {err_txt[:200]}", "err")
                     return {"ok": False, "results": {}, "ok_count": 0,
                             "total": total, "skipped": skipped, "skipped_ids": skipped_ids,
                             "error": batch_result.get("error")}
-                _push_log(f"  转录中止（{err_txt}），保留已完成的 {sum(1 for tr in per_video if (tr or {}).get('ok'))} 个结果", "warn")
+                _push_log(f"  转写中止（{err_txt}），保留已完成的 {sum(1 for tr in per_video if (tr or {}).get('ok'))} 个结果", "warn")
 
             for idx, vid in enumerate(vid_list):
                 tr = per_video[idx] if idx < len(per_video) else {"ok": False, "error": "无结果"}
                 if not tr.get("ok"):
-                    results[vid] = {"error": tr.get("error", "转录失败")}
+                    results[vid] = {"error": tr.get("error", "转写失败")}
                 else:
                     results[vid] = {"srt": tr["srt"], "language": tr.get("language", ""),
                                     "model": model, "error": None,
                                     "silent": bool(tr.get("silent"))}
 
             if batch_result["ok"]:
-                _push_log(f"  转录完成（{total} 个视频，总耗时 {elapsed:.1f}s）")
+                _push_log(f"  转写完成（{total} 个视频，总耗时 {elapsed:.1f}s）")
 
             # 保存 SRT 文件 + 索引
             self._save_transcribe_srt(results)
@@ -790,13 +788,13 @@ class ExperimentalMixin:
                     "error": None}
         except Exception as e:
             ok_count = sum(1 for r in results.values() if not r.get("error"))
-            _push_log(f"转录失败：{str(e)[:200]}", "err")
+            _push_log(f"转写失败：{str(e)[:200]}", "err")
             return {"ok": False, "results": results, "ok_count": ok_count,
                     "total": total, "skipped": skipped, "skipped_ids": skipped_ids,
                     "error": str(e)}
 
     def get_transcribe_transcript(self, video_id: str) -> Dict[str, Any]:
-        """获取指定视频的转录内容（读 SRT 文件）。"""
+        """获取指定视频的转写内容（读 SRT 文件）。"""
         srt_file = TRANSCRIBE_SRT_DIR / f"{video_id}.srt"
         if srt_file.exists():
             try:
@@ -809,14 +807,14 @@ class ExperimentalMixin:
         return {"ok": False, "text": ""}
 
     def clear_transcribe_transcripts(self) -> Dict[str, Any]:
-        """清除所有转录数据（SRT 文件 + 索引）。"""
+        """清除所有转写数据（SRT 文件 + 索引）。"""
         write_json(TRANSCRIBE_TRANSCRIPTS_FILE, {})
         if TRANSCRIBE_SRT_DIR.exists():
             shutil.rmtree(TRANSCRIBE_SRT_DIR, ignore_errors=True)
-        return {"ok": True, "message": "已清除所有语音转录数据"}
+        return {"ok": True, "message": "已清除所有语音转写数据"}
 
     def get_transcribe_transcribed_ids(self) -> List[str]:
-        """返回已有转录的视频 ID 列表（轻量，供前端角标显示）。"""
+        """返回已有转写的视频 ID 列表（轻量，供前端角标显示）。"""
         store = read_json(TRANSCRIBE_TRANSCRIPTS_FILE, {})
         return list(store.keys())
 
@@ -841,16 +839,16 @@ class ExperimentalMixin:
         update_json(TRANSCRIBE_TRANSCRIPTS_FILE, _mutate, default_factory=dict)
 
     def _srt_export_block_reason(self) -> Optional[str]:
-        """当前右键转录模型无逐句时间戳时给出导出拦截原因。"""
+        """当前右键转写模型无逐句时间戳时给出导出拦截原因。"""
         from ..transcribe_cpp import get_current_model, TRANSCRIBE_MODELS
         meta = TRANSCRIBE_MODELS.get(get_current_model()) or {}
         if not meta.get("timestamps", True):
             return (f"{meta.get('title', '当前模型')} 无逐句时间戳，无法导出字幕；"
-                    "请更换右键转录模型后重试（更换后导出会自动重新转录）")
+                    "请更换右键转写模型后重试（更换后导出会自动重新转写）")
         return None
 
     def _stale_srt_keys(self, items: List) -> set:
-        """原转录由无时间戳模型生成的视频 key 集合。"""
+        """原转写由无时间戳模型生成的视频 key 集合。"""
         from ..transcribe_cpp import TRANSCRIBE_MODELS
         no_ts = {k for k, m in TRANSCRIBE_MODELS.items() if not m.get("timestamps", True)}
         store = read_json(TRANSCRIBE_TRANSCRIPTS_FILE, {})
@@ -858,8 +856,8 @@ class ExperimentalMixin:
                 if store.get(str(vid), {}).get("model") in no_ts}
 
     def _retranscribe_stale(self, stale: List) -> None:
-        """重新转录 SenseVoice 生成的旧转录（stale: [[vid, vpath], ...]）。需持有 _gpu_task_lock。"""
-        _push_log(f"检测到 {len(stale)} 个视频的原转录由 SenseVoice 生成（无时间戳），自动重新转录…")
+        """重新转写 SenseVoice 生成的旧转写（stale: [[vid, vpath], ...]）。需持有 _gpu_task_lock。"""
+        _push_log(f"检测到 {len(stale)} 个视频的原转写由 SenseVoice 生成（无时间戳），自动重新转写…")
         self._transcribe_videos([s[0] for s in stale], [s[1] for s in stale])
 
     def export_srt(self, items: List) -> Dict[str, Any]:
@@ -868,7 +866,7 @@ class ExperimentalMixin:
         if block:
             return {"ok": False, "exported": 0, "errors": [block], "need_model_change": True}
 
-        # SenseVoice 生成的旧转录先自动重转录
+        # SenseVoice 生成的旧转写先自动重转写
         stale_keys = self._stale_srt_keys(items)
         if stale_keys:
             if not _gpu_task_lock.acquire(blocking=False):
@@ -887,11 +885,11 @@ class ExperimentalMixin:
         for vid, vpath in items:
             name = Path(vpath).name
             if str(vid) in stale_keys:
-                errors.append(f"{name}: 重新转录失败，已跳过")
+                errors.append(f"{name}: 重新转写失败，已跳过")
                 continue
             src = TRANSCRIBE_SRT_DIR / f"{vid}.srt"
             if not src.exists():
-                errors.append(f"{name}: 无转录数据")
+                errors.append(f"{name}: 无转写数据")
                 continue
             dest = Path(vpath).with_suffix('.srt')
             try:
@@ -930,7 +928,7 @@ class ExperimentalMixin:
             if not base_url:
                 return {"ok": False, "exported": 0, "errors": ["未配置 AI 服务地址（请先在 AI 配置页填写）"]}
 
-            # SenseVoice 生成的旧转录先自动重转录
+            # SenseVoice 生成的旧转写先自动重转写
             stale_keys = self._stale_srt_keys(items)
             if stale_keys:
                 self._retranscribe_stale([[vid, vpath] for vid, vpath in items
@@ -944,12 +942,12 @@ class ExperimentalMixin:
                 src = TRANSCRIBE_SRT_DIR / f"{vid}.srt"
                 name = Path(vpath).name
                 if str(vid) in stale_keys:
-                    errors.append(f"{name}: 重新转录失败，已跳过")
-                    _push_log(f"  [{idx+1}/{len(items)}] {name} — 重新转录失败，已跳过", "err")
+                    errors.append(f"{name}: 重新转写失败，已跳过")
+                    _push_log(f"  [{idx+1}/{len(items)}] {name} — 重新转写失败，已跳过", "err")
                     continue
                 if not src.exists():
-                    errors.append(f"{name}: 无转录数据")
-                    _push_log(f"  [{idx+1}/{len(items)}] {name} — 无转录数据", "err")
+                    errors.append(f"{name}: 无转写数据")
+                    _push_log(f"  [{idx+1}/{len(items)}] {name} — 无转写数据", "err")
                     continue
                 dest = Path(vpath).with_suffix('.zh.srt')
                 tasks.append((idx, vid, vpath, str(src), str(dest)))

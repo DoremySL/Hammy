@@ -60,7 +60,7 @@ async function showPendingDetail(v, quiet) {
   if (!showTagger && !hasTranscript) {
     const hints = [];
     if (state.taggerEnabled && !taggerDone) hints.push('右键「生成辅助分类标签」');
-    if (state.transcribeEnabled) hints.push('右键「语音转录」');
+    if (state.transcribeEnabled) hints.push('右键「语音转写」');
     d.innerHTML = `<div class="empty">该视频暂无分析数据` +
       (hints.length ? `<br/><span style="font-size:11px;color:var(--faint)">${hints.join(' / ')}</span>` : '') +
       `</div>`;
@@ -94,7 +94,7 @@ async function showPendingDetail(v, quiet) {
     const lang = transcript.language ? ` <small style="color:var(--faint)">(${esc(transcript.language)})</small>` : '';
     html += `
     <div class="row">
-      <h4>语音转录${lang}</h4>
+      <h4>语音转写${lang}</h4>
       <div class="transcript-box">${esc(transcript.text)}</div>
     </div>`;
   }

@@ -278,7 +278,7 @@ async function detectTags(ids) {
 }
 
 /* ════════════════════════════════════════════════════════════
-   语音转录
+   语音转写
    ════════════════════════════════════════════════════════════ */
 async function detectSpeech(ids) {
   if (state.gpuBusy) { toast('GPU 正忙，请等待当前操作完成', 'err'); return; }
@@ -304,13 +304,13 @@ async function detectSpeech(ids) {
       toast(`已跳过 ${skipped} 个无音频视频`, 'warn', true);
     } else {
       const skipTxt = skipped ? `，跳过 ${skipped} 个无音频` : '';
-      toast(`语音转录${stopped ? '已停止' : '完成'}: 成功 ${okN}/${r.total}${skipTxt}`,
+      toast(`语音转写${stopped ? '已停止' : '完成'}: 成功 ${okN}/${r.total}${skipTxt}`,
         okN > 0 ? 'ok' : 'err', true);
     }
     refreshGridData();
   } else {
     $('#prog-bar').className = '';
-    toast('语音转录失败: ' + (r.error || ''), 'err', true);
+    toast('语音转写失败: ' + (r.error || ''), 'err', true);
   }
 }
 
@@ -319,7 +319,7 @@ async function ensureTranscribed(ids) {
   const need = videos.filter(v => !state.transcribeTranscribedIds.has(v.id)
     && !state.transcribeSilentIds.has(v.id));
   if (need.length) {
-    toast(`其中 ${need.length} 个尚未转录，先自动转录…`, 'info');
+    toast(`其中 ${need.length} 个尚未转写，先自动转写…`, 'info');
     await detectSpeech(need.map(v => v.id));
   }
 }
@@ -335,7 +335,7 @@ async function exportSrt(ids) {
   if (r && r.ok) {
     toast(`已导出 ${r.exported} 个 SRT 字幕`, 'ok', true);
   } else if (r && r.need_model_change) {
-    toast(r.errors[0] || '请更换右键转录模型后重试', 'err', true);
+    toast(r.errors[0] || '请更换右键转写模型后重试', 'err', true);
   } else {
     toast('导出失败: ' + ((r && r.errors && r.errors[0]) || ''), 'err', true);
   }
@@ -359,7 +359,7 @@ async function exportSrtTranslated(ids) {
     toast(r.cancelled ? `翻译已停止: 成功 ${done}/${items.length}` : `翻译完成: 成功 ${done}/${items.length}`, done > 0 ? 'ok' : 'err');
   } else if (r && r.need_model_change) {
     $('#prog-bar').className = '';
-    toast(r.errors[0] || '请更换右键转录模型后重试', 'err', true);
+    toast(r.errors[0] || '请更换右键转写模型后重试', 'err', true);
   } else {
     $('#prog-bar').className = '';
     toast('翻译失败: ' + ((r && r.errors && r.errors[0]) || ''), 'err');
@@ -432,7 +432,7 @@ function showContextMenu(e, v) {
     if (matchIds.length) {
       // SenseVoice 无时间戳，导出字幕禁用（置灰）
       const svNoExport = state.transcribeModel === 'sensevoice';
-      gSpeech.push({ label: `语音转录（${matchIds.length} 个）`, fn: () => detectSpeech(matchIds), disabled: state.gpuBusy });
+      gSpeech.push({ label: `语音转写（${matchIds.length} 个）`, fn: () => detectSpeech(matchIds), disabled: state.gpuBusy });
       gSpeech.push({ label: `导出字幕 SRT（${matchIds.length} 个）`, fn: () => exportSrt(matchIds), disabled: state.gpuBusy || svNoExport });
       gSpeech.push({ label: `导出字幕并翻译为中文（${matchIds.length} 个）`, fn: () => exportSrtTranslated(matchIds), disabled: state.gpuBusy || svNoExport || (!state.llamaIntegration && !state.aiConnected) });
     }

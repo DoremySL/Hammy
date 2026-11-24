@@ -1,4 +1,4 @@
-"""transcribe.cpp 语音转录：安装、GGUF 模型管理，对视频转录输出 SRT 字幕。"""
+"""transcribe.cpp 语音转写：安装、GGUF 模型管理，对视频转写输出 SRT 字幕。"""
 from __future__ import annotations
 
 import json
@@ -32,7 +32,7 @@ TRANSCRIBE_MODELS = {
         "family": "whisper",
         "gguf": "whisper-large-v3-turbo-Q8_0.gguf",
         "hf_repo": "handy-computer/whisper-large-v3-turbo-gguf",
-        "desc": "多语言快速转录",
+        "desc": "多语言快速转写",
         "size_label": "~850MB",
         "recommended": True,
         "timestamps": True,   # 是否有逐句时间戳（SRT 导出/脚本分支的唯一真源）
@@ -119,7 +119,7 @@ def is_model_installed(model_key: str) -> bool:
 
 
 def get_current_model() -> str:
-    """右键转录模型 key。"""
+    """右键转写模型 key。"""
     from .config_store import load_transcribe_config
     key = load_transcribe_config()["model"]
     return key if key in TRANSCRIBE_MODELS else DEFAULT_MODEL
@@ -148,7 +148,7 @@ def get_installed_models() -> Dict[str, bool]:
 
 
 def get_status() -> Dict[str, Any]:
-    """获取安装状态。models 为全部候选模型（转录/注入共用一份候选）。"""
+    """获取安装状态。models 为全部候选模型（转写/注入共用一份候选）。"""
     venv_python = venv_python_path(VENV_DIR)
     venv_ok = VENV_DIR.is_dir() and venv_python.exists()
     current = get_current_model()
@@ -207,17 +207,13 @@ def _download_model(model_key: str,
 
 def install_dependencies(pypi_mirror: str = DEFAULT_PYPI_MIRROR,
                          model: str = DEFAULT_MODEL,
-                         inject_model: str = DEFAULT_INJECT_MODEL,
                          log_fn: Optional[Callable[[str], None]] = None,
                          stop_event: Optional[threading.Event] = None) -> Dict[str, Any]:
-    """安装 transcribe.cpp 全部依赖（model=右键转录模型，inject_model=辅助重命名模型）。"""
+    """安装 transcribe.cpp 全部依赖并下载所选模型。"""
     pypi_url = PYPI_MIRRORS.get(pypi_mirror, PYPI_MIRRORS[DEFAULT_PYPI_MIRROR])["url"]
     TRANSCRIBE_DIR.mkdir(parents=True, exist_ok=True)
-    unknown = [k for k in (model, inject_model) if k not in TRANSCRIBE_MODELS]
-    if unknown:
-        return {"ok": False, "error": f"未知模型: {', '.join(unknown)}"}
-    # 去重：两处选同一模型只下载一次
-    models_to_install = list(dict.fromkeys([model, inject_model]))
+    if model not in TRANSCRIBE_MODELS:
+        return {"ok": False, "error": f"未知模型: {model}"}
     steps = InstallSteps(4)
 
     def _cancelled() -> Optional[Dict[str, Any]]:
@@ -276,46 +272,40 @@ def install_dependencies(pypi_mirror: str = DEFAULT_PYPI_MIRROR,
             if r:
                 return r
             return {"ok": False, "error": "Silero VAD 模型下载失败"}
-    todo = [k for k in models_to_install if not is_model_installed(k)]
-    if not todo:
+    if is_model_installed(model):
         _log("━━ 步骤 4/4：模型已存在，跳过下载 ━━", log_fn)
     else:
-        names = " + ".join(TRANSCRIBE_MODELS[k]["title"] for k in todo)
-        _log(f"━━ 步骤 4/4：下载模型（{names}）━━", log_fn)
+        meta = TRANSCRIBE_MODELS[model]
+        _log(f"━━ 步骤 4/4：下载模型（{meta['title']}）━━", log_fn)
+        _log(f"  ── {meta['title']}（{meta['size_label']}）──", log_fn)
         last_pct10 = {"v": -1}
-        n_total = len(todo)
 
-        for n, mk in enumerate(todo):
-            meta = TRANSCRIBE_MODELS[mk]
-            _log(f"  ── {meta['title']}（{meta['size_label']}）──", log_fn)
+        def _install_progress(ev: Dict[str, Any]):
+            if ev.get("type") == "progress" and ev.get("total") and ev.get("pct") is not None:
+                pct10 = int(ev["pct"] * 100 // 5)
+                if pct10 > last_pct10["v"]:
+                    last_pct10["v"] = pct10
+                    _log(f"  {Path(ev['file']).name} {int(ev['pct'] * 100)}%"
+                         f"（{fmt_size(ev['done'])}/{fmt_size(ev['total'])}）", log_fn)
+                frac = ((ev.get("idx", 1) - 1) + ev["pct"]) / max(1, ev.get("count", 1))
+                steps.push(4, frac)
+            elif ev.get("type") in ("file_done", "file_skip"):
+                frac = ev.get("idx", 0) / max(1, ev.get("count", 1))
+                steps.push(4, frac)
 
-            def _install_progress(ev: Dict[str, Any]):
-                if ev.get("type") == "progress" and ev.get("total") and ev.get("pct") is not None:
-                    pct10 = int(ev["pct"] * 100 // 5)
-                    if pct10 > last_pct10["v"]:
-                        last_pct10["v"] = pct10
-                        _log(f"  {Path(ev['file']).name} {int(ev['pct'] * 100)}%"
-                             f"（{fmt_size(ev['done'])}/{fmt_size(ev['total'])}）", log_fn)
-                    frac = ((ev.get("idx", 1) - 1) + ev["pct"]) / max(1, ev.get("count", 1))
-                    steps.push(4, (n + frac) / n_total)
-                elif ev.get("type") in ("file_done", "file_skip"):
-                    frac = ev.get("idx", 0) / max(1, ev.get("count", 1))
-                    steps.push(4, (n + frac) / n_total)
-
-            dl = _download_model(mk, log_fn=log_fn, progress_cb=_install_progress,
-                                 cancel_event=stop_event, cleanup_on_cancel=True)
-            r = _cancelled()
-            if r:
-                return r
-            if dl.get("cancelled"):
-                return {"ok": False, "cancelled": True, "error": "模型下载已取消"}
-            if not dl.get("ok"):
-                return {"ok": False, "error": f"模型下载失败: {dl.get('error') or '未知错误'}"}
+        dl = _download_model(model, log_fn=log_fn, progress_cb=_install_progress,
+                             cancel_event=stop_event, cleanup_on_cancel=True)
+        r = _cancelled()
+        if r:
+            return r
+        if dl.get("cancelled"):
+            return {"ok": False, "cancelled": True, "error": "模型下载已取消"}
+        if not dl.get("ok"):
+            return {"ok": False, "error": f"模型下载失败: {dl.get('error') or '未知错误'}"}
     try:
         from .config_store import update_transcribe_config
-        update_transcribe_config(lambda c: c.update(model=model, inject_model=inject_model))
-        _log(f"当前模型已设为: {TRANSCRIBE_MODELS[model]['title']}"
-             f"（辅助重命名: {TRANSCRIBE_MODELS[inject_model]['title']}）", log_fn)
+        update_transcribe_config(lambda c: c.update(model=model, inject_model=model))
+        _log(f"当前模型已设为: {TRANSCRIBE_MODELS[model]['title']}", log_fn)
     except Exception as e:
         _log(f"设置当前模型失败（忽略）: {e}", log_fn)
     _log("━━ 全部完成 ━━", log_fn)
@@ -330,7 +320,7 @@ def remove_transcribe() -> Dict[str, Any]:
             shutil.rmtree(TRANSCRIBE_DIR)
         except Exception as e:
             return {"ok": False, "error": f"删除失败: {e}"}
-    # 模块配置与转录结果一并删除
+    # 模块配置与转写结果一并删除
     from .workspace_paths import TRANSCRIBE_CONFIG_FILE
     shutil.rmtree(TRANSCRIBE_CONFIG_FILE.parent, ignore_errors=True)
     return {"ok": True,
@@ -351,7 +341,7 @@ def _run_batch_script(params: Dict[str, Any], per_video: List[Dict[str, Any]],
                       on_video_done: Optional[Callable[[int, Dict[str, Any]], None]],
                       on_log: Optional[Callable[[str], None]],
                       stop_event, err_label: str) -> Tuple[Optional[str], List[Dict[str, Any]]]:
-    """运行转录子进程并解析逐行 JSON 输出。返回 (error, items)，error=None 表示成功。
+    """运行转写子进程并解析逐行 JSON 输出。返回 (error, items)，error=None 表示成功。
 
     临时目录由父进程持有（work_dir 传入脚本）：子进程被杀后的残留由 finally 统一清理。"""
 
@@ -400,14 +390,14 @@ def run_transcription_batch(video_paths: List[str],
                             on_video_done: Optional[Callable[[int, Dict[str, Any]], None]] = None,
                             on_log: Optional[Callable[[str], None]] = None,
                             stop_event=None) -> Dict[str, Any]:
-    """对多个视频一次性转录。
+    """对多个视频一次性转写。
 
     Returns: {"ok": bool, "per_video": [...], "error": str|None}
     """
     current = get_current_model()
     venv_python = venv_python_path(VENV_DIR)
     if not (VENV_DIR.is_dir() and venv_python.exists()):
-        return {"ok": False, "per_video": [], "error": "语音转录未安装或未就绪"}
+        return {"ok": False, "per_video": [], "error": "语音转写未安装或未就绪"}
     model_path = _model_path(current)
     if not model_path:
         return {"ok": False, "per_video": [],
@@ -433,7 +423,7 @@ def run_transcription_batch(video_paths: List[str],
 
     per_video: List[Dict[str, Any]] = []
     error, items = _run_batch_script(params, per_video, on_video_done, on_log,
-                                     stop_event, "转录")
+                                     stop_event, "转写")
     if error:
         return {"ok": False, "per_video": per_video, "error": error}
     return {"ok": True, "per_video": items, "error": None}
@@ -487,5 +477,5 @@ def run_inject_batch(video_paths: List[str],
     return {"ok": True, "texts": texts, "error": None}
 
 
-# ── 转录 worker（真实文件：可 lint/可单测，venv 内按路径执行）──
+# ── 转写 worker（真实文件：可 lint/可单测，venv 内按路径执行）──
 _WORKER_SCRIPT = Path(__file__).resolve().parent / "transcribe_worker.py"

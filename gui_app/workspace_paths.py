@@ -24,7 +24,7 @@ LLAMA_SCAN_CACHE_FILE = WORKSPACE_DIR / "llama" / "scan_cache.json"
 # Hammy-tagger：配置与标签结果
 TAGGER_CONFIG_FILE = WORKSPACE_DIR / "tagger" / "config.json"
 TAGGER_TAGS_FILE = WORKSPACE_DIR / "tagger" / "tags.json"
-# 语音转录：配置、转录索引与 SRT 字幕
+# 语音转写：配置、转写索引与 SRT 字幕
 TRANSCRIBE_CONFIG_FILE = WORKSPACE_DIR / "transcribe" / "config.json"
 TRANSCRIBE_TRANSCRIPTS_FILE = WORKSPACE_DIR / "transcribe" / "transcripts.json"
 TRANSCRIBE_SRT_DIR = WORKSPACE_DIR / "transcribe" / "srt"

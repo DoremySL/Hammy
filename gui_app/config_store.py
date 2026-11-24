@@ -123,7 +123,7 @@ def _tagger_defaults() -> Dict[str, Any]:
 
 
 def _transcribe_defaults() -> Dict[str, Any]:
-    """语音转录模块配置默认值。"""
+    """语音转写模块配置默认值。"""
     return {"enabled": False, "model": "whisper-turbo", "inject_model": "sensevoice",
             "workers": 2, "max_chars": 2000, "inject_timestamps": False,
             "integration": True}
@@ -156,7 +156,7 @@ def update_tagger_config(
 
 
 def load_transcribe_config() -> Dict[str, Any]:
-    """读取语音转录模块配置。"""
+    """读取语音转写模块配置。"""
     data = read_json_cached(TRANSCRIBE_CONFIG_FILE)
     merged = dict(_transcribe_defaults())
     merged.update({k: v for k, v in data.items() if k in merged})
@@ -166,7 +166,7 @@ def load_transcribe_config() -> Dict[str, Any]:
 def update_transcribe_config(
     mutator: Callable[[Dict[str, Any]], Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """原子读-改-写语音转录模块配置。"""
+    """原子读-改-写语音转写模块配置。"""
     def _wrapped(current):
         current = current if isinstance(current, dict) else {}
         merged = dict(_transcribe_defaults())

@@ -26,11 +26,11 @@ UV_CACHE_DIR = UV_RUNTIME_DIR / "cache"    # UV 下载缓存
 
 # ── 通用 PyPI 镜像 ──
 PYPI_MIRRORS = {
-    "sjtu": {"name": "上海交通大学", "url": "https://mirror.sjtu.edu.cn/pypi/web/simple"},
     "nju": {"name": "南京大学", "url": "https://mirrors.nju.edu.cn/pypi/web/simple"},
+    "sjtu": {"name": "上海交通大学", "url": "https://mirror.sjtu.edu.cn/pypi/web/simple"},
     "official": {"name": "PyPI 官方", "url": "https://pypi.org/simple"},
 }
-DEFAULT_PYPI_MIRROR = "sjtu"
+DEFAULT_PYPI_MIRROR = "nju"
 
 # ── NVIDIA 包索引（CUDA 依赖专用，国内速度快）──
 NVIDIA_PYPI_URL = "https://pypi.nvidia.cn"
@@ -44,14 +44,14 @@ _CUDA_TIERS = {
 
 # ── TensorRT 站点（Hammy-tagger）──
 TRT_SITES = {
-    "sjtu": {"name": "上海交通大学",
-             "pypi": PYPI_MIRRORS["sjtu"]["url"], "nvidia": NVIDIA_PYPI_URL},
     "nju": {"name": "南京大学",
             "pypi": PYPI_MIRRORS["nju"]["url"], "nvidia": NVIDIA_PYPI_URL},
+    "sjtu": {"name": "上海交通大学",
+             "pypi": PYPI_MIRRORS["sjtu"]["url"], "nvidia": NVIDIA_PYPI_URL},
     "official": {"name": "NVIDIA 官方",
                  "pypi": "https://pypi.org/simple", "nvidia": "https://pypi.nvidia.com"},
 }
-DEFAULT_TRT_SITE = "sjtu"
+DEFAULT_TRT_SITE = "nju"
 
 
 def resolve_trt_site(site: str = "") -> Dict[str, Any]:

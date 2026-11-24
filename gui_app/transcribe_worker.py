@@ -1,4 +1,4 @@
-"""转录 worker：在转录 venv 内按 `python transcribe_worker.py params.json` 执行。
+"""转写 worker：在转写 venv 内按 `python transcribe_worker.py params.json` 执行。
 
 参数经 JSON 文件传入，stdout 逐行回传 JSON（log/idx/done，解析方见
 transcribe_cpp._run_batch_script）。业务全局量由 main() 赋值，import 无副作用。"""
@@ -150,7 +150,7 @@ def transcribe_one(sess, vad, i, vp):
                 entry = {'ok': True, 'srt': '', 'text': '', 'language': '',
                          'duration': round(dur, 1), 'error': None, 'silent': True}
             elif not has_ts:
-                # 无逐句时间戳：分窗转录文本合成单条字幕
+                # 无逐句时间戳：分窗转写文本合成单条字幕
                 body = _windowed_text(sess, audio, sr, regions,
                                       float(params.get('inject_win_sec') or 30.0))
                 srt = (f'1\n{_srt_ts(0)} --> {_srt_ts(int(dur * 1000))}\n{body}\n'
@@ -203,7 +203,7 @@ def main():
     site_packages = params.get('venv_site_packages', '')
     max_chars = int(params.get('max_chars', 0) or 0)  # 注入模式的提前停止阈值
     vad_model_path = params.get('vad_model', '')  # 官方 Silero VAD GGUF（空=整段推理）
-    mode = params.get('mode', 'srt')  # srt=字幕转录 / text=注入文本
+    mode = params.get('mode', 'srt')  # srt=字幕转写 / text=注入文本
     if not vad_model_path:
         plog('VAD 模型未配置，本次跳过静音判断')
 

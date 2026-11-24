@@ -341,31 +341,56 @@ function tmSyncEditorGroupDd(group) {
   setDropdownValue(dd, group);
 }
 
-function tmBuildFields(container, it, opts = {}) {
-  const readonlyRelated = !!opts.readonlyRelated;
-  container.innerHTML = `
-    <div class="field"><label>关键词</label><input type="text" id="tm-f-kw" value="${esc(it.keyword || '')}" spellcheck="false"/></div>
-    <div class="field"><label>描述 <span class="tm-lbl-hint">将连同关键词一起发送给AI</span></label><textarea id="tm-f-desc" rows="6">${esc(it.description || '')}</textarea></div>
-    <div class="field"><label>关联 <span class="tm-lbl-hint">字面检索与向量检索的匹配文本${readonlyRelated ? '；tagger 条目固定为识别的英文名' : '；tagger 分组须为唯一英文标签名'}</span></label><input type="text" id="tm-f-related" value="${esc(it.related || '')}" spellcheck="false"${readonlyRelated ? ' readonly' : ''}/></div>
-    <div class="tag-ed-group">
-      <div class="field"><label>分组</label>
-        <div class="dd" id="tm-f-group"><button class="dd-btn" type="button"><span class="dd-label">${esc(it.group || '默认分组')}</span>${ddArrow()}</button>
-          <div class="dd-panel">${tmGroupOptions(it.group || '')}</div></div>
+function tmFieldsHtml(it, { readonlyRelated = false } = {}) {
+  return `
+    <div class="field field-desc">
+      <label data-tip="将连同关键词一起发送给AI">描述</label>
+      <textarea id="tm-f-desc" rows="3">${esc(it.description || '')}</textarea>
+    </div>
+    <div class="field">
+      <label data-tip="字面检索与向量检索的匹配文本${readonlyRelated ? '；tagger 条目固定为识别的英文名' : '；tagger 分组须为唯一英文标签名'}">关联</label>
+      <input type="text" id="tm-f-related" value="${esc(it.related || '')}" spellcheck="false"${readonlyRelated ? ' readonly' : ''}/>
+    </div>
+    <div class="field">
+      <label>分组</label>
+      <div class="tag-ed-group-row">
+        <div class="dd" id="tm-f-group">
+          <button class="dd-btn" type="button"><span class="dd-label">${esc(it.group || '默认分组')}</span>${ddArrow()}</button>
+          <div class="dd-panel">${tmGroupOptions(it.group || '')}</div>
+        </div>
+        <input type="text" id="tm-f-newgroup" class="tag-ed-newgroup is-hidden" placeholder="新分组名" spellcheck="false"/>
+        <button type="button" class="btn tag-ed-newgroup-btn" id="tm-newgroup-toggle">＋ 新建分组</button>
+        <button type="button" class="btn tag-ed-newgroup-cancel is-hidden" id="tm-newgroup-cancel" title="取消新建分组">✕</button>
       </div>
-      <div class="field"><label>新分组</label><input type="text" id="tm-f-newgroup" placeholder="输入即新建分组" spellcheck="false"/></div>
     </div>`;
-  initDropdown(container.querySelector('#tm-f-group'), () => {
-    const ng = container.querySelector('#tm-f-newgroup');
+}
+
+function tmBindGroupRow(root, onChange) {
+  initDropdown(root.querySelector('#tm-f-group'), () => {
+    const ng = root.querySelector('#tm-f-newgroup');
     if (ng && ng.value) ng.value = '';
-    tmMarkDirty(container);
+    if (onChange) onChange();
   });
-  ['input', 'change'].forEach(ev => container.addEventListener(ev, e => {
-    if (e.target.closest('#tm-editor, .tm-editor')) tmMarkDirty(container);
-  }));
+  const ngInput = root.querySelector('#tm-f-newgroup');
+  const ngToggle = root.querySelector('#tm-newgroup-toggle');
+  const ngCancel = root.querySelector('#tm-newgroup-cancel');
+  ngToggle.onclick = () => {
+    ngInput.classList.remove('is-hidden');
+    ngCancel.classList.remove('is-hidden');
+    ngToggle.classList.add('is-hidden');
+    ngInput.focus();
+  };
+  ngCancel.onclick = () => {
+    ngInput.value = '';
+    ngInput.classList.add('is-hidden');
+    ngCancel.classList.add('is-hidden');
+    ngToggle.classList.remove('is-hidden');
+  };
 }
 
 function tmMarkDirty(container) {
-  if (container.id === 'tm-editor' || container.closest('#tm-editor')) state.tmDirty = true;
+  if (!(container.id === 'tm-editor' || container.closest('#tm-editor'))) return;
+  state.tmDirty = true;
 }
 
 function tmCollectFields(container) {
@@ -392,16 +417,29 @@ function tmRenderEditor(focusKw) {
         group: (state.tmGroupFilter && state.tmGroupFilter !== '__default__') ? state.tmGroupFilter : '' }
     : state.tmItems[state.tmEditIdx];
   ed.innerHTML = `
-    <div class="tag-ed-body" id="tm-ed-body"></div>
-    <div class="tag-ed-foot">
-      <span class="tm-ed-help">检索将使用关键词或关联词匹配</span>
-      ${isAdd
-        ? '<button class="btn primary" id="tm-add">新建</button>'
-        : `<button class="btn" id="tm-to-add">切换至新建</button>
-           <button class="btn danger" id="tm-del">删除</button>
-           <button class="btn primary" id="tm-save">保存</button>`}
-    </div>`;
-  tmBuildFields(ed.querySelector('#tm-ed-body'), it);
+    <div class="tag-ed-head">
+      <div class="tag-ed-title-wrap">
+        <input type="text" id="tm-f-kw" class="tag-ed-title" value="${esc(it.keyword || '')}"
+               placeholder="输入关键词…" spellcheck="false"/>
+      </div>
+      <div class="tag-ed-actions">
+        ${isAdd
+          ? '<button class="btn primary" id="tm-add">新建</button>'
+          : `<button class="btn ghost" id="tm-to-add">切换至新建</button>
+             <span class="tag-ed-actions-sep"></span>
+             <button class="btn danger-ghost" id="tm-del">删除</button>
+             <button class="btn primary" id="tm-save">保存</button>`}
+      </div>
+    </div>
+    <div class="tag-ed-body" id="tm-ed-body">${tmFieldsHtml(it)}</div>`;
+
+  const body = ed.querySelector('#tm-ed-body');
+  tmBindGroupRow(body, () => tmMarkDirty(body));
+  const markDirty = () => tmMarkDirty(body);
+  ed.oninput = markDirty;
+  ed.onchange = markDirty;
+
+
   const kwEl = ed.querySelector('#tm-f-kw');
   kwEl.addEventListener('keydown', e => {
     if (e.key !== 'Enter') return;
@@ -423,6 +461,7 @@ function tmRenderEditor(focusKw) {
     ed.querySelector('#tm-save').onclick = tmApplyEdit;
   }
 }
+
 
 function tmDupCheck(kw, excludeIdx) {
   return state.tmItems.some((x, i) => i !== excludeIdx && x.keyword.toLowerCase() === kw.toLowerCase());
@@ -470,6 +509,14 @@ async function tmApplyEdit() {
     return;
   }
   state.tmDirty = false;
+  const ed = $('#tm-editor');
+  const ng = ed && ed.querySelector('#tm-f-newgroup');
+  if (ng) {
+    ng.value = '';
+    ng.classList.add('is-hidden');
+    ed.querySelector('#tm-newgroup-toggle').classList.remove('is-hidden');
+    ed.querySelector('#tm-newgroup-cancel').classList.add('is-hidden');
+  }
   tmSyncEditorGroupDd(f.group);
   tmRenderGroupDd();
   renderTermRows();
@@ -561,18 +608,23 @@ async function openTermLibraryEditor(prefill, targetIdx = -1) {
   const bg = document.createElement('div');
   bg.className = 'tm-editor-bg';
   bg.innerHTML = `
-    <div class="tm-editor">
-      <h3>${isEdit ? '编辑词条' : '加入词条检索'}</h3>
-      <div class="tag-ed-body" id="tm-add-body"></div>
-      <div class="tm-editor-foot">
-        <button class="btn" id="tm-add-cancel">取消</button>
-        <button class="btn primary" id="tm-add-save">保存</button>
+    <div class="tm-editor tm-term-editor">
+      <div class="tag-ed-head">
+        <div class="tag-ed-title-wrap">
+          <input type="text" id="tm-f-kw" class="tag-ed-title" value="${esc(prefill.keyword || '')}"
+                 placeholder="输入关键词…" spellcheck="false"/>
+        </div>
+        <div class="tag-ed-actions">
+          <button class="btn ghost" id="tm-add-cancel">取消</button>
+          <button class="btn primary" id="tm-add-save">保存</button>
+        </div>
       </div>
+      <div class="tag-ed-body" id="tm-add-body">${tmFieldsHtml(prefill, { readonlyRelated: isEdit })}</div>
     </div>`;
   document.body.appendChild(bg);
-  const body = bg.querySelector('#tm-add-body');
-  tmBuildFields(body, prefill, { readonlyRelated: isEdit });
-  const kwEl = body.querySelector('#tm-f-kw');
+  const root = bg.querySelector('.tm-editor');
+  tmBindGroupRow(root, null);
+  const kwEl = root.querySelector('#tm-f-kw');
   kwEl.focus();
   if (!isEdit && prefill.keyword) kwEl.select();
   bg.addEventListener('keydown', e => {
@@ -583,7 +635,7 @@ async function openTermLibraryEditor(prefill, targetIdx = -1) {
   });
   bg.querySelector('#tm-add-cancel').onclick = () => bg.remove();
   bg.querySelector('#tm-add-save').onclick = async () => {
-    const f = tmCollectFields(body);
+    const f = tmCollectFields(root);
     if (isEdit) f.related = items[targetIdx].related;  // 英文映射键只读
     if (!f.keyword) { kwEl.focus(); return; }
     if (items.some((x, i) => i !== targetIdx && x.keyword.toLowerCase() === f.keyword.toLowerCase())) {

@@ -149,6 +149,8 @@
   .btn:disabled{opacity:.45;cursor:not-allowed;transform:none;filter:none}
   .btn.danger{background:var(--danger-soft);border-color:var(--danger);color:var(--danger)}
   .btn.danger:hover{filter:brightness(1.15);border-color:var(--danger);color:var(--danger)}
+  .btn.danger-ghost{background:transparent;border-color:transparent;color:var(--danger)}
+  .btn.danger-ghost:hover{background:var(--danger-soft);border-color:transparent;color:var(--danger)}
   .btn.sm{padding:5px 10px;font-size:12px}
   .btn.icon-only{font-size:20px;padding:7px 10px;line-height:1}
 
@@ -754,22 +756,40 @@
   .tm-desc{font-size:12px;color:var(--faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
   .tag-right{flex:1;min-width:0;display:flex;flex-direction:column;gap:10px;
     border:1px solid var(--border);border-radius:var(--r-xl);background:var(--panel-2);padding:14px 16px}
+  .tag-ed-head{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;padding-bottom:2px}
+  .tag-ed-title-wrap{flex:1;min-width:150px;display:flex;flex-direction:column;gap:3px}
+  .tag-ed-title{height:38px;width:100%;font-size:17px;font-weight:650;color:var(--text);background:transparent;
+    border:none;border-bottom:1px solid var(--border);border-radius:0;padding:2px 1px 7px;font-family:inherit}
+  .tag-ed-title:focus{border-bottom-color:var(--accent);outline:none}
+  .tag-ed-title::placeholder{font-weight:600;color:var(--faint)}
+  .tag-ed-actions{display:flex;align-items:center;gap:2px;padding-bottom:4px;flex:none;margin-left:auto}
+  .tag-ed-actions .btn{padding:6px 10px;font-size:12.5px}
+  .tag-ed-actions .btn.primary{margin-left:3px}
+  .tag-ed-actions-sep{width:1px;height:14px;background:var(--border);margin:0 4px}
   .tag-ed-body{display:flex;flex-direction:column;gap:10px;flex:1;min-height:0}
   .tag-ed-body textarea{min-height:96px}
-  .tag-ed-group{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px}
-  .tag-ed-foot{display:flex;align-items:center;gap:8px;padding-top:10px;border-top:1px dashed var(--border-strong)}
-  .tm-ed-help{margin-right:auto;font-size:11px;color:var(--faint)}
-  .tm-lbl-hint{font-weight:400;color:var(--faint);font-size:11px}
+  .tag-ed-body > .field-desc{flex:1;min-height:0}
+  .tag-ed-body > .field-desc textarea{flex:1;min-height:96px}
+  .tag-ed-group-row{display:flex;align-items:center;gap:8px}
+  .tag-ed-group-row .dd{flex:1;min-width:0;width:auto}
+  .tag-ed-newgroup{flex:1;min-width:0;border-style:dashed;background:transparent}
+  .tag-ed-newgroup-btn{border-style:dashed;background:transparent;color:var(--muted);padding:6px 10px;font-size:12.5px}
+  .tag-ed-newgroup-btn:hover{border-color:var(--accent);color:var(--accent-text);background:var(--accent-soft)}
+  .tag-ed-newgroup-cancel{width:30px;height:30px;flex:none;display:grid;place-items:center;
+    border:1px solid var(--border);background:var(--panel);border-radius:var(--r-sm);
+    color:var(--muted);font-size:12px}
+  .tag-ed-newgroup-cancel:hover{color:var(--text);border-color:var(--border-strong)}
+  .is-hidden{display:none!important}
   @media (max-width:720px){
     .tag-cols{flex-direction:column}
     .tag-left{width:100%}
     .tag-list-wrap{flex:none;height:240px}
-    .tag-ed-group{grid-template-columns:1fr}
   }
   .tm-editor-bg{position:fixed;inset:0;background:rgba(17,24,39,.5);display:flex;
     align-items:center;justify-content:center;z-index:70;padding:20px}
   .tm-editor{background:var(--panel);width:min(480px,94vw);border-radius:var(--r-2xl);padding:20px;
     box-shadow:0 24px 60px rgba(0,0,0,.35);display:flex;flex-direction:column;gap:12px}
+  .tm-term-editor{width:min(540px,94vw);height:min(520px,86vh)}
   .tm-editor h3{margin:0;font-size:15px}
   .tm-editor .hint-label{font-size:11px;color:var(--faint);font-weight:500;margin-top:-4px}
   .tm-editor-foot{display:flex;justify-content:flex-end;gap:10px;margin-top:4px}
@@ -1129,7 +1149,7 @@
   .hf-msg .ok{color:var(--ok)}
   .hf-msg .err{color:var(--err)}
 
-  /* ── 语音转录模型管理弹窗 ── */
+  /* ── 语音转写模型管理弹窗 ── */
   .wm-dialog{width:min(560px,94vw)!important}
   .wm-list{display:flex;flex-direction:column;gap:8px;margin:6px 0 10px}
   .wm-row{display:flex;align-items:center;gap:10px;padding:10px 12px;

@@ -69,7 +69,7 @@ def _llama_vram_warning(on_log) -> None:
         frees = [int(x) for x in (r.stdout or "").split() if x.strip().isdigit()]
         if frees and max(frees) < 2048:
             on_log("warn", "[显存提示] 空闲显存不足 2GB，集成辅助与本地推理共存"
-                           "可能显存不足；如遇失败建议关闭集成，改用右键手动分析/转录。")
+                           "可能显存不足；如遇失败建议关闭集成，改用右键手动分析/转写。")
     except Exception:
         pass  # 检测失败不阻断流程
 
@@ -257,7 +257,7 @@ class PipelineRunner:
         return result
 
     def _build_transcribe_meta_map(self, paths: List[str], wcfg: Dict[str, Any]) -> Dict[str, str]:
-        """构建语音转录上下文映射（已有 SRT；缺失视频由 ASR worker 逐视频交付）。"""
+        """构建语音转写上下文映射（已有 SRT；缺失视频由 ASR worker 逐视频交付）。"""
         if not wcfg.get("enabled", False):
             return {}
         from .workspace_paths import TRANSCRIBE_SRT_DIR, TRANSCRIBE_TRANSCRIPTS_FILE
@@ -427,7 +427,7 @@ class PipelineRunner:
                 from .rename_aux import AsrInjectWorker, TaggerInjectWorker
                 from . import tagger as tagger_mod, transcribe_cpp
 
-                # 注入转录集成：开关 + 就绪 + 存在缺失 SRT 的视频
+                # 注入转写集成：开关 + 就绪 + 存在缺失 SRT 的视频
                 asr_active = (bool(wcfg.get("enabled", False))
                               and bool(wcfg.get("integration", False))
                               and transcribe_cpp.inject_ready())

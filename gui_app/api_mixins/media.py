@@ -191,7 +191,7 @@ class MediaMixin:
         except Exception as e:
             return {"ok": False, "error": f"无法创建目标目录: {e}"}
 
-        # 语音转录开启时，除 NFO 外还一并带走视频同目录的导出字幕
+        # 语音转写开启时，除 NFO 外还一并带走视频同目录的导出字幕
         from ..config_store import load_transcribe_config
         transcribe_on = load_transcribe_config().get("enabled", False)
 
@@ -242,7 +242,7 @@ class MediaMixin:
                     if nfo_exported:
                         nfo_count += 1
 
-                # 字幕导出：语音转录开启时，随视频一起移动同目录字幕
+                # 字幕导出：语音转写开启时，随视频一起移动同目录字幕
                 if with_nfo and transcribe_on:
                     for suf in (".srt", ".zh.srt"):
                         sub = p.with_suffix(suf)

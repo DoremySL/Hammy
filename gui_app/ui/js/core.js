@@ -115,7 +115,7 @@ const state = {
   taggerEnabled: false,
   taggerCategories: {},           // 视频 ID → 分类（2d/3d/real/cos/unk）
   transcribeEnabled: false,
-  transcribeModel: 'whisper-turbo',  // 当前右键转录模型 key（sensevoice 时禁用导出字幕）
+  transcribeModel: 'whisper-turbo',  // 当前右键转写模型 key（sensevoice 时禁用导出字幕）
   ragVecEnabled: false,
   thumbOptimize: true,
   gpuBusy: false,
@@ -123,7 +123,7 @@ const state = {
   taggerTaggedIds: new Set(),
   taggerTagNames: {},             // 视频 ID → 标签名列表（英文名+中文名，待处理搜索用）
   transcribeTranscribedIds: new Set(),
-  transcribeSilentIds: new Set(),   // 无音频/无语音，导出前的自动转录不再重试
+  transcribeSilentIds: new Set(),   // 无音频/无语音，导出前的自动转写不再重试
   hfDownloading: false,
   hfDlPct: 0,
   dlKind: null,

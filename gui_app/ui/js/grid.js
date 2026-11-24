@@ -591,7 +591,7 @@ function makeCard(v) {
   else if (cat === 'acg') taggerBadge += '<span class="tag-badge anime" data-tip="画面类型无法判定且识别到角色/IP">ACG</span>';
   else if (cat === 'unk') taggerBadge += '<span class="tag-badge unc" data-tip="画面类型无法判定">UNK</span>';
   if (tagged) taggerBadge += '<span class="tag-badge tagger" data-tip="已获取角色/IP标签">IP</span>';
-  const ccBadge = state.transcribeTranscribedIds.has(v.id) ? '<span class="tag-badge cc" data-tip="已获取语音转录">CC</span>' : '';
+  const ccBadge = state.transcribeTranscribedIds.has(v.id) ? '<span class="tag-badge cc" data-tip="已获取语音转写">CC</span>' : '';
   const stBadge = v.status === 'failed' ? '<span class="tag-badge failed" data-tip="自动重命名失败，位于 _failed 目录">FAIL</span>'
     : v.status === 'duplicate' ? '<span class="tag-badge dup" data-tip="去重移除，位于 _duplicates 目录">DUP</span>' : '';
   const badges = (taggerBadge || ccBadge || stBadge) ? `<div class="badges">${taggerBadge}${ccBadge}${stBadge}</div>` : '';

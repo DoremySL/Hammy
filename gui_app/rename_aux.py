@@ -13,7 +13,7 @@ from .workspace_paths import stable_id
 
 
 def format_transcribe_block(text: str, lang: str = "", max_chars: int = 2000) -> str:
-    """转录文本 → 提示词辅助上下文块（截断 + 固定声明头，手动/集成共用）。"""
+    """转写文本 → 提示词辅助上下文块（截断 + 固定声明头，手动/集成共用）。"""
     text = (text or "").strip()
     if not text:
         return ""
@@ -21,19 +21,19 @@ def format_transcribe_block(text: str, lang: str = "", max_chars: int = 2000) ->
     if len(text) > max_chars:
         text = text[:max_chars] + "…（已截断）"
     parts = ["【语音辅助参考】",
-             "以下为自动语音转录结果，仅供参考。请结合视频画面自行判断："]
+             "以下为自动语音转写结果，仅供参考。请结合视频画面自行判断："]
     if lang:
         parts.append(f"- 语言: {lang}")
-    parts.append(f"- 转录文本: {text}")
-    parts.append("过长的转录文本可能被截断，注意判断")
+    parts.append(f"- 转写文本: {text}")
+    parts.append("过长的转写文本可能被截断，注意判断")
     return "\n".join(parts)
 
 
 class AsrInjectWorker:
-    """ASR 注入辅助阶段：单子进程批内逐视频转录，完成即回填上下文。
+    """ASR 注入辅助阶段：单子进程批内逐视频转写，完成即回填上下文。
 
     仅处理缺失 SRT 的视频（runner 传入 missing 列表）；停止/失败时已完成的
-    视频保留转录文本，其余阶段兜底终态（空文本降级）。
+    视频保留转写文本，其余阶段兜底终态（空文本降级）。
     """
 
     stage_key = "asr"
@@ -71,7 +71,7 @@ class AsrInjectWorker:
             stop_event=self.stop_event,
             on_video_done=_on_video_done)
         if self.stop_event.is_set():
-            self.on_log("warn", "[语音辅助] 已停止（已完成视频保留转录文本）")
+            self.on_log("warn", "[语音辅助] 已停止（已完成视频保留转写文本）")
         elif not r.get("ok"):
             self.on_log("warn", f"[语音辅助] 注入失败（不影响重命名）: {r.get('error')}")
         else:

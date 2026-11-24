@@ -229,7 +229,7 @@ function _bindManageButtons(uvStatus, llamaStatus, pStatus, wStatus, rvStatus) {
   const pInstallBtn = $('#btn-tagger-install');
   if (pInstallBtn && !pStatus.ready) pInstallBtn.addEventListener('click', async () => {
     const sel = await showTaggerInstallDialog();
-    if (sel) startTaggerInstall(sel.site || 'sjtu');
+    if (sel) startTaggerInstall(sel.site || 'nju');
   });
 
   const pRemoveBtn = $('#btn-tagger-remove');
@@ -248,28 +248,26 @@ function _bindManageButtons(uvStatus, llamaStatus, pStatus, wStatus, rvStatus) {
   const wInstallBtn = $('#btn-transcribe-install');
   if (wInstallBtn && !wStatus.ready) wInstallBtn.addEventListener('click', async () => {
     // 安装页模型文案：档位 | 语言支持
-    const modelOpts = [
-      { value: 'sensevoice', name: 'SenseVoice-Small', desc: '速度 | 中粤英日韩' },
-      { value: 'whisper-turbo', name: 'whisper-turbo', desc: '均衡 | 支持主流语言', recommended: true },
+    const injectOpts = [
+      { value: 'sensevoice', name: 'SenseVoice-Small', desc: '速度 | 中粤英日韩', recommended: true },
+      { value: 'whisper-turbo', name: 'whisper-turbo', desc: '均衡 | 支持主流语言' },
       { value: 'moss', name: 'MOSS-Diarize', desc: '质量 | 支持主流语言' },
     ];
-    const injectOpts = modelOpts.map(m => ({ ...m, recommended: m.value === 'sensevoice' }));
     const sel = await showMirrorSelectDialog({
       api: 'get_transcribe_mirrors',
-      gpuNote: 'GPU 加速经 Vulkan，NVIDIA/AMD/Intel 通用；不支持时自动回退 CPU',
       modelSections: [
-        { title: '右键转录模型', name: 'w-model',
-          hint: '安装时下载所选模型，其余模型可在安装后下载切换', models: modelOpts },
         { title: '辅助重命名模型', name: 'inject-model', models: injectOpts },
       ],
     });
-    if (sel) startTranscribeInstall(sel.pypi || 'sjtu',
-      sel.sel['w-model'] || 'whisper-turbo', sel.sel['inject-model'] || 'sensevoice');
+    if (sel) {
+      const model = sel.sel['inject-model'] || 'sensevoice';
+      startTranscribeInstall(sel.pypi || 'nju', model);
+    }
   });
 
   const wRemoveBtn = $('#btn-transcribe-remove');
   if (wRemoveBtn && wStatus.dir_exists) wRemoveBtn.addEventListener('click', async () => {
-    if (!await showConfirm('确定删除语音转录吗？\n\n将删除所有已安装的依赖和模型文件。')) return;
+    if (!await showConfirm('确定删除语音转写吗？\n\n将删除所有已安装的依赖和模型文件。')) return;
     wRemoveBtn.disabled = true; wRemoveBtn.textContent = '删除中…';
     const r = await apiCall('remove_transcribe');
     if (r && r.ok) {
@@ -289,7 +287,7 @@ function _bindManageButtons(uvStatus, llamaStatus, pStatus, wStatus, rvStatus) {
       payload: mirrors,
       devices: mirrors.devices || [], bannerSub: '',
     });
-    if (sel) startRagVecInstall(sel.device || 'gpu', sel.pypi || 'sjtu');
+    if (sel) startRagVecInstall(sel.device || 'gpu', sel.pypi || 'nju');
   });
 
   const rvRemoveBtn = $('#btn-ragvec-remove');
@@ -337,13 +335,13 @@ function gpuBannerHtml(gpu, okSub = '', noGpuSub = '') {
       </div>`;
 }
 
-function mirrorSection({ title, hint = '', name, items, badge = '推荐' }) {
+function mirrorSection({ title, hint = '', name, items }) {
   const opts = items.map(it => {
     const rec = !!it.recommended;
     const checked = it.checked === undefined ? rec : !!it.checked;
     return `<label class="mirror-opt${rec ? ' recommended' : ''}${checked ? ' selected' : ''}">
       <input type="radio" name="${esc(name)}" value="${esc(it.value)}" ${checked ? 'checked' : ''}/>
-      <span class="mirror-opt-name">${esc(it.name)}${rec ? `<span class="mirror-rec-badge">${esc(it.badge || badge)}</span>` : ''}</span>
+      <span class="mirror-opt-name">${esc(it.name)}${rec ? '<span class="mirror-rec-badge">推荐</span>' : ''}</span>
       <small class="mirror-opt-url">${esc(it.desc || '')}</small>
     </label>`;
   }).join('');
@@ -393,9 +391,7 @@ async function showMirrorSelectDialog(opts) {
   const devices = Array.isArray(opts.devices) ? opts.devices : [];
 
   let gpuBanner = '';
-  if (opts.gpuNote) {
-    gpuBanner = `<div class="mirror-gpu-banner"><div><strong>${esc(opts.gpuNote)}</strong></div></div>`;
-  } else if (gpu) {
+  if (gpu) {
     gpuBanner = gpuBannerHtml(gpu, opts.bannerSub || '');
   }
 
@@ -408,15 +404,16 @@ async function showMirrorSelectDialog(opts) {
   }
   (opts.modelSections || []).forEach(ms => {
     sections.push(mirrorSection({
-      title: ms.title, hint: ms.hint || '', name: ms.name, badge: ms.badge || '推荐',
+      title: ms.title, hint: ms.hint || '', name: ms.name,
       items: ms.models.map(m => ({ value: m.value ?? m.key, name: m.name ?? m.title,
                                    desc: m.desc || '', recommended: !!m.recommended })),
     }));
   });
   if (Array.isArray(mirrors.pypi) && mirrors.pypi.length) {
     sections.push(mirrorSection({
-      title: '通用 PyPI 镜像', hint: '常规依赖包索引', name: 'pypi-mirror', badge: '默认',
-      items: mirrors.pypi.map(m => ({ value: m.id, name: m.name, desc: m.desc || m.url || '', recommended: m.id === mirrors.default_pypi })),
+      title: '通用 PyPI 镜像', hint: '常规依赖包索引', name: 'pypi-mirror',
+      items: mirrors.pypi.map(m => ({ value: m.id, name: m.name, desc: m.desc || m.url || '',
+                                       checked: m.id === mirrors.default_pypi })),
     }));
   }
 
@@ -440,7 +437,7 @@ async function showMirrorSelectDialog(opts) {
       });
       dlg.close();
       resolve({ device: device ? device.value : null,
-                pypi: pypi ? pypi.value : 'sjtu',
+                pypi: pypi ? pypi.value : 'nju',
                 sel });
     });
   });
@@ -457,7 +454,7 @@ async function showTaggerInstallDialog() {
   const gpu = mirrors.gpu || null;
   const issue = mirrors.gpu_issue || '';
   const sites = Array.isArray(mirrors.sites) ? mirrors.sites : [];
-  const defaultSite = mirrors.default_site || 'sjtu';
+  const defaultSite = mirrors.default_site || 'nju';
 
   const gpuBanner = issue
     ? `<div class="mirror-gpu-banner">
@@ -467,7 +464,7 @@ async function showTaggerInstallDialog() {
 
   const siteSection = mirrorSection({
     title: '下载站点', name: 'tagger-site',
-    items: sites.map(s => ({ value: s.id, name: s.name, desc: s.desc || '', recommended: s.id === defaultSite })),
+    items: sites.map(s => ({ value: s.id, name: s.name, desc: s.desc || '', checked: s.id === defaultSite })),
   });
 
   const dlg = openMirrorDialog(`
@@ -483,7 +480,7 @@ async function showTaggerInstallDialog() {
     $('#mirrorOk').addEventListener('click', () => {
       const site = dlg.box.querySelector('input[name="tagger-site"]:checked');
       dlg.close();
-      resolve({ site: site ? site.value : 'sjtu' });
+      resolve({ site: site ? site.value : 'nju' });
     });
   });
 }
@@ -612,7 +609,7 @@ function _renderTaggerSection(pStatus) {
         </label>
         <div class="exp-head-main">
           <div class="exp-title-row"><strong>Hammy-tagger 辅助分类标签</strong>${_statusBadge(pStatus || {}, specBadge)}</div>
-          <div class="exp-desc">识别角色、作品/IP 与 General 标签，让视频可检索、可分类、可辅助重命名。</div>
+          <div class="exp-desc">识别角色、作品/IP 与 General 标签，辅助检索、分类、重命名。</div>
         </div>
         <div class="exp-head-actions">
           ${enabled ? '<button class="ws-btn" id="btn-tagger-clear-tags">清除标签</button>' : ''}
@@ -674,7 +671,7 @@ function _bindTaggerEvents() {
 }
 
 /* ════════════════════════════════════════════════════════════
-   安装流程骨架（Hammy / 语音转录 / llama.cpp / 向量检索共用）
+   安装流程骨架（Hammy / 语音转写 / llama.cpp / 向量检索共用）
    ════════════════════════════════════════════════════════════ */
 async function runInstallTask(run, onOk) {
   if (state.installing || state.hfDownloading) {
@@ -776,36 +773,36 @@ function _renderTranscribeSection(wStatus) {
           <input type="checkbox" id="transcribe-enable-toggle" ${enabled ? 'checked' : ''} ${!ready ? 'disabled' : ''}/>
         </label>
         <div class="exp-head-main">
-          <div class="exp-title-row"><strong>Transcribe.cpp 语音转录</strong>${_statusBadge(wStatus || {})}</div>
-          <div class="exp-desc">转录视频语音为字幕，辅助 AI 重命名，支持导出与翻译。</div>
+          <div class="exp-title-row"><strong>Transcribe.cpp 语音转写</strong>${_statusBadge(wStatus || {})}</div>
+          <div class="exp-desc">转写视频语音为文字辅助 AI 重命名，部分模型支持导出字幕。</div>
         </div>
         <div class="exp-head-actions">
-          ${enabled ? '<button class="ws-btn" id="btn-transcribe-clear">清除转录</button>' : ''}
+          ${enabled ? '<button class="ws-btn" id="btn-transcribe-clear">清除转写</button>' : ''}
           ${_installBtns('transcribe', wStatus || {})}
         </div>
       </div>
       <div id="transcribe-cfg-panel" class="exp-cfg-panel" style="display:${state.settingsOpen.has('transcribe-cfg') ? 'block' : 'none'}">
         <div class="exp-input-row">
           <div class="field">
-            <label data-tip="右键转录/导出字幕时使用；如需提高输入llm的文本质量可先右键转录">右键转录模型</label>
+            <label data-tip="右键转写/导出字幕时使用；如需提高输入llm的文本质量可先右键转写">右键转写模型</label>
             ${modelSel}
           </div>
           <div class="field">
-            <label data-tip="优先使用右键转录的文本，未转录视频在自动重命名时使用该模型生成参考文本">辅助重命名模型</label>
+            <label data-tip="优先使用右键转写的文本，未转写视频在自动重命名时使用该模型生成参考文本">辅助重命名模型</label>
             ${injectSel}
           </div>
           <div class="field">
-            <label data-tip="开启后，自动重命名时对未转录过的视频自动用辅助重命名模型生成语音参考">集成到自动重命名</label>
+            <label data-tip="开启后，自动重命名时对未转写过的视频自动用辅助重命名模型生成语音参考">集成到自动重命名</label>
             ${_boolDd('transcribe-integration-dd', !!wcfg.integration)}
           </div>
         </div>
         <div class="exp-input-row">
           <div class="field">
-            <label data-tip="转录推理并发数，调大可提升语音稀疏视频的批量处理速度，越大越吃显存">并发配置</label>
+            <label data-tip="转写推理并发数，调大可提升语音稀疏视频的批量处理速度，越大越吃显存">并发配置</label>
             ${_optDd('transcribe-workers-dd', [1, 2, 3, 4], wcfg.workers || 2)}
           </div>
           <div class="field">
-            <label data-tip="转录文本注入重命名提示词时发送 [MM:SS] 时间标记，AI 可结合台词时间轴理解内容">发送时间戳</label>
+            <label data-tip="转写文本注入重命名提示词时发送 [MM:SS] 时间标记，AI 可结合台词时间轴理解内容">发送时间戳</label>
             ${_boolDd('transcribe-ts-dd', !!wcfg.inject_timestamps)}
           </div>
           <div class="field">
@@ -884,7 +881,7 @@ function _bindTranscribeEvents() {
 
   const clearBtn = $('#btn-transcribe-clear');
   if (clearBtn) clearBtn.addEventListener('click', async () => {
-    if (!await showConfirm('确定清除所有已保存的语音转录数据吗？')) return;
+    if (!await showConfirm('确定清除所有已保存的语音转写数据吗？')) return;
     const r = await apiCall('clear_transcribe_transcripts');
     if (r && r.ok) {
       state.transcribeTranscribedIds.clear();
@@ -894,20 +891,19 @@ function _bindTranscribeEvents() {
   });
 }
 
-async function startTranscribeInstall(pypiMirror, model, injectModel) {
+async function startTranscribeInstall(pypiMirror, model) {
   await runInstallTask(
-    () => apiCall('install_transcribe', pypiMirror || 'sjtu',
-                  model || 'whisper-turbo', injectModel || 'sensevoice'),
+    () => apiCall('install_transcribe', pypiMirror || 'nju', model || 'whisper-turbo'),
     async () => {
       await apiCall('set_transcribe_enabled', true);
       state.transcribeEnabled = true;
       state.transcribeModel = model || 'whisper-turbo';
-      toast('语音转录安装完成，已自动启用', 'ok');
+      toast('语音转写安装完成，已自动启用', 'ok');
     });
 }
 
 /* ════════════════════════════════════════════════════════════
-   模型下载弹窗（语音转录模型管理 / llama.cpp HF 搜索下载 共用骨架）
+   模型下载弹窗（语音转写模型管理 / llama.cpp HF 搜索下载 共用骨架）
    ════════════════════════════════════════════════════════════ */
 function _hfFmtSize(n) {
   if (!n) return '0 B';
@@ -1163,7 +1159,7 @@ function makeModelManager(cfg) {
 }
 
 const _wMgr = makeModelManager({
-  title: '语音转录模型管理', dlKind: 'transcribe', dialogCls: 'wm-dialog',
+  title: '语音转写模型管理', dlKind: 'transcribe', dialogCls: 'wm-dialog',
   statusApi: 'get_transcribe_status', downloadApi: 'download_transcribe_model',
 });
 _wMgr.dlApi = _makeModelDownloader({
@@ -1608,7 +1604,7 @@ async function showLlamaCudaDialog() {
         title: '版本渠道', name: 'llama-channel',
         items: chans.map(c => ({
           value: c.id, name: c.name, desc: `llama.cpp ${c.tag || ''}`,
-          recommended: c.id === 'stable', badge: '推荐', checked: c.id === cur.id,
+          recommended: c.id === 'stable', checked: c.id === cur.id,
         })),
       })}
       <div id="llama-build-list"></div>`;
@@ -1623,7 +1619,7 @@ async function showLlamaCudaDialog() {
       items: cur.builds.map(b => {
         const isRec = b.key === cur.recommended_key;
         return { value: b.key, name: buildLabel(b), desc: `llama.cpp ${cur.tag || ''}`,
-                 recommended: isRec, badge: '推荐',
+                 recommended: isRec,
                  checked: (isRec && gpu.has_nvidia) || b.key === autoKey };
       }),
     });
@@ -2703,7 +2699,7 @@ function _bindRagVecEvents() {
 
 async function startRagVecInstall(device, site) {
   await runInstallTask(
-    () => apiCall('install_rag_vec', device || 'gpu', site || 'sjtu'),
+    () => apiCall('install_rag_vec', device || 'gpu', site || 'nju'),
     async () => {
       await apiCall('save_config', { experimental: { rag_vec_enabled: true } });
       state.ragVecEnabled = true;
