@@ -261,7 +261,7 @@ class TestOnModeSingleRound(unittest.TestCase):
         self.assertEqual(parts[1]["type"], "image_url")
 
     def test_literal_query_excludes_extra_meta(self):
-        # 首轮字面查询只看 filename + literal_meta，不含提示词 aux（转录等噪音）
+        # 首轮字面查询只看 filename + literal_meta，不含提示词 aux（转写等噪音）
         client = _FakeClient([R1_CITY])
         result = analyze_frames(client, "m", _frames(), _cfg(), threading.Event(),
                                 "C:/城市夜景.mp4", 60.0,

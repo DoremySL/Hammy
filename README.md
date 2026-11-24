@@ -1,6 +1,6 @@
 # Hammy
 
-Hammy 是仓鼠党整理入库杂乱网络视频的小工具：从视频中抽取关键帧，发送给支持视觉的
+Hammy 是本仓鼠党自用的整理入库杂乱网络视频的小工具：从视频中抽取关键帧，发送给支持视觉的
 AI模型（本地或云端均可）， 自动生成标题、剧情描述与标签，再据此重命名视频文件，
 并可选生成 Kodi/Jellyfin/Emby 可用的 `.nfo` 媒体信息文件和经过AI挑选的缩略图。
 
@@ -15,8 +15,10 @@ AI模型（本地或云端均可）， 自动生成标题、剧情描述与标�
 - **优化缩略图**：让AI从输入的截图中挑选封面，解决jellyfin默认抽取视频10%位置关键帧作为缩略图时效果不佳问题。
 
 - **NFO 生成**：生成包含 title / plot / tags / 时长 / 分辨率 / 编码 / 音轨等信息的 `movie` XML（Kodi/Emby/Jellyfin 兼容），可根据需要导出到视频目录。
-- **transcribe.cpp**：转录语音，注入提示词辅助AI理解，也可调用 AI 翻译导出中文字幕；
-- **Hammy-tagger**：识别角色、作品/IP 与 General 标签，让视频可检索、可分类、可辅助重命名。
+
+- **transcribe.cpp**：转写语音，注入提示词辅助AI理解，也可调用 AI 翻译导出中文字幕；
+
+- **Hammy-tagger**：识别角色、作品/IP 与 General 标签，辅助检索、分类、重命名。
 
 - **视频去重**：快速排除完全相同副本（非删除，可找回），可选基于时长预筛 + 分阶段指纹比对排除相似版本。
 
@@ -77,7 +79,11 @@ pip install openai pywebview pystray
 
 - Gemma4系列：12B、26B、31B，默认640长边单图只需要140token，生成描述文笔流畅，对整个视频的理解较强；
 
+- 
+
 - Qwen3.X系列：4B即可正确按格式输出，单图物体和角色的识别能力显著强于Gemma4，但生成描述生硬，需要修改提示词引导；
+
+- WeMM-Video：腾讯出品，基于Qwen3.6系列修改，除了世界知识有所下降外视频识别能力比原版Qwen3.6强，且意外的没什么甲；
 
 - Glimmer 30B：单图物体和角色的识别能力最准确，但中文能力弱，生成描述会使用一些很奇怪的词，且在llama.cpp中无法关闭思考。
 
@@ -91,5 +97,5 @@ Hammy 源码**不包含**下列项目的源码，而是在需要时引导用户�
   https://ffmpeg.org/
 - **llama.cpp** —— 本地视觉模型推理
   https://github.com/ggml-org/llama.cpp
-- **transcribe.cpp** —— 本地语音转录
+- **transcribe.cpp** —— 本地语音转写
   https://github.com/handy-computer/transcribe.cpp

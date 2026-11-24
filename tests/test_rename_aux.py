@@ -28,7 +28,7 @@ class TestFormatTranscribeBlock(unittest.TestCase):
         b = format_transcribe_block("你好世界", "zh", 2000)
         self.assertIn("【语音辅助参考】", b)
         self.assertIn("- 语言: zh", b)
-        self.assertIn("- 转录文本: 你好世界", b)
+        self.assertIn("- 转写文本: 你好世界", b)
 
     def test_truncated(self):
         b = format_transcribe_block("字" * 1200, "", 800)

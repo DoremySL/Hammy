@@ -17,7 +17,7 @@ SRT_SAMPLE = "1\n00:00:00,000 --> 00:00:05,000\nこんにちは、世界。\n"
 
 
 class TestBuildTranscribeMetaMap(unittest.TestCase):
-    """已有右键转录的 SRT → 辅助上下文块。"""
+    """已有右键转写的 SRT → 辅助上下文块。"""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()

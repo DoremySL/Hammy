@@ -1,13 +1,13 @@
-"""transcribe.cpp 语音转录单元测试：模型元数据、目录定位、完整性检测、status、安装。
+"""transcribe.cpp 语音转写单元测试：模型元数据、目录定位、完整性检测、status、安装。
 
-只测纯函数与目录逻辑（不触发安装/下载/转录子进程）：
+只测纯函数与目录逻辑（不触发安装/下载/转写子进程）：
 - TRANSCRIBE_MODELS 元数据完整（三个模型、GGUF 文件名、仓库 ID、家族标记）
 - 模型路径按 author/repo 布局解析，未知模型返回空
 - is_model_installed 以 GGUF 文件判定完整性
 - get_current_model / get_inject_model 配置持久化 + 未知 key 回退默认
 - get_status 扩展字段（models/installed/current_model）与 ready 判定
 - _download_model 未知模型参数校验
-- install_dependencies 的 model/inject_model 配置写入
+- install_dependencies 的模型配置写入
 """
 import sys
 import tempfile
@@ -159,7 +159,7 @@ class TestDownloadValidation(unittest.TestCase):
 class TestInstallSyncsModel(unittest.TestCase):
     """安装成功后把所选模型写为当前模型与注入模型。"""
 
-    def _run_install(self, model="moss", inject_model="sensevoice"):
+    def _run_install(self, model="moss"):
         """mock 掉全部子进程步骤，仅验证步骤 4 后的配置写入。"""
         def _fake_download(model_key, log_fn=None, progress_cb=None,
                            cancel_event=None, cleanup_on_cancel=False):
@@ -178,21 +178,20 @@ class TestInstallSyncsModel(unittest.TestCase):
                  mock.patch.object(tc, "_download_model", side_effect=_fake_download), \
                  mock.patch.object(tc, "_download_vad", return_value=True), \
                  mock.patch("gui_app.config_store.update_transcribe_config") as uwc:
-                r = tc.install_dependencies(pypi_mirror="nju", model=model,
-                                            inject_model=inject_model)
+                r = tc.install_dependencies(pypi_mirror="nju", model=model)
         return r, uwc
 
     def test_install_writes_selected_model(self):
-        r, uwc = self._run_install(model="moss", inject_model="sensevoice")
+        r, uwc = self._run_install(model="moss")
         self.assertTrue(r["ok"])
-        # mutator 应写入右键转录模型与辅助重命名模型
+        # mutator 应同时写入当前模型与辅助重命名模型
         mutator = uwc.call_args.args[0]
         cfg = {}
         self.assertIsNone(mutator(cfg))
-        self.assertEqual(cfg, {"model": "moss", "inject_model": "sensevoice"})
+        self.assertEqual(cfg, {"model": "moss", "inject_model": "moss"})
 
-    def test_install_same_model_keeps_other_keys(self):
-        r, uwc = self._run_install(model="whisper-turbo", inject_model="whisper-turbo")
+    def test_install_keeps_other_keys(self):
+        r, uwc = self._run_install(model="whisper-turbo")
         self.assertTrue(r["ok"])
         mutator = uwc.call_args.args[0]
         cfg = {"enabled": True}
@@ -206,12 +205,11 @@ class TestInstallSyncsModel(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             with mock.patch.object(tc, "TRANSCRIBE_DIR", base):
-                r = tc.install_dependencies(model="bad-key", inject_model="sensevoice")
+                r = tc.install_dependencies(model="bad-key")
         self.assertFalse(r["ok"])
         self.assertIn("未知模型", r["error"])
 
-    def test_install_same_model_downloads_once(self):
-        """两个选择为同一模型时只下载一次。"""
+    def test_install_downloads_selected_model_once(self):
         calls = []
         def _record(model_key, log_fn=None, progress_cb=None,
                     cancel_event=None, cleanup_on_cancel=False):
@@ -231,8 +229,7 @@ class TestInstallSyncsModel(unittest.TestCase):
                  mock.patch.object(tc, "_download_model", side_effect=_record), \
                  mock.patch.object(tc, "_download_vad", return_value=True), \
                  mock.patch("gui_app.config_store.update_transcribe_config"):
-                r = tc.install_dependencies(pypi_mirror="nju",
-                                            model="whisper-turbo", inject_model="whisper-turbo")
+                r = tc.install_dependencies(pypi_mirror="nju", model="whisper-turbo")
         self.assertTrue(r["ok"])
         self.assertEqual(calls, ["whisper-turbo"])
 
@@ -255,21 +252,19 @@ class TestInstallSyncsModel(unittest.TestCase):
                  mock.patch.object(tc, "_download_model", side_effect=_fail), \
                  mock.patch.object(tc, "_download_vad", return_value=True), \
                  mock.patch("gui_app.config_store.update_transcribe_config") as uwc:
-                r = tc.install_dependencies(pypi_mirror="nju", model="moss",
-                                            inject_model="sensevoice")
+                r = tc.install_dependencies(pypi_mirror="nju", model="moss")
         self.assertFalse(r["ok"])
         uwc.assert_not_called()
 
     def test_install_skips_download_when_model_exists(self):
-        """所选模型都在盘上时步骤 4 跳过下载。"""
+        """所选模型已在盘上时步骤 4 跳过下载。"""
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
-            for mk in ("whisper-turbo", "sensevoice"):
-                meta = tc.TRANSCRIBE_MODELS[mk]
-                author, _, name = meta["hf_repo"].partition("/")
-                sub = base / "models" / author / name
-                sub.mkdir(parents=True)
-                (sub / meta["gguf"]).write_bytes(b"x")
+            meta = tc.TRANSCRIBE_MODELS["whisper-turbo"]
+            author, _, name = meta["hf_repo"].partition("/")
+            sub = base / "models" / author / name
+            sub.mkdir(parents=True)
+            (sub / meta["gguf"]).write_bytes(b"x")
             with mock.patch.object(tc, "TRANSCRIBE_DIR", base), \
                  mock.patch.object(tc, "VENV_DIR", base / "venv"), \
                  mock.patch.object(tc, "MODEL_DIR", base / "models"), \
@@ -281,8 +276,7 @@ class TestInstallSyncsModel(unittest.TestCase):
                  mock.patch.object(tc, "_download_vad", return_value=True), \
                  mock.patch.object(tc, "_download_model") as dl, \
                  mock.patch("gui_app.config_store.update_transcribe_config"):
-                r = tc.install_dependencies(pypi_mirror="nju",
-                                            model="whisper-turbo", inject_model="sensevoice")
+                r = tc.install_dependencies(pypi_mirror="nju", model="whisper-turbo")
         self.assertTrue(r["ok"])
         dl.assert_not_called()
 
@@ -311,7 +305,7 @@ class TestInstallSyncsModel(unittest.TestCase):
 
 
     def test_run_batch_allows_sensevoice(self):
-        """SenseVoice 可作为右键转录模型（无 family 拦截，命中 ffmpeg 前置校验）。"""
+        """SenseVoice 可作为右键转写模型（无 family 拦截，命中 ffmpeg 前置校验）。"""
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)
             meta = tc.TRANSCRIBE_MODELS["sensevoice"]
@@ -383,7 +377,7 @@ class TestWorkDirCleanup(unittest.TestCase):
     def _run(self, fake):
         with mock.patch.object(tc, "_run_venv_script", fake):
             return tc._run_batch_script({"video_paths": ["a.mp4"]}, [], None,
-                                        None, None, "转录")
+                                        None, None, "转写")
 
     def test_workdir_exists_during_and_removed_after(self):
         import os
@@ -400,7 +394,7 @@ class TestWorkDirCleanup(unittest.TestCase):
 
         error, _ = self._run(fake)
         self.assertTrue(box["exists_during"])  # 运行中存在
-        self.assertEqual(error, "转录无输出")
+        self.assertEqual(error, "转写无输出")
         self.assertFalse(os.path.isdir(box["wd"]))  # 结束后清理（含残留 wav）
 
     def test_workdir_removed_on_script_error(self):
@@ -417,7 +411,7 @@ class TestWorkDirCleanup(unittest.TestCase):
 
 
 class TestTranscriptionParams(unittest.TestCase):
-    """字幕转录参数传导：vad_model 与注入模式一致。"""
+    """字幕转写参数传导：vad_model 与注入模式一致。"""
 
     def test_params_carry_vad_model(self):
         captured = {}

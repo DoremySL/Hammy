@@ -1,6 +1,6 @@
 """llama-server 显存让出（pause_for_task）与启动状态测试。
 
-覆盖：GPU 任务（标签获取/转录）前的让出挂钩（仅停止、不恢复）、
+覆盖：GPU 任务（标签获取/转写）前的让出挂钩（仅停止、不恢复）、
 launch 的输出固定接管与 server_log_fn 分流、启动 4 态（starting/launch_failed）流转。
 """
 import sys
@@ -137,7 +137,7 @@ class TestTaskHooks(unittest.TestCase):
                                       "error": "x"}), \
              mock.patch("gui_app.llama_cpp.pause_for_task") as pause_mock:
             r = api.detect_speech([["v1", "C:/v.mp4"]])
-        self.assertFalse(r["ok"])  # 转录失败路径
+        self.assertFalse(r["ok"])  # 转写失败路径
         pause_mock.assert_called_once()
 
 

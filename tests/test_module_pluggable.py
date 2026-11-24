@@ -1,4 +1,4 @@
-"""可插拔模块（llama/语音转录/tagger）测试。
+"""可插拔模块（llama/语音转写/tagger）测试。
 """
 import json
 import shutil
@@ -202,7 +202,7 @@ class TestSetEnabled(unittest.TestCase):
             st = api.get_tagger_status()
         self.assertIs(st["enabled"], True)
 
-    # ── 语音转录 ──
+    # ── 语音转写 ──
 
     def test_transcribe_enabled_writes_module_config(self):
         api = self._api()
@@ -390,7 +390,7 @@ class TestRemove(unittest.TestCase):
 
 
 # ═══════════════════════════════════════════════════════════════
-# 模块配置存储（tagger / 语音转录 config.json）
+# 模块配置存储（tagger / 语音转写 config.json）
 # ═══════════════════════════════════════════════════════════════
 
 class TestModuleConfigStore(_WorkspaceTestCase):
