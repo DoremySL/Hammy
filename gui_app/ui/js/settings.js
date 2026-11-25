@@ -162,8 +162,8 @@ const CFG_FIELDS_AI = [
 ];
 const CFG_FIELDS_PROCESSING = [
   { group: '视频抽帧', noTitle: true, cols: 3, fields: [
-    { sec: 'video', key: 'sampling_points', label: '采样点位', type: 'number', min: 1, help: '均匀分布的关键帧取样位置数；采样点位*每点帧数=抽取的关键帧数量', default: 10 },
-    { sec: 'video', key: 'frames_per_point', label: '每点帧数', type: 'number', min: 1, help: '每个点位取连续关键帧数，增大此项可给AI提供连续的画面信息', default: 2 },
+    { sec: 'video', key: 'sampling_points', label: '采样点位', type: 'number', min: 1, help: '均匀分布的点位数量；每个点位在其分区内取关键帧，空点位不补帧', default: 9 },
+    { sec: 'video', key: 'frames_per_point', label: '每点帧数', type: 'number', min: 1, help: '每个点位最多取的关键帧数；同点位近似帧会自动去重，关键帧不足时数量会更少', default: 3 },
     { sec: 'video', key: 'frame_max_side', label: '长边像素', type: 'number', min: 64, help: '抽帧图片长边上限', default: 672 },
   ]},
   { group: '命名与输出', noTitle: true, cols: 3, fields: [

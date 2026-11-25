@@ -14,6 +14,7 @@ import tempfile
 import threading
 import time
 from collections import deque
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -438,21 +439,19 @@ def video_sampling_config() -> Config:
     from .config_store import load_config
     video = load_config().get("video") or {}
     cfg = Config(
-        sampling_points=max(1, safe_int(video.get("sampling_points"), 10)),
-        frames_per_point=max(1, safe_int(video.get("frames_per_point"), 2)),
+        sampling_points=max(1, safe_int(video.get("sampling_points"), 9)),
+        frames_per_point=max(1, safe_int(video.get("frames_per_point"), 3)),
         frame_max_side=max(64, safe_int(video.get("frame_max_side"), 672)),
     )
     cfg.validate()
     return cfg
 
 
-def _per_point_frames(frames):
-    """每点位取首个存活帧；点位未知（-1）的帧全保留。"""
+def per_point_frames(frames):
+    """每点位取首个存活帧。"""
     picked, seen = [], set()
     for f in frames:
-        if f.point_index < 0:
-            picked.append(f)
-        elif f.point_index not in seen:
+        if f.point_index not in seen:
             seen.add(f.point_index)
             picked.append(f)
     return picked
@@ -461,15 +460,14 @@ def _per_point_frames(frames):
 def extract_frames_for_tagger(video_path: str,
                               stop_event: Optional[threading.Event] = None,
                               config: Optional[Config] = None) -> List[str]:
-    """复用公用抽帧（点位同设置页）；右键 tagger 固定每点 1 帧，不补位（补位仅服务 LLM 集成模式）。"""
+    """复用公用抽帧（点位同设置页）；固定每点 1 帧（分区取离点位最近的关键帧）。"""
     if stop_event is None:
         stop_event = _NO_STOP
     if stop_event.is_set():
         return []
-    cfg = config or video_sampling_config()
-    cfg.frames_per_point = 1
+    cfg = replace(config or video_sampling_config(), frames_per_point=1)
     _, frames = probe_and_extract_keyframes(video_path, cfg, stop_event)
-    return [f.b64 for f in _per_point_frames(frames)]
+    return [f.b64 for f in per_point_frames(frames)]
 
 
 def _inference_timeout(video_count: int) -> float:

@@ -168,7 +168,7 @@ class TaggerInjectWorker:
                     return
                 self._record(vr, sent, results, lib, tagger_mod)
             if not stream.send({"index": ctx.index, "name": name,
-                                "frames": [f.b64 for f in ctx.frames]}):
+                                "frames": [f.b64 for f in tagger_mod.per_point_frames(ctx.frames)]}):
                 return
             sent[ctx.index] = (ctx, vid, name)
         except Exception as e:

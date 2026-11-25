@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from .dependencies import ffmpeg_tools
+from .phash import dhash_gray
 from .video import run_subprocess_with_cancel
 
 # ── 指纹 ──
@@ -54,17 +55,6 @@ FAST = ScanMode(2.0, 2.0, 15.0, 6, (1, 2, 3), 90.0, tiered_dur_tol=True)
 NORMAL = ScanMode(15.0, 15.0, 30.0, 8)
 EXTREME = ScanMode(35.0, 35.0, 60.0, 8)
 SCAN_MODES = {"fast": FAST, "normal": NORMAL, "extreme": EXTREME}
-
-
-def dhash_gray(b: bytes) -> int:
-    """9x8 灰度行内相邻列差 → 64 位哈希。"""
-    h = 0
-    for row in range(8):
-        o = row * 9
-        for col in range(8):
-            if b[o + col] > b[o + col + 1]:
-                h |= 1 << (row * 8 + col)
-    return h
 
 
 def _is_flat(b: bytes) -> bool:

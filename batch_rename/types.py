@@ -13,13 +13,10 @@ class RenameRecord(NamedTuple):
 
 
 class Frame(NamedTuple):
-    """单帧抽帧结果：时间戳（秒）+ JPEG base64 + 采样点位索引。
-
-    point_index 为所属采样点位（0 起）；-1 表示点位语义不可用（回退路径）。
-    """
+    """单帧抽帧结果：时间戳（秒）+ JPEG base64 + 采样点位索引（0 起）。"""
     ts: float
     b64: str
-    point_index: int = -1
+    point_index: int
 
 
 @dataclass

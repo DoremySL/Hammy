@@ -14,8 +14,8 @@ class Config:
     model: str = "gpt-4o"
     base_url: str = "http://localhost:8080/v1"
     api_key: str = "not-needed"
-    sampling_points: int = 7
-    frames_per_point: int = 2
+    sampling_points: int = 9
+    frames_per_point: int = 3
     frame_max_side: int = 672
     frame_time_tags: int = 2  # 0=不添加 1=添加时间标签 2=添加并用于优化缩略图
     frame_extract_mode: str = "auto"  # auto=TS逐帧+关键帧concat / per_frame=全部逐帧 / legacy=全部旧行为
