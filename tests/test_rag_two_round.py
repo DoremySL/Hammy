@@ -94,7 +94,7 @@ def _cfg(**kw):
 
 
 def _frames():
-    return [Frame(0.0, "fakeb64")]
+    return [Frame(0.0, "fakeb64", 0)]
 
 
 class TestTwoRoundSuccess(unittest.TestCase):

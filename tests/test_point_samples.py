@@ -1,4 +1,5 @@
 """select_point_samples 点位语义 + preprocess 公用预处理测试。"""
+import base64
 import io
 import sys
 from pathlib import Path
@@ -8,9 +9,11 @@ import unittest
 from PIL import Image, ImageDraw
 
 from batch_rename.video import select_point_samples, _anchor_keyframe_indices
-from batch_rename.preprocess import preprocess_frame, preprocess_frames
+from batch_rename.preprocess import (preprocess_frame_signature, preprocess_frames,
+                                     _dedup_point_frames)
+from batch_rename.phash import ncc
 from batch_rename.types import Frame
-from gui_app.tagger import _per_point_frames
+from gui_app.tagger import per_point_frames
 
 
 def _jpeg(im, quality=95):
@@ -44,10 +47,19 @@ class TestSelectPointSamples(unittest.TestCase):
         s = select_point_samples(100.0, [45.0, 46.5, 53.5, 55.0], 3, 2)
         self.assertEqual(s, [(45.0, 1), (55.0, 1)])
 
-    def test_dedup_belongs_to_first_declaring_point(self):
-        # 10.0 同时落在点位 1/2 窗口内 → 归属先声明的点位 1
+    def test_boundary_belongs_to_later_point(self):
+        # 10.0 是点位 1/2 分区的边界 → 归后一个点位
         s = select_point_samples(10.0, [10.0], 3, 1)
-        self.assertEqual(s, [(10.0, 1)])
+        self.assertEqual(s, [(10.0, 2)])
+
+    def test_dense_keyframes_stay_chronological(self):
+        # 60s、10 点位、每 2s 一个关键帧：输出升序，且每个点位都有帧
+        s = select_point_samples(60.0, [float(t) for t in range(0, 60, 2)], 10, 2)
+        ts = [t for t, _ in s]
+        points = [pi for _, pi in s]
+        self.assertEqual(ts, sorted(ts))
+        self.assertEqual(points, sorted(points))
+        self.assertEqual(len(set(points)), 10)
 
     def test_fallback_no_keyframes_pseudo_points(self):
         s = select_point_samples(8.0, [], 5, 1)
@@ -56,7 +68,7 @@ class TestSelectPointSamples(unittest.TestCase):
         self.assertEqual([pi for _, pi in s], [0, 1, 2, 3, 4])
 
     def test_fallback_when_all_windows_empty(self):
-        # 有关键帧但全部窗口外 → 回退伪点位
+        # 有关键帧但全部分区外 → 回退伪点位
         s = select_point_samples(100.0, [50.0], 2, 1)
         self.assertEqual(s, [(50.0, 0)])
 
@@ -70,39 +82,104 @@ class TestSelectPointSamples(unittest.TestCase):
 
 class TestPreprocessFrame(unittest.TestCase):
     def test_black_frame_dropped(self):
-        self.assertIsNone(preprocess_frame(_jpeg(Image.new("RGB", (672, 378), (0, 0, 0)))))
+        self.assertIsNone(
+            preprocess_frame_signature(_jpeg(Image.new("RGB", (672, 378), (0, 0, 0)))))
+
+    def test_solid_color_frame_dropped(self):
+        for color in ((255, 255, 255), (255, 0, 0), (128, 128, 128)):
+            self.assertIsNone(
+                preprocess_frame_signature(_jpeg(Image.new("RGB", (320, 180), color))))
+
+    def test_nearly_solid_frame_kept(self):
+        im = _noise((320, 180))
+        d = ImageDraw.Draw(im)
+        d.rectangle([0, 0, 96, 96], fill=(255, 255, 255))   # 少量白块，不算纯色
+        self.assertIsNotNone(preprocess_frame_signature(_jpeg(im)))
 
     def test_letterbox_cropped(self):
         im = _noise((672, 378))
         d = ImageDraw.Draw(im)
         d.rectangle([0, 0, 672, 94], fill=(0, 0, 0))       # 上黑边 25%
         d.rectangle([0, 283, 672, 378], fill=(0, 0, 0))    # 下黑边 25%
-        out = preprocess_frame(_jpeg(im))
-        self.assertIsNotNone(out)
-        w, h = Image.open(io.BytesIO(out)).size
+        result = preprocess_frame_signature(_jpeg(im))
+        self.assertIsNotNone(result)
+        w, h = Image.open(io.BytesIO(result[0])).size
         self.assertEqual(w, 672)
         self.assertTrue(150 < h < 210)   # 上下黑边被裁（JPEG 边界行允许小误差）
 
     def test_clean_frame_no_reencode(self):
         raw = _jpeg(_noise((672, 378)))
-        self.assertEqual(preprocess_frame(raw), raw)
+        self.assertEqual(preprocess_frame_signature(raw)[0], raw)
 
     def test_invalid_bytes_dropped(self):
-        self.assertIsNone(preprocess_frame(b"not-a-jpeg"))
+        self.assertIsNone(preprocess_frame_signature(b"not-a-jpeg"))
 
     def test_batch_keeps_order(self):
         clean = _jpeg(_noise((320, 180)))
         black = _jpeg(Image.new("RGB", (320, 180), (0, 0, 0)))
-        out = preprocess_frames([black, clean, b"bad"])
+        out = [r[0] for r in map(preprocess_frame_signature, [black, clean, b"bad"]) if r]
         self.assertEqual(out, [clean])
 
     def test_idempotent(self):
         im = _noise((672, 378))
         d = ImageDraw.Draw(im)
-        d.rectangle([0, 0, 672, 94], fill=(0, 0, 0))
-        d.rectangle([0, 283, 672, 378], fill=(0, 0, 0))
-        once = preprocess_frame(_jpeg(im))
-        self.assertEqual(preprocess_frame(once), once)
+        d.rectangle([0, 0, 672, 94], fill=(0, 0, 0))    # 上黑边 25%
+        d.rectangle([0, 283, 672, 378], fill=(0, 0, 0)) # 下黑边 25%
+        once = preprocess_frame_signature(_jpeg(im))[0]
+        self.assertEqual(preprocess_frame_signature(once)[0], once)
+
+
+class TestSimilaritySignature(unittest.TestCase):
+    def test_ncc_identical_and_inverse(self):
+        a = bytes([0, 1] * 512)
+        self.assertEqual(ncc(a, a), 1.0)
+        self.assertEqual(ncc(a, bytes([1, 0] * 512)), -1.0)
+
+    def test_signature_hashes_after_crop(self):
+        # 同一画面加黑边后，签名应与无黑边版本几乎一致（先裁边再算哈希）
+        content = _noise((320, 120))
+        plain = preprocess_frame_signature(_jpeg(content))
+        canvas = Image.new("RGB", (320, 240), (0, 0, 0))
+        canvas.paste(content, (0, 60))
+        boxed = preprocess_frame_signature(_jpeg(canvas))
+        self.assertIsNotNone(plain)
+        self.assertIsNotNone(boxed)
+        self.assertEqual(len(plain[2]), 32 * 32)
+        self.assertGreaterEqual(ncc(plain[2], boxed[2]), 0.98)
+        self.assertEqual(Image.open(io.BytesIO(boxed[0])).size, (320, 120))
+
+
+class TestDedupPointFrames(unittest.TestCase):
+    def _f(self, ts, pi):
+        return Frame(ts, "", pi)
+
+    def test_same_point_similar_dropped(self):
+        sig = bytes([10]) * 1024
+        items = [(self._f(0.0, 0), 0, sig),
+                 (self._f(1.0, 0), 0, sig),
+                 (self._f(2.0, 1), 0, sig)]
+        out = _dedup_point_frames(items)
+        # 同点位第二条被删，跨点位同签名保留
+        self.assertEqual([f.ts for f in out], [0.0, 2.0])
+
+    def test_dhash_prefilter_keeps_distinct(self):
+        sig = bytes([10]) * 1024
+        items = [(self._f(0.0, 0), 0, sig),
+                 (self._f(1.0, 0), (1 << 64) - 1, sig)]
+        self.assertEqual(len(_dedup_point_frames(items)), 2)
+
+
+class TestPreprocessDedup(unittest.TestCase):
+    def _frame(self, ts, pi, im):
+        return Frame(ts, base64.b64encode(_jpeg(im)).decode(), pi)
+
+    def test_identical_same_point_deduped(self):
+        a = _noise((320, 180))
+        b = _noise((320, 180))
+        frames = [self._frame(0.0, 0, a), self._frame(1.0, 0, a),
+                  self._frame(2.0, 0, b), self._frame(3.0, 1, a)]
+        out = preprocess_frames(frames)
+        self.assertEqual([f.ts for f in out], [0.0, 2.0, 3.0])
 
 
 class TestPerPointFrames(unittest.TestCase):
@@ -116,7 +193,7 @@ class TestPerPointFrames(unittest.TestCase):
                   self._f(2),
                   self._f(3), self._f(3), self._f(3),
                   self._f(4), self._f(4), self._f(4)]
-        out = _per_point_frames(frames)
+        out = per_point_frames(frames)
         self.assertEqual([f.point_index for f in out], [0, 1, 2, 3, 4])
 
     def test_point_lost_entirely(self):
@@ -124,18 +201,12 @@ class TestPerPointFrames(unittest.TestCase):
         frames = [self._f(0), self._f(0), self._f(0),
                   self._f(1), self._f(1), self._f(1),
                   self._f(3), self._f(3), self._f(3)]
-        out = _per_point_frames(frames)
+        out = per_point_frames(frames)
         self.assertEqual([f.point_index for f in out], [0, 1, 3])
-
-    def test_unknown_point_kept_all(self):
-        # 点位未知（-1）的回退帧全保留，正常点位仍取首个
-        frames = [self._f(-1), self._f(-1), self._f(0), self._f(0)]
-        out = _per_point_frames(frames)
-        self.assertEqual([f.point_index for f in out], [-1, -1, 0])
 
     def test_order_preserved(self):
         frames = [self._f(1), self._f(0), self._f(1), self._f(0)]
-        out = _per_point_frames(frames)
+        out = per_point_frames(frames)
         self.assertEqual([f.point_index for f in out], [1, 0])
 
 

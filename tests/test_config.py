@@ -8,6 +8,10 @@ from batch_rename.utils import safe_int, safe_float
 
 
 class TestConfigValidate(unittest.TestCase):
+    def test_sampling_defaults(self):
+        c = Config()
+        self.assertEqual((c.sampling_points, c.frames_per_point), (9, 3))
+
     def test_temperature_clamp_high(self):
         c = Config(temperature=5.0); c.validate()
         self.assertEqual(c.temperature, 2.0)

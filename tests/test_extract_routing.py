@@ -23,8 +23,8 @@ _META_TS = {"duration": 100.0, "start_time": 1.442, "format_name": "mpegts",
 
 
 def _frames(*ts_list):
-    """构造测试帧（b64 为标记串，预处理在 harness 中打桩为透传）。"""
-    return [Frame(t, f"F{i}") for i, t in enumerate(ts_list)]
+    """构造测试帧（b64 为标记串，点位索引 = 序号，预处理在 harness 中打桩为透传）。"""
+    return [Frame(t, f"F{i}", i) for i, t in enumerate(ts_list)]
 
 
 class _RouterHarness:
@@ -38,32 +38,34 @@ class _RouterHarness:
         self.concat_calls = []      # (targets, frame_rate)
         self.per_frame_calls = []   # (ts, start_time)
         self.ts_pass_calls = 0
+        self.sample_calls = []      # (duration, key_ts)
         self.concat_frames = concat_frames
         self.per_frames = per_frames or []
         self.ts_pass_frames = ts_pass_frames
 
-    def _probe(self, path, stop, points, per_point):
+    def _probe(self, path, stop, points):
         return dict(self.meta), list(self.key_ts)
 
     def _samples(self, duration, key_ts, points, per_point):
+        self.sample_calls.append((duration, list(key_ts)))
         return [(t, i) for i, t in enumerate(self.timestamp_list)]
 
-    def _concat(self, path, targets, config, stop, frame_rate, frame_vf=None):
-        self.concat_calls.append((list(targets), frame_rate))
+    def _concat(self, path, samples, config, stop, frame_rate, frame_vf=None):
+        self.concat_calls.append(([t for t, _ in samples], frame_rate))
         return list(self.concat_frames) if self.concat_frames is not None else None
 
-    def _per_frame(self, path, ts, config, stop, frame_vf=None, start_time=0.0):
+    def _per_frame(self, path, ts, pi, config, stop, frame_vf=None, start_time=0.0):
         self.per_frame_calls.append((ts, start_time))
         return self.per_frames.pop(0) if self.per_frames else None
 
-    def _ts_pass(self, path, targets, config, stop, frame_rate, frame_vf=None):
+    def _ts_pass(self, path, samples, config, stop, frame_rate=0.0, frame_vf=None):
         self.ts_pass_calls += 1
         return list(self.ts_pass_frames) if self.ts_pass_frames is not None else None
 
     def run(self, cfg):
         with mock.patch.object(video_mod, "probe_video", self._probe), \
              mock.patch.object(video_mod, "select_point_samples", self._samples), \
-             mock.patch.object(video_mod, "_preprocess_extracted",
+             mock.patch.object(video_mod, "preprocess_frames",
                                lambda frames: list(frames)), \
              mock.patch.object(video_mod, "_extract_frames_concat", self._concat), \
              mock.patch.object(video_mod, "_extract_frame", self._per_frame), \
@@ -148,6 +150,14 @@ class TestExtractRouting(unittest.TestCase):
         c = Config(frame_extract_mode="whatever")
         c.validate()
         self.assertEqual(c.frame_extract_mode, "auto")
+
+    def test_duration_falls_back_to_stream_duration(self):
+        # format duration 缺失（0）时用视频流时长选点
+        meta = {"duration": 0.0, "start_time": 0.0, "format_name": "matroska,webm",
+                "video": {"frame_rate": 24.0, "duration": 123.0}, "audio": []}
+        h = _RouterHarness(meta, [1.0], [1.0])
+        h.run(_make_cfg("auto"))
+        self.assertEqual(h.sample_calls, [(123.0, [1.0])])
 
 
 class TestSingleFrameSubprocess(unittest.TestCase):

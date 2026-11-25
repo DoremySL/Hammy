@@ -137,7 +137,7 @@ class _PipelineStub:
         self.producer_done.set()  # 单元测试无生产者，直接视为已收尾
         self.aux_stages = {"tagger"} if tagger_queue else set()
         for c in self.contexts:  # 单元测试不跑生产者，frames 阶段手工终态
-            c.frames = [Frame(3.6, "b64")]
+            c.frames = [Frame(3.6, "b64", 0)]
             c.complete_stage("frames")
         if self.tagger_queue:
             for c in self.contexts:
@@ -270,7 +270,7 @@ class TestPipelineAuxCoordination(unittest.TestCase):
     def test_thumb_lookup_rounding_matches_label(self):
         """thumb_lookup 键 = int(ts + 0.5)，与提示词时间标签 _fmt_hms 同口径。"""
         ctx = TaskContext("C:/v.mp4", 0)
-        ctx.frames = [Frame(3.4, "a"), Frame(4.5, "b")]
+        ctx.frames = [Frame(3.4, "a", 0), Frame(4.5, "b", 1)]
         ctx.thumb_lookup = {int(f.ts + 0.5): f for f in ctx.frames}
         self.assertEqual(ctx.thumb_lookup[3].b64, "a")
         self.assertEqual(ctx.thumb_lookup[5].b64, "b")  # int(4.5+0.5)=5（round() 会得 4）

@@ -45,7 +45,7 @@ class TestAnalyzeFramesCancel(unittest.TestCase):
         config.frame_time_tags = False
         config.prompt = "p"
 
-        frames = [Frame(ts=0.0, b64="")]
+        frames = [Frame(ts=0.0, b64="", point_index=0)]
         stop_event = threading.Event()
         result_box = {}
 
