@@ -94,7 +94,8 @@ def fingerprint_windows(path: str, duration: float,
     for i in idxs:
         if stop_event.is_set():
             break
-        pos = WINDOW_POS[i] * duration
+        # pos 取整秒，对齐 fps=1 采样栅格
+        pos = round(WINDOW_POS[i] * duration)
         cmd = ["-ss", f"{pos:.3f}", "-i", path, "-t", f"{mode.window_sec:.3f}",
                "-vf", vf, *raw_out]
         result[i] = run([ffmpeg_tools.ffmpeg, "-y", *cmd], pos, _WINDOW_TIMEOUT)

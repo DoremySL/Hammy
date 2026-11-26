@@ -21,7 +21,6 @@ from .types import Frame
 
 
 # ── 抽帧策略常量 ──
-_SHORT_VIDEO_THRESHOLD = 10.0   # 无关键帧的短视频走"头中尾"三帧兜底
 _KF_PAIR_FRAMES = 8            # 目标后此帧数内还有关键帧时 concat 段会多吐帧（B 帧 dts 滞后），跳过 concat
 _PER_FRAME_WORKERS = 4         # 逐帧抽取的并发进程数
 
@@ -30,7 +29,6 @@ _PROBE_META_TIMEOUT_SEC = 15.0    # ffprobe 元数据 JSON 探测
 _PROBE_KEYFRAMES_TIMEOUT_SEC = 60.0  # 关键帧窗口采样探测超时
 _EXTRACT_FRAME_TIMEOUT_SEC = 30.0    # ffmpeg 单帧抽取
 _EXTRACT_CONCAT_TIMEOUT_SEC = 120.0  # ffmpeg concat 多段一次出全部帧
-_EXTRACT_TS_TIMEOUT_SEC = 300.0    # mpegts 单 pass 顺序抽帧（legacy 模式）
 
 # ── 点位分区半径（秒）──
 _PROBE_WINDOW_HALF_MIN = 5.0    # 基础半径
@@ -85,7 +83,7 @@ def _parse_format(fmt: Dict[str, Any]) -> Dict[str, Any]:
         "video": {}, "audio": [],
     }
     meta["duration"] = safe_float(fmt.get("duration"))
-    # 流时间基（ts 的 -ss 需扣除）
+    # 流时间基（探测边界换算用）
     meta["start_time"] = max(0.0, safe_float(fmt.get("start_time")))
     meta["size"] = safe_int(fmt.get("size"))
     meta["bit_rate"] = safe_int(fmt.get("bit_rate"))
@@ -224,11 +222,13 @@ def _probe_interval_anchors(video_path: str, merged: List[List[float]],
 
 
 def _probe_keyframes_intervals(video_path: str, duration: float, points: int,
-                               stop_event: threading.Event) -> List[float]:
-    """按点位分区采样关键帧时间戳，相邻分区合并后读取，去重排序返回。"""
+                               stop_event: threading.Event,
+                               start_time: float = 0.0) -> List[float]:
+    """按点位分区采样关键帧时间戳（内容基准），相邻分区合并后读取，去重排序返回。"""
     if duration <= 0:
         return []
-    windows = [(lo, hi) for _, _, lo, hi in _point_regions(duration, points)]
+    windows = [(lo + start_time, hi + start_time)
+               for _, _, lo, hi in _point_regions(duration, points)]
     merged: List[List[float]] = []
     for lo, hi in windows:
         if merged and lo <= merged[-1][1]:
@@ -253,14 +253,14 @@ def _probe_keyframes_intervals(video_path: str, duration: float, points: int,
         v = _kf_from_csv_line(raw)
         if v is not None:
             key_ts.add(v)
-    return sorted(key_ts)
+    return sorted(t - start_time for t in key_ts)
 
 
 def probe_video(video_path: str, stop_event: threading.Event,
                 points: int) -> Tuple[Dict[str, Any], List[float]]:
     """分两次 ffprobe 调用：
-    1. JSON 获取格式/流元数据（全量条目，NFO 与 ts 配帧均依赖流信息）
-    2. 按点位分区采样关键帧时间戳"""
+    1. JSON 获取格式/流元数据（全量条目，NFO 依赖流信息）
+    2. 按点位分区采样关键帧时间戳（内容基准）"""
     meta: Dict[str, Any] = {}
     key_ts: List[float] = []
 
@@ -287,7 +287,8 @@ def probe_video(video_path: str, stop_event: threading.Event,
             return meta, []
 
         key_ts = _probe_keyframes_intervals(video_path, meta.get("duration") or 0.0,
-                                            points, stop_event)
+                                            points, stop_event,
+                                            meta.get("start_time") or 0.0)
     except Exception as e:
         logger.debug(f"ffprobe 解析失败 ({Path(video_path).name}): {e}", exc_info=True)
 
@@ -295,15 +296,13 @@ def probe_video(video_path: str, stop_event: threading.Event,
 
 
 def _extract_single_frame(video_path: str, ts: float, vf: str,
-                          stop_event: threading.Event,
-                          start_time: float = 0.0) -> Optional[bytes]:
-    """按时间戳抽取单帧：ffmpeg 输出 JPEG 经 stdout 管道返回，失败/取消返回 None。"""
+                          stop_event: threading.Event) -> Optional[bytes]:
+    """按内容时间戳抽取单帧：ffmpeg 输出 JPEG 经 stdout 管道返回，失败/取消返回 None。"""
     if stop_event.is_set():
         return None
-    ss = max(0.0, ts - start_time)
     cmd = [
         ffmpeg_tools.ffmpeg, "-y",
-        "-ss", f"{ss:.6f}",
+        "-ss", f"{ts:.6f}",
         "-i", video_path,
         "-vframes", "1",
         "-vf", vf,
@@ -331,10 +330,9 @@ def _default_frame_vf(config: Config) -> str:
 
 def _extract_frame(video_path: str, ts: float, point_index: int, config: Config,
                    stop_event: threading.Event,
-                   frame_vf: Optional[str] = None,
-                   start_time: float = 0.0) -> Optional[Frame]:
+                   frame_vf: Optional[str] = None) -> Optional[Frame]:
     jpeg = _extract_single_frame(video_path, ts, frame_vf or _default_frame_vf(config),
-                                 stop_event, start_time)
+                                 stop_event)
     if jpeg:
         return Frame(ts, base64.b64encode(jpeg).decode(), point_index)
     return None
@@ -342,13 +340,12 @@ def _extract_frame(video_path: str, ts: float, point_index: int, config: Config,
 
 def _extract_per_frame(video_path: str, samples: List[Tuple[float, int]], config: Config,
                        stop_event: threading.Event,
-                       frame_vf: Optional[str] = None,
-                       start_time: float = 0.0) -> List[Frame]:
+                       frame_vf: Optional[str] = None) -> List[Frame]:
     """逐帧抽取兜底：并发单帧进程，结果按样本顺序保留；单帧失败/取消跳过。"""
     with futures.ThreadPoolExecutor(max_workers=_PER_FRAME_WORKERS) as ex:
         results = list(ex.map(
             lambda s: _extract_frame(video_path, s[0], s[1], config, stop_event,
-                                     frame_vf=frame_vf, start_time=start_time),
+                                     frame_vf=frame_vf),
             samples))
     return [f for f in results if f]
 
@@ -398,33 +395,13 @@ def _pair_samples(video_path: str, samples: List[Tuple[float, int]],
             for (t, pi), j in zip(samples, jpegs)]
 
 
-def _extract_frames_ts(video_path: str, samples: List[Tuple[float, int]], config: Config,
-                       stop_event: threading.Event,
-                       frame_rate: float = 0.0,
-                       frame_vf: Optional[str] = None) -> Optional[List[Frame]]:
-    """mpegts 专用抽帧：不 seek 单次顺序解码，select 放行目标帧；配帧不齐返回 None 回退逐帧。"""
-    if stop_event.is_set():
-        return None
-    # 帧率未知时窗口只需覆盖浮点误差（目标即关键帧精确 pts），过宽会在高帧率下罩住两帧
-    win = 0.5 / frame_rate if frame_rate > 1 else 0.005
-    wins = "+".join(f"between(t\\,{t - 0.001:.3f}\\,{t + win:.3f})" for t, _ in samples)
-    vf = f"select={wins}," + (frame_vf or _default_frame_vf(config))
-    cmd = [
-        ffmpeg_tools.ffmpeg, "-y", "-i", video_path, "-copyts",
-        "-vf", vf, "-fps_mode", "passthrough",
-        "-q:v", "2", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1",
-    ]
-    stdout, _ = run_subprocess_with_cancel(cmd, _EXTRACT_TS_TIMEOUT_SEC, stop_event)
-    if not stdout:
-        return None
-    return _pair_samples(video_path, samples, _split_jpegs(stdout), "ts")
-
-
 def _write_ffconcat_script(video_path: str, segments) -> str:
     """segments: [(inpoint, outpoint)] → ffconcat 脚本。"""
+    # 路径内的 ' 以 '\'' 拼接转义
+    safe_path = video_path.replace("'", "'\\''")
     lines = ["ffconcat version 1.0"]
     for lo, hi in segments:
-        lines.append(f"file '{video_path}'")
+        lines.append(f"file '{safe_path}'")
         lines.append(f"inpoint {lo:.6f}")
         lines.append(f"outpoint {hi:.6f}")
     fd, path = tempfile.mkstemp(suffix=".ffconcat")
@@ -439,11 +416,14 @@ def _write_ffconcat_script(video_path: str, segments) -> str:
 
 def _extract_frames_concat(video_path: str, samples: List[Tuple[float, int]], config: Config,
                            stop_event: threading.Event, frame_rate: float,
-                           frame_vf: Optional[str] = None) -> Optional[List[Frame]]:
+                           frame_vf: Optional[str] = None,
+                           start_time: float = 0.0) -> Optional[List[Frame]]:
     """关键帧点位单进程多段抽取：出帧数与样本一一配对成功才交付，否则 None 回退逐帧。"""
     if stop_event.is_set():
         return None
-    epochs = [(t, t + 0.5 * _frame_tau(frame_rate)) for t, _ in samples]
+    # ffconcat in/outpoint 按流 pts 解释，内容时间需换算
+    epochs = [(t + start_time, t + start_time + 0.5 * _frame_tau(frame_rate))
+              for t, _ in samples]
     script = _write_ffconcat_script(video_path, epochs)
     try:
         cmd = [
@@ -472,35 +452,32 @@ def _anchor_keyframe_indices(n_keyframes: int, points: int) -> List[int]:
     return [int(round(i * step)) for i in range(points)]
 
 
-def select_timestamps(duration: float, key_ts: List[float], points: int) -> List[float]:
-    """时间戳选取策略：关键帧均匀采样 → 短视频头中尾 → 时长均分 → 兜底 0。"""
-    if key_ts:
-        if len(key_ts) >= points:
-            return [key_ts[i] for i in _anchor_keyframe_indices(len(key_ts), points)]
-        return key_ts
-    if 0 < duration < _SHORT_VIDEO_THRESHOLD:
-        return [0.0, duration / 2.0, max(0.0, duration - 0.1)]
-    if duration > 0:
-        actual_n = min(points, max(1, int(duration)))
-        return [duration * (i + 1) / (actual_n + 1) for i in range(actual_n)]
-    return [0.0]
-
-
-def _pseudo_samples(duration: float, key_ts: List[float],
-                    points: int) -> List[Tuple[float, int]]:
-    """回退伪点位：select_timestamps 目标按序号充当点位索引。"""
-    return [(t, i) for i, t in enumerate(select_timestamps(duration, key_ts, points))]
+def _fill_positions(p: float, lo: float, hi: float, per_point: int,
+                    end: float) -> List[float]:
+    """分区内无关键帧时的普通帧位置：单点取点位，多点取分区内均匀位。"""
+    if per_point == 1:
+        return [min(p, end)]
+    step = (hi - lo) / (per_point + 1)
+    return [min(lo + step * (i + 1), end) for i in range(per_point)]
 
 
 def select_point_samples(duration: float, key_ts: List[float],
-                         points: int, per_point: int) -> List[Tuple[float, int]]:
-    """按点位分区选帧：每个点位在自己的分区内最多取 per_point 个关键帧。
+                         points: int, per_point: int,
+                         frame_rate: float = 0.0) -> List[Tuple[float, int]]:
+    """按点位分区选帧：分区内优先关键帧，无关键帧补普通帧位置。
 
-    返回 (时间戳, 点位索引)，时间升序、点位索引单调不减；分区内无关键帧则跳过
-    （不补帧），全部分区都无关键帧时回退伪点位；key_ts 需升序传入。
+    返回 (时间戳, 点位索引)，时间升序、点位索引单调不减；key_ts 需升序传入。
+    duration 缺失时：有关键帧均匀采样，否则取首帧。
     """
-    if not key_ts or duration <= 0:
-        return _pseudo_samples(duration, key_ts, points)
+    if duration <= 0:
+        if not key_ts:
+            return [(0.0, 0)]
+        if len(key_ts) < points:
+            return [(t, i) for i, t in enumerate(key_ts)]
+        return [(key_ts[i], r)
+                for r, i in enumerate(_anchor_keyframe_indices(len(key_ts), points))]
+    # 片尾内收一个帧间隔，防越过末帧
+    end = max(0.0, duration - _frame_tau(frame_rate))
     regions = _point_regions(duration, points)
     out: List[Tuple[float, int]] = []
     seen: set = set()
@@ -508,8 +485,8 @@ def select_point_samples(duration: float, key_ts: List[float],
         # 分区只在边界可能重合；已被前一点位取走的边界帧不重复使用
         near = [t for t in key_ts if lo <= t <= hi and t not in seen]
         if not near:
-            continue
-        if len(near) <= per_point:
+            chosen = _fill_positions(p, lo, hi, per_point, end)
+        elif len(near) <= per_point:
             chosen = near
         elif per_point == 1:
             chosen = [min(near, key=lambda t: abs(t - p))]
@@ -517,8 +494,6 @@ def select_point_samples(duration: float, key_ts: List[float],
             chosen = [near[i] for i in _anchor_keyframe_indices(len(near), per_point)]
         seen.update(chosen)
         out.extend((t, pi) for t in chosen)
-    if not out:
-        return _pseudo_samples(duration, key_ts, points)
     return out
 
 
@@ -526,7 +501,8 @@ def probe_and_extract_keyframes(video_path: str, config: Config, stop_event: thr
                                 frame_vf: Optional[str] = None) -> Tuple[Dict[str, Any], List[Frame]]:
     """探测视频元数据 + 关键帧 → 选点 → 抽取为 Frame（时间戳+base64+点位索引）。
 
-    frame_vf 传入时替换默认缩放滤镜；抽帧后执行公用预处理。
+    Frame.ts 与 key_ts 均为内容相对时间；frame_vf 传入时替换默认缩放滤镜；
+    抽帧后执行公用预处理。
     """
     if stop_event.is_set():
         return {}, []
@@ -544,38 +520,27 @@ def probe_and_extract_keyframes(video_path: str, config: Config, stop_event: thr
     if stop_event.is_set():
         return info, []
 
-    samples = select_point_samples(duration, key_ts, points, per_point)
+    frame_rate = (info.get("video") or {}).get("frame_rate") or 0.0
+    samples = select_point_samples(duration, key_ts, points, per_point, frame_rate)
     timestamps = [t for t, _ in samples]
     mode = config.frame_extract_mode
-    is_ts = "mpegts" in (info.get("format_name") or "")
-    frame_rate = (info.get("video") or {}).get("frame_rate") or 0.0
     key_set = set(key_ts)
     aligned = bool(key_ts) and all(t in key_set for t in timestamps)
 
     # ── 抽帧路由 ──
-    if is_ts and mode == "legacy":
-        # legacy：TS 单 pass 顺序解码（旧行为），配帧不齐回退逐帧
-        frames = _extract_frames_ts(video_path, samples, config, stop_event,
-                                    frame_rate, frame_vf=frame_vf) or []
-        if not frames:
-            frames = _extract_per_frame(video_path, samples, config, stop_event,
-                                        frame_vf=frame_vf, start_time=start_time)
-    elif is_ts:
-        # TS：逐帧
-        frames = _extract_per_frame(video_path, samples, config, stop_event,
-                                    frame_vf=frame_vf, start_time=start_time)
-    elif mode == "auto" and key_ts and aligned \
+    if mode == "auto" and key_ts and aligned \
             and not _concat_vulnerable(key_ts, timestamps, frame_rate):
         # auto：关键帧点位单进程多段，配帧不齐回退逐帧
         frames = _extract_frames_concat(video_path, samples, config, stop_event,
-                                        frame_rate, frame_vf=frame_vf) or []
+                                        frame_rate, frame_vf=frame_vf,
+                                        start_time=start_time) or []
         if not frames:
             frames = _extract_per_frame(video_path, samples, config, stop_event,
-                                         frame_vf=frame_vf, start_time=start_time)
+                                         frame_vf=frame_vf)
     else:
-        # per_frame / legacy 非TS / 兜底点位 / 成对关键帧：逐帧
+        # per_frame / 兜底点位 / 成对关键帧：逐帧
         frames = _extract_per_frame(video_path, samples, config, stop_event,
-                                     frame_vf=frame_vf, start_time=start_time)
+                                     frame_vf=frame_vf)
 
     if not stop_event.is_set():
         frames = preprocess_frames(frames)

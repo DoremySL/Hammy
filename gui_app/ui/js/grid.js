@@ -6,6 +6,7 @@ function loadFromResult(result, preserveScroll) {
   state.pending = result.pending || [];
   state.processed = result.processed || [];
   state.failed = result.failed || [];
+  state.stream = result.stream || [];
   state.roots = result.roots || [];
   state.adhoc_files = result.adhoc_files || [];
   if (preserveScroll) {
@@ -891,8 +892,10 @@ function updateStats() {
   if (hasSrc) {
     fp.style.display = '';
     fp.innerHTML = '文件管理 ' + ddArrow('chevron');
+    fp.classList.toggle('has-fix', (state.stream || []).length > 0);
   } else {
     fp.style.display = 'none';
+    fp.classList.remove('has-fix');
   }
 }
 

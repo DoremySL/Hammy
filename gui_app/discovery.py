@@ -28,7 +28,8 @@ from .constants import (
 from .env import FFMPEG_EXE, FFPROBE_EXE
 from batch_rename.env import SUBPROCESS_KWARGS
 from batch_rename.utils import path_stat
-from batch_rename.collector import VideoCollector, is_video_file
+from batch_rename.collector import VideoCollector, is_video_file, is_mpeg_ts
+from batch_rename.format_fix import STREAM_EXTS
 from batch_rename.dedup import DUPLICATES_DIR
 
 
@@ -183,8 +184,8 @@ def probe_video(path: str) -> Dict[str, Any]:
             _probe_loaded = True
         ent = _probe_mem.get(key)
         if ent and ent.get("mtime") == mtime and ent.get("size") == size \
-                and ent.get("duration") and "start_time" in ent:
-            return {k: ent.get(k) for k in ("duration", "start_time", "size", "resolution",
+                and ent.get("duration"):
+            return {k: ent.get(k) for k in ("duration", "size", "resolution",
                                             "codec", "audio_codec", "has_audio")}
     info = _ffprobe_video(path)
     if info:
@@ -259,10 +260,6 @@ def _ffprobe_video(path: str) -> Dict[str, Any]:
             except (TypeError, ValueError):
                 duration = 0
             try:
-                start_time = max(0.0, float(fmt.get("start_time", 0) or 0))
-            except (TypeError, ValueError):
-                start_time = 0.0
-            try:
                 size = int(fmt.get("size", 0))
             except (TypeError, ValueError):
                 size = 0
@@ -274,7 +271,7 @@ def _ffprobe_video(path: str) -> Dict[str, Any]:
                 codec = vs["codec_name"]
             audio_codec = astream.get("codec_name", "") if astream else ""
             has_audio = astream is not None
-            return {"duration": duration, "start_time": start_time, "size": size,
+            return {"duration": duration, "size": size,
                     "resolution": resolution, "codec": codec,
                     "audio_codec": audio_codec, "has_audio": has_audio}
         except Exception:
@@ -303,45 +300,40 @@ def invalidate_thumbnail(vid: str) -> None:
         pass
 
 
-def _run_frame_extract(path: str, ss: str, quality: int,
-                       vf: Optional[str] = None, start_time: float = 0.0) -> "subprocess.CompletedProcess":
-    """按 seek 抽一帧（JPEG bytes）：输入级 seek，ss 为绝对时间、按流时间扣除 start_time。"""
-    try:
-        ss_val = max(0.0, (float(ss) if ss else 0.0) - start_time)
-    except ValueError:
-        ss_val = 0.0
+def _run_frame_extract(path: str, ss: float, quality: int,
+                       vf: Optional[str] = None) -> "subprocess.CompletedProcess":
+    """按 seek 抽一帧（JPEG bytes）：ss 为内容相对时间。"""
     vf_args = ["-vf", vf] if vf else []
     cmd = [
         FFMPEG_EXE, "-y", "-nostats",
-        "-ss", f"{ss_val:.6f}", "-i", path,
+        "-ss", f"{ss:.6f}", "-i", path,
         "-vframes", "1", "-q:v", str(quality), *vf_args,
         "-f", "image2pipe", "-vcodec", "mjpeg", "-",
     ]
     return subprocess.run(cmd, capture_output=True, timeout=THUMB_TIMEOUT, **SUBPROCESS_KWARGS)
 
 
-def _thumb_seek_attempts(path: str, vid: str) -> Tuple[List[str], float]:
-    """取帧点位与流时间基：history 的 thumb_time 优先，其余取时长 10% 处逐级回退。"""
+def _thumb_seek_attempts(path: str, vid: str) -> List[float]:
+    """取帧点位：history 的 thumb_time 优先，其余取时长 10% 处逐级回退。"""
     try:
         info = probe_video(path)
         duration = int(info.get("duration") or 0)
-        start_time = float(info.get("start_time") or 0)
     except Exception:
-        duration, start_time = 0, 0.0
-    attempts = ["0"] if duration < 2 else [str(duration // 10), "1", "0"]
+        duration = 0
+    attempts = [0.0] if duration < 2 else [duration // 10, 1.0, 0.0]
     thumb_ss = _history_thumb_seconds(vid)
     if thumb_ss is not None:
-        attempts = [f"{thumb_ss:.3f}", *attempts]
-    return attempts, start_time
+        attempts = [thumb_ss, *attempts]
+    return attempts
 
 
 def generate_poster(path: str, vid: str) -> Optional[bytes]:
     """按 history thumb_time 抽全分辨率海报帧（JPEG bytes），失败回退默认取帧链。"""
     try:
-        attempts, start_time = _thumb_seek_attempts(path, vid)
+        attempts = _thumb_seek_attempts(path, vid)
         with _ffmpeg_semaphore:
             for ss in attempts:
-                result = _run_frame_extract(path, ss, 2, start_time=start_time)
+                result = _run_frame_extract(path, ss, 2)
                 if result.returncode == 0 and result.stdout and result.stdout[:2] == b'\xff\xd8':
                     return result.stdout
     except Exception:
@@ -379,12 +371,11 @@ def generate_thumbnail(path: str, vid: str, max_side: int = THUMB_MAX_SIDE) -> O
 
     # 第 3 级：ffmpeg 抽帧
     try:
-        attempts, start_time = _thumb_seek_attempts(path, vid)
+        attempts = _thumb_seek_attempts(path, vid)
         result = None
         with _ffmpeg_semaphore:
             for ss in attempts:
-                result = _run_frame_extract(path, ss, 5, f"scale={max_side}:-1",
-                                            start_time)
+                result = _run_frame_extract(path, ss, 5, f"scale={max_side}:-1")
                 if result.returncode == 0 and result.stdout and result.stdout[:2] == b'\xff\xd8':
                     break
         if result is not None and result.returncode == 0 and result.stdout \
@@ -468,11 +459,17 @@ def make_entry(path: str, info: Optional[Dict[str, Any]] = None,
     return entry
 
 
+def _is_stream_video(path: str) -> bool:
+    """流式封装（.ts/.mts/.m2ts 且内容为 MPEG-TS）：不进处理管线，走格式修复。"""
+    return Path(path).suffix.lower() in STREAM_EXTS and is_mpeg_ts(path)
+
+
 def scan_all() -> Dict[str, Any]:
-    """全量扫描：合并根 + 零散 + 失败目录。"""
+    """全量扫描：合并根 + 零散 + 失败目录；流式封装单列 stream 桶。"""
     done_paths, failed_paths, history_by_path = _build_history_path_index()
 
     pending: List[Dict[str, Any]] = []
+    stream: List[Dict[str, Any]] = []
     processed: List[Dict[str, Any]] = []
     failed: List[Dict[str, Any]] = []
     failed_norm: Set[str] = set()  # 已收录的失败视频归一化路径，用于 O(1) 去重
@@ -508,6 +505,8 @@ def scan_all() -> Dict[str, Any]:
             entry = make_entry(vp, info, "failed")
             failed.append(entry)
             failed_norm.add(norm)
+        elif _is_stream_video(vp):
+            stream.append(make_entry(vp, info, "stream"))
         else:
             pending.append(make_entry(vp, info, "pending"))
 
@@ -521,6 +520,7 @@ def scan_all() -> Dict[str, Any]:
     m = load_manifest()
     return {
         "pending": pending,
+        "stream": stream,
         "processed": processed,
         "failed": failed,
         "roots": m.get("roots", []),

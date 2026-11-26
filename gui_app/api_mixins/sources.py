@@ -396,16 +396,17 @@ class SourcesMixin:
             extensionless = format_fix.scan_extensionless(roots)
         except Exception as e:
             return {"error": f"扫描失败: {e}"}
-        ts_pending = []
-        for e in discovery.scan_all().get("pending", []):
-            if str(e.get("name", "")).lower().endswith(format_fix.STREAM_EXTS):
-                ts_pending.append({
-                    "path": e["path"], "name": e["name"], "dir": e["dir"],
-                    "size": e.get("size", 0),
-                    "size_str": _fmt_size(e.get("size", 0)),
-                })
-        return {"roots": len(roots), "extensionless": extensionless,
-                "ts_pending": ts_pending}
+        items: List[Dict[str, Any]] = []
+        for e in extensionless:
+            # 检出流式封装 → 直接转换
+            items.append({**e, "size_str": _fmt_size(e.get("size", 0)),
+                          "convert": bool(e.get("ok")) and e.get("ext") in format_fix.STREAM_EXTS})
+        for e in discovery.scan_all().get("stream", []):
+            items.append({"path": e["path"], "name": e["name"], "dir": e["dir"],
+                          "size": e.get("size", 0),
+                          "size_str": _fmt_size(e.get("size", 0)),
+                          "ok": True, "convert": True})
+        return {"roots": len(roots), "items": items}
 
     def apply_renames(self, paths: List[str]) -> Dict[str, Any]:
         if not isinstance(paths, (list, tuple)) or not paths:

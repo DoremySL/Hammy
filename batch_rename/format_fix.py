@@ -179,9 +179,10 @@ def _mp4_complete(path: str) -> bool:
 
 
 def _decodable(path: str) -> bool:
+    # null muxer 丢弃输出，避免二进制帧走文本管道
     r = _run([ffmpeg_tools.ffmpeg, "-v", "error", "-nostats",
               "-i", to_long_path(path), "-map", "0:v:0", "-frames:v", "1",
-              "-f", "rawvideo", "pipe:"], _VALIDATE_TIMEOUT_SEC)
+              "-f", "null", "-"], _VALIDATE_TIMEOUT_SEC)
     return r is not None and r.returncode == 0
 
 

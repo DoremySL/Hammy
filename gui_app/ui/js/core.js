@@ -74,7 +74,7 @@ function applyDisableAnimation(on) {
    全局状态
    ════════════════════════════════════════════════════════════ */
 const state = {
-  pending: [], processed: [], failed: [],
+  pending: [], processed: [], failed: [], stream: [],
   roots: [], adhoc_files: [],
   view: 'pending',
   hasAutoSwitched: false,
