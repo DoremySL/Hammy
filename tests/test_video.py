@@ -7,11 +7,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import unittest
 
 from batch_rename import video as video_mod
-from batch_rename.video import (select_timestamps, select_point_samples,
+from batch_rename.video import (select_point_samples,
                                 _parse_frame_rate, _parse_format,
                                 _anchor_keyframe_indices,
                                 _kf_from_csv_line, _point_regions,
                                 _probe_keyframes_intervals,
+                                _write_ffconcat_script,
                                 _PROBE_KEYFRAMES_TIMEOUT_SEC, probe_video)
 
 
@@ -50,24 +51,34 @@ class TestParseFrameRate(unittest.TestCase):
         self.assertEqual(_parse_frame_rate("0/0"), 0.0)
 
 
-class TestSelectTimestamps(unittest.TestCase):
-    def test_short_video(self):
-        self.assertEqual(select_timestamps(5.0, [], 6), [0.0, 2.5, 4.9])
+class TestSelectPointSamplesNoKeyframes(unittest.TestCase):
+    """无关键帧/空分区：同一套点位分区，补普通帧位置。"""
 
-    def test_short_video_with_keyframes(self):
-        self.assertEqual(select_timestamps(5.0, [0, 1, 2, 3, 4], 3), [0, 2, 4])
+    def test_per_point_one_uses_point_positions(self):
+        ts = [t for t, _ in select_point_samples(100.0, [], 5, 1)]
+        self.assertEqual([round(t, 3) for t in ts], [0.0, 25.0, 50.0, 75.0, 99.967])
 
-    def test_keyframes_enough(self):
-        self.assertEqual(select_timestamps(100.0, [0, 1, 2, 3, 4], 3), [0, 2, 4])
+    def test_per_point_multi_even_inside_region(self):
+        ts = [t for t, _ in select_point_samples(100.0, [], 5, 3)]
+        self.assertEqual([round(t, 2) for t in ts],
+                         [1.25, 2.5, 3.75, 22.5, 25.0, 27.5, 47.5, 50.0, 52.5,
+                          72.5, 75.0, 77.5, 96.25, 97.5, 98.75])
+        self.assertEqual([pi for _, pi in select_point_samples(100.0, [], 5, 3)],
+                         [0] * 3 + [1] * 3 + [2] * 3 + [3] * 3 + [4] * 3)
 
-    def test_keyframes_fewer(self):
-        self.assertEqual(select_timestamps(100.0, [1.0, 2.0], 5), [1.0, 2.0])
+    def test_mixed_regions_kf_and_fill(self):
+        s = select_point_samples(100.0, [1.0], 5, 1)
+        self.assertEqual([(round(t, 3), pi) for t, pi in s],
+                         [(1.0, 0), (25.0, 1), (50.0, 2), (75.0, 3), (99.967, 4)])
 
-    def test_duration_split(self):
-        self.assertEqual(select_timestamps(10.0, [], 3), [2.5, 5.0, 7.5])
+    def test_no_duration_uniform_over_keyframes(self):
+        self.assertEqual(select_point_samples(0.0, [2.0, 4.0, 6.0, 8.0], 3, 1),
+                         [(2.0, 0), (6.0, 1), (8.0, 2)])
+        self.assertEqual(select_point_samples(0.0, [2.0, 4.0], 3, 1),
+                         [(2.0, 0), (4.0, 1)])
 
-    def test_fallback_zero(self):
-        self.assertEqual(select_timestamps(0.0, [], 3), [0.0])
+    def test_no_duration_no_keyframes_first_frame(self):
+        self.assertEqual(select_point_samples(0.0, [], 3, 1), [(0.0, 0)])
 
 
 class TestAnchors(unittest.TestCase):
@@ -107,6 +118,22 @@ class TestProbeKeyframesIntervals(unittest.TestCase):
             self.assertEqual(
                 _probe_keyframes_intervals("Z:\\a.mkv", 100.0, 10,
                                            threading.Event()), [])
+
+    def test_start_time_converted_at_boundary(self):
+        # 非零 start_time：位置按 pts 换入，出口换回内容时间
+        out = b"101.442,K_\n103.442,K_\n"
+        specs = []
+
+        def fake_run(cmd, timeout, stop_event):
+            specs.append(cmd[cmd.index("-read_intervals") + 1])
+            return out, b""
+
+        with mock.patch.object(video_mod, "run_subprocess_with_cancel",
+                               side_effect=fake_run):
+            kf = _probe_keyframes_intervals("Z:\\a.ts", 90.0, 10, threading.Event(),
+                                            start_time=1.442)
+        self.assertEqual(specs, ["1.442%+90.000"])
+        self.assertEqual(kf, [100.0, 102.0])
 
     def _read_intervals(self, duration, points, anchors=None):
         specs = []
@@ -214,15 +241,34 @@ class TestSelectPointSamples(unittest.TestCase):
         ts = select_point_samples(100.0, kf, 3, 1)
         self.assertEqual(ts, [(0.0, 0), (50.5, 1), (99.0, 2)])
 
-    def test_empty_falls_back_to_duration_split(self):
-        ts = select_point_samples(100.0, [], 5, 3)
-        self.assertEqual([round(t, 1) for t, _ in ts], [16.7, 33.3, 50.0, 66.7, 83.3])
-        self.assertEqual([pi for _, pi in ts], [0, 1, 2, 3, 4])
-
     def test_short_video_points_do_not_collapse(self):
-        # 20s、5 点位：分区互斥，关键帧按最近点位归属
+        # 20s、5 点位：分区互斥，关键帧按最近点位归属；末分区无关键帧补普通帧位
         ts = select_point_samples(20.0, [0.0, 5.0, 10.0, 15.0], 5, 3)
-        self.assertEqual(ts, [(0.0, 0), (5.0, 1), (10.0, 2), (15.0, 3)])
+        self.assertEqual([(round(t, 3), pi) for t, pi in ts],
+                         [(0.0, 0), (5.0, 1), (10.0, 2), (15.0, 3),
+                          (18.125, 4), (18.75, 4), (19.375, 4)])
+
+
+class TestWriteFfconcatScript(unittest.TestCase):
+    def _read(self, path):
+        with open(path, encoding="utf-8") as f:
+            content = f.read()
+        Path(path).unlink()
+        return content
+
+    def test_plain_path(self):
+        script = _write_ffconcat_script(r"D:\a\b.mp4", [(10.0, 10.02)])
+        self.assertEqual(
+            self._read(script),
+            "ffconcat version 1.0\n"
+            "file 'D:\\a\\b.mp4'\n"
+            "inpoint 10.000000\noutpoint 10.020000\n")
+
+    def test_quote_in_path_escaped(self):
+        # 路径含 ' 需拼接转义
+        script = _write_ffconcat_script(r"D:\x\quote'video.mp4", [(0.0, 0.02)])
+        self.assertIn("file 'D:\\x\\quote'\\''video.mp4'",
+                      self._read(script))
 
 
 class TestProbeVideoSampling(unittest.TestCase):

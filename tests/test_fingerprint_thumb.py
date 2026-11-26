@@ -64,10 +64,18 @@ class TestFingerprintWindows(unittest.TestCase):
         pos = sim.WINDOW_POS[2] * 2000.0
         self.assertEqual(cmd[cmd.index("-ss") + 1], f"{pos:.3f}")
 
+    def test_window_positions_snapped_to_integer_seconds(self):
+        # pos 取整秒，对齐 fps=1 采样栅格
+        calls, fake_run = self._capture_run()
+        with mock.patch.object(sim, "run_subprocess_with_cancel", fake_run):
+            sim.fingerprint_windows("v.mp4", 160.7, (2,), threading.Event())
+        cmd = calls[0][0]
+        self.assertEqual(cmd[cmd.index("-ss") + 1], "80.000")
+
 
 class TestThumbSeekChain(unittest.TestCase):
     def _probe(self, **info):
-        base = {"duration": 1200, "start_time": 1.442, "size": 100}
+        base = {"duration": 1200, "size": 100}
         base.update(info)
         return base
 
@@ -75,25 +83,24 @@ class TestThumbSeekChain(unittest.TestCase):
         with mock.patch.object(discovery, "probe_video",
                                lambda p: self._probe()), \
              mock.patch.object(discovery, "_history_thumb_seconds", lambda vid: None):
-            attempts, st = discovery._thumb_seek_attempts("v.ts", "x")
-        self.assertEqual(st, 1.442)
-        self.assertEqual(attempts, ["120", "1", "0"])
+            attempts = discovery._thumb_seek_attempts("v.ts", "x")
+        self.assertEqual(attempts, [120, 1.0, 0.0])
 
     def test_attempts_thumbs_time_priority(self):
         with mock.patch.object(discovery, "probe_video",
                                lambda p: self._probe()), \
              mock.patch.object(discovery, "_history_thumb_seconds", lambda vid: 300.75):
-            attempts, st = discovery._thumb_seek_attempts("v.mkv", "x")
-        self.assertEqual(attempts, ["300.750", "120", "1", "0"])
+            attempts = discovery._thumb_seek_attempts("v.mkv", "x")
+        self.assertEqual(attempts, [300.75, 120, 1.0, 0.0])
 
     def test_attempts_tiny_duration(self):
         with mock.patch.object(discovery, "probe_video",
                                lambda p: self._probe(duration=1)), \
              mock.patch.object(discovery, "_history_thumb_seconds", lambda vid: None):
-            attempts, st = discovery._thumb_seek_attempts("v.ts", "x")
-        self.assertEqual(attempts, ["0"])
+            attempts = discovery._thumb_seek_attempts("v.ts", "x")
+        self.assertEqual(attempts, [0.0])
 
-    def test_input_seek_deducts_start_time(self):
+    def test_input_seek_content_time(self):
         captured = {}
 
         def fake_run(cmd, capture_output, timeout, **kw):
@@ -101,10 +108,10 @@ class TestThumbSeekChain(unittest.TestCase):
             return CompletedProcess(cmd, 0, b"\xff\xd8ok", b"")
 
         with mock.patch.object(discovery.subprocess, "run", fake_run):
-            r = discovery._run_frame_extract("v.ts", "120", 5, start_time=1.442)
+            r = discovery._run_frame_extract("v.ts", 120.0, 5)
         self.assertEqual(r.returncode, 0)
         self.assertEqual(captured["cmd"][captured["cmd"].index("-ss") + 1],
-                         f"{120.0 - 1.442:.6f}")
+                         f"{120.0:.6f}")
         self.assertLess(captured["cmd"].index("-ss"), captured["cmd"].index("-i"))
 
 

@@ -30,27 +30,30 @@ class TestSelectPointSamples(unittest.TestCase):
     def test_window_sampling_with_point_index(self):
         # duration=100, 5 点位 → positions [0,25,50,75,100], half=5
         s = select_point_samples(100.0, [1.0, 24.9, 51.0, 99.0], 5, 1)
-        self.assertEqual(s, [(1.0, 0), (24.9, 1), (51.0, 2), (99.0, 4)])
+        self.assertEqual(s, [(1.0, 0), (24.9, 1), (51.0, 2), (75.0, 3), (99.0, 4)])
 
-    def test_empty_window_skipped_no_padding(self):
-        # 点位 75 附近无关键帧 → 该点位跳过，不补帧
+    def test_empty_window_filled_with_frame_position(self):
+        # 点位 75 分区无关键帧 → 补点位位置
         s = select_point_samples(100.0, [1.0, 24.9, 51.0, 99.0], 5, 1)
-        self.assertFalse(any(pi == 3 for _, pi in s))
+        self.assertIn((75.0, 3), s)
 
     def test_per_point_one_takes_nearest(self):
-        # 点位 50 附近两个关键帧 → 取最近者
+        # 点位 50 附近两个关键帧 → 取最近者；空分区补点位位置
         s = select_point_samples(100.0, [45.0, 53.0], 3, 1)
-        self.assertEqual(s, [(53.0, 1)])
+        self.assertEqual([(round(t, 3), pi) for t, pi in s],
+                         [(0.0, 0), (53.0, 1), (99.967, 2)])
 
     def test_per_point_multi_uses_anchors(self):
         self.assertEqual(_anchor_keyframe_indices(4, 2), [0, 3])
         s = select_point_samples(100.0, [45.0, 46.5, 53.5, 55.0], 3, 2)
-        self.assertEqual(s, [(45.0, 1), (55.0, 1)])
+        self.assertEqual([(round(t, 3), pi) for t, pi in s],
+                         [(2.778, 0), (5.556, 0), (45.0, 1), (55.0, 1),
+                          (94.444, 2), (97.222, 2)])
 
     def test_boundary_belongs_to_later_point(self):
-        # 10.0 是点位 1/2 分区的边界 → 归后一个点位
+        # 10.0 是点位 1/2 分区的边界 → 归后一个点位；空分区补点位位置
         s = select_point_samples(10.0, [10.0], 3, 1)
-        self.assertEqual(s, [(10.0, 2)])
+        self.assertEqual(s, [(0.0, 0), (5.0, 1), (10.0, 2)])
 
     def test_dense_keyframes_stay_chronological(self):
         # 60s、10 点位、每 2s 一个关键帧：输出升序，且每个点位都有帧
@@ -61,16 +64,17 @@ class TestSelectPointSamples(unittest.TestCase):
         self.assertEqual(points, sorted(points))
         self.assertEqual(len(set(points)), 10)
 
-    def test_fallback_no_keyframes_pseudo_points(self):
+    def test_no_keyframes_fill_point_positions(self):
+        # 8s、5 点位：同套点位分区补普通帧位置，尾点内收防越过末帧
         s = select_point_samples(8.0, [], 5, 1)
-        self.assertEqual(s, [(0.0, 0), (4.0, 1), (7.9, 2)])
-        s = select_point_samples(100.0, [], 5, 1)
-        self.assertEqual([pi for _, pi in s], [0, 1, 2, 3, 4])
+        self.assertEqual([(round(t, 3), pi) for t, pi in s],
+                         [(0.0, 0), (2.0, 1), (4.0, 2), (6.0, 3), (7.967, 4)])
 
-    def test_fallback_when_all_windows_empty(self):
-        # 有关键帧但全部分区外 → 回退伪点位
+    def test_keyframes_outside_regions_fill_positions(self):
+        # 关键帧全部落在分区间隙 → 各分区补点位位置
         s = select_point_samples(100.0, [50.0], 2, 1)
-        self.assertEqual(s, [(50.0, 0)])
+        self.assertEqual([(round(t, 3), pi) for t, pi in s],
+                         [(0.0, 0), (99.967, 1)])
 
     def test_invariant_ascending_and_monotonic(self):
         s = select_point_samples(90.0, [2.0, 30.5, 60.0, 60.9, 89.0], 4, 1)
