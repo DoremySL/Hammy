@@ -106,11 +106,24 @@ class TestExtractRouting(unittest.TestCase):
         self.assertEqual(h.concat_calls, [])
         self.assertEqual(sorted(h.per_frame_calls), [25.0, 75.0])
 
-    def test_auto_partially_aligned_go_per_frame(self):
-        h = _RouterHarness(_META_MP4, [0.0, 50.0], [0.0, 61.7])
-        h.run(_make_cfg("auto"))
-        self.assertEqual(h.concat_calls, [])
+    def test_auto_partial_kf_concat_drops_fills(self):
+        # 有普通帧位置（fill）仍走 concat（只取关键帧样本）；concat 成功时 fill 不出帧
+        h = _RouterHarness(_META_MP4, [0.0, 50.0], [0.0, 61.7],
+                           concat_frames=_frames(0.0))
+        _, frames = h.run(_make_cfg("auto"))
+        self.assertEqual(len(h.concat_calls), 1)
+        self.assertEqual(h.concat_calls[0][0], [0.0])
+        self.assertEqual(h.per_frame_calls, [])
+        self.assertEqual(frames, [Frame(0.0, "F0", 0)])
+
+    def test_auto_concat_failure_falls_back_including_fills(self):
+        # concat 失败 → 整段逐帧兜底（此时 fill 位置一并提取）
+        h = _RouterHarness(_META_MP4, [0.0, 50.0], [0.0, 61.7],
+                           concat_frames=None)
+        _, frames = h.run(_make_cfg("auto"))
+        self.assertEqual(len(h.concat_calls), 1)
         self.assertEqual(sorted(h.per_frame_calls), [0.0, 61.7])
+        self.assertEqual(frames, [])
 
     def test_per_frame_mode_no_concat(self):
         h = _RouterHarness(_META_MP4, [0.0, 50.0], [0.0, 50.0])

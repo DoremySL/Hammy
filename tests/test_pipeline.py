@@ -11,7 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from batch_rename.ai import AnalyzeResult
 from batch_rename.config import Config
 from batch_rename.pipeline import (
-    _max_ai_seconds_per_video, AIWorker, BatchPipeline, TaskContext,
+    _max_ai_seconds_per_video, _all_queued, AIWorker, BatchPipeline, TaskContext,
+    ready_gate,
 )
 from batch_rename.stats import PipelineStats
 
@@ -26,6 +27,49 @@ class TestMaxAiSecondsPerVideo(unittest.TestCase):
     def test_zero_retries(self):
         cfg = Config(ai_timeout=30, retry_times=0)
         self.assertEqual(_max_ai_seconds_per_video(cfg), 40)
+
+
+class TestAllQueued(unittest.TestCase):
+    """closer 关闭谓词：交付且实际入队才算就绪（防 delivered 先于 put 的竞态）。"""
+
+    def _ctxs(self, n, aux=()):
+        return [TaskContext(f"C:/v{i}.mp4", i, aux_stages=set(aux)) for i in range(n)]
+
+    def test_delivered_without_queued_blocks_close(self):
+        # 竞态场景：delivered 已置位、尚未入队，closer 不得关闭
+        ctxs = self._ctxs(1)
+        ctxs[0].complete_stage("frames")
+        self.assertFalse(_all_queued(ctxs))
+
+    def test_all_delivered_and_queued_closes(self):
+        ctxs = self._ctxs(2)
+        for c in ctxs:
+            c.complete_stage("frames")
+            c.queued = True
+        self.assertTrue(_all_queued(ctxs))
+
+    def test_undelivered_blocks_close(self):
+        ctxs = self._ctxs(2)
+        ctxs[0].complete_stage("frames")
+        ctxs[0].queued = True
+        self.assertFalse(_all_queued(ctxs))
+
+
+class TestReadyGate(unittest.TestCase):
+    """AI 前置就绪门：并发调用单飞执行 ensure，结果缓存后恒通过。"""
+
+    def test_single_flight_and_cache(self):
+        calls = []
+        gate = ready_gate(lambda ev: calls.append(1) or True, threading.Event())
+        results = []
+        threads = [threading.Thread(target=lambda: results.append(gate()))
+                   for _ in range(3)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(2)
+        self.assertEqual(results, [True, True, True])
+        self.assertEqual(len(calls), 1)
 
 
 def _make_worker(config=None, stats=None, stop_event=None):
@@ -221,6 +265,44 @@ class TestBatchPipelineDiscover(unittest.TestCase):
         self.assertEqual(stats.ai_failure_threshold, 5)
         # 失败窗口下限 = 熔断器基础窗口
         self.assertGreaterEqual(stats.ai_window_sec, 60.0)
+
+
+class TestAIWorkerLlamaGate(unittest.TestCase):
+    """AI 前置就绪门：失败停止整批（任务计取消），通过则正常处理。"""
+
+    def _worker_with_tasks(self, gate, n_tasks=2):
+        st = PipelineStats(total=n_tasks)
+        ev = threading.Event()
+        q = queue.Queue()
+        for i in range(n_tasks):
+            ctx = TaskContext(f"C:/v{i}.mp4", i)
+            ctx.frames = ["b64"]
+            q.put(ctx)
+        q.put(None)
+        return AIWorker(None, Config(), st, q, ev, llama_gate=gate), st, ev
+
+    def test_gate_failure_stops_and_cancels(self):
+        ensure_calls = []
+        gate = ready_gate(lambda ev: ensure_calls.append(1) or False,
+                          threading.Event())
+        worker, stats, ev = self._worker_with_tasks(gate)
+        worker.run()
+        self.assertTrue(ev.is_set())
+        self.assertEqual(len(ensure_calls), 1)  # 单飞：整批只等待一次
+        self.assertEqual(stats.cancelled, 2)    # 首任务 + 排空剩余
+        self.assertIsNotNone(stats.fatal_error)  # on_done 据此返回 ok:False
+
+    def test_gate_pass_processes(self):
+        gate = ready_gate(lambda ev: True, threading.Event())
+        worker, stats, ev = self._worker_with_tasks(gate)
+        result = AnalyzeResult("标题", "剧情", ["t"], 0, "", "")
+        with mock.patch("batch_rename.pipeline.analyze_frames", return_value=result), \
+             mock.patch("batch_rename.pipeline.build_new_stem", return_value="新名"), \
+             mock.patch("batch_rename.pipeline.rename_video",
+                        return_value=("C:/新名.mp4", "ok")):
+            worker.run()
+        self.assertEqual(stats.ok, 2)
+        self.assertIsNone(stats.fatal_error)
 
 
 if __name__ == "__main__":

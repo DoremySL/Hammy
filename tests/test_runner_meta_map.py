@@ -2,6 +2,7 @@
 import json
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -9,7 +10,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from gui_app.workspace_paths import stable_id
-from gui_app.runner import PipelineRunner
+from gui_app.runner import PipelineRunner, _asr_missing_list
 
 EXP = {"enabled": True, "max_chars": 800, "inject_timestamps": False}
 
@@ -75,6 +76,39 @@ class TestBuildTranscribeMetaMap(unittest.TestCase):
         self._write_srt(vp, "")
         r = self._make_runner()._build_transcribe_meta_map([vp], EXP)
         self.assertEqual(r, {})
+
+
+class TestAsrMissingList(unittest.TestCase):
+    """runner._asr_missing_list：缺 SRT 并行探针 + 无音轨过滤。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.srt_dir = Path(self._tmp.name) / "srt"
+        self.srt_dir.mkdir()
+
+    def test_filter_and_srt_skip(self):
+        a, b, c, d = "C:/a.mp4", "C:/b.mp4", "C:/c.mp4", "C:/d.mp4"
+        (self.srt_dir / f"{stable_id(b)}.srt").write_text("1\nx\n", encoding="utf-8")
+        probes = {a: {"has_audio": True}, c: {"has_audio": False}, d: {}}
+
+        def fake_probe(vp):
+            return probes[vp]
+
+        with mock.patch("gui_app.discovery.probe_video", side_effect=fake_probe) as pv:
+            out = _asr_missing_list([a, b, c, d], self.srt_dir)
+        # b 已有 SRT 不探针；c 无音轨过滤；d 探针失败降级保留
+        self.assertEqual(out, [a, d])
+        self.assertEqual({m.args[0] for m in pv.call_args_list}, {a, c, d})
+
+    def test_stop_returns_empty(self):
+        """停止信号置位：提前退出，不收集结果。"""
+        stop = threading.Event()
+        stop.set()
+        with mock.patch("gui_app.discovery.probe_video",
+                        return_value={"has_audio": True}):
+            out = _asr_missing_list(["C:/a.mp4", "C:/b.mp4"], self.srt_dir, stop)
+        self.assertEqual(out, [])
 
 
 if __name__ == "__main__":

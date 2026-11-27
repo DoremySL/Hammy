@@ -221,19 +221,18 @@ class TestSelectPointSamples(unittest.TestCase):
     """分区选帧：每个点位在自己的分区内最多取 per_point 个关键帧。"""
 
     def test_each_position_contributes(self):
-        # 点位 0/50/100，各分区内关键帧充足 → 每点 2 帧
+        # 点位 0/50/100，各分区内关键帧充足 → 每点最多 2 帧；100 与 99 同秒被 1s 间隔过滤
         kf = [0.0, 1.5, 49.0, 50.5, 52.0, 99.0, 100.0]
         ts = select_point_samples(100.0, kf, 3, 2)
-        self.assertEqual(ts, [(0.0, 0), (1.5, 0), (49.0, 1), (52.0, 1),
-                              (99.0, 2), (100.0, 2)])
+        self.assertEqual(ts, [(0.0, 0), (1.5, 0), (49.0, 1), (52.0, 1), (99.0, 2)])
 
     def test_cluster_does_not_steal_other_positions(self):
-        # 首窗 6 个密集关键帧 + 其余各窗 2 个：5 个点位各自出帧
+        # 首窗密集关键帧经 1s 间隔过滤后隔一取一 + 其余各窗 2 个：5 个点位各自出帧
         kf = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 49.0, 51.0, 99.0, 101.0, 149.0, 151.0, 199.0]
         ts = select_point_samples(200.0, kf, 5, 2)
         near = {p: [t for t, _ in ts if abs(t - p) <= 5] for p in (0, 50, 100, 150, 200)}
         self.assertTrue(all(near[p] for p in near), f"有点位没帧: {near}")
-        self.assertEqual(ts, [(0.0, 0), (5.0, 0), (49.0, 1), (51.0, 1), (99.0, 2),
+        self.assertEqual(ts, [(0.0, 0), (4.0, 0), (49.0, 1), (51.0, 1), (99.0, 2),
                               (101.0, 2), (149.0, 3), (151.0, 3), (199.0, 4)])
 
     def test_per_point_one_nearest_to_position(self):
@@ -247,6 +246,18 @@ class TestSelectPointSamples(unittest.TestCase):
         self.assertEqual([(round(t, 3), pi) for t, pi in ts],
                          [(0.0, 0), (5.0, 1), (10.0, 2), (15.0, 3),
                           (18.125, 4), (18.75, 4), (19.375, 4)])
+
+    def test_gap_filter_falls_back_to_fill(self):
+        # 20s/3 点位相邻分区共享边界：区域 1 唯一关键帧与 4.9 间隔不足 1s → 被过滤回退普通帧位
+        ts = select_point_samples(20.0, [4.9, 5.2], 3, 2)
+        self.assertEqual([(round(t, 3), pi) for t, pi in ts],
+                         [(4.9, 0), (8.333, 1), (11.667, 1),
+                          (16.667, 2), (18.333, 2)])
+
+    def test_no_duration_gap_filter(self):
+        # duration 缺失：关键帧先经 1s 间隔过滤再分配点位
+        self.assertEqual(select_point_samples(0.0, [1.0, 1.5, 3.0], 3, 1),
+                         [(1.0, 0), (3.0, 1)])
 
 
 class TestWriteFfconcatScript(unittest.TestCase):

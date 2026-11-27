@@ -1,4 +1,6 @@
 import sys
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
@@ -111,6 +113,110 @@ class TestBuildEngineConfigOverride(unittest.TestCase):
             eng = runner.build_engine_config(c)
         self.assertEqual(eng.model, "remote-model")
         self.assertEqual(eng.base_url, "https://remote/v1")
+
+    def test_explicit_override_wins(self):
+        """显式传入 override（与启动计划同源）时不读 ai_override 快照。"""
+        from gui_app import runner
+        c = _default_config()
+        c["ai"] = {"model": "remote-model", "base_url": "https://remote/v1", "api_key": "sk-x"}
+        ov = {"model": "model", "api_key": "not-needed",
+              "base_url": "http://127.0.0.1:9999/v1", "ai_workers": 2}
+        with mock.patch("gui_app.llama_integration.ai_override") as ao, \
+             mock.patch("gui_app.runner.prompts.get_active",
+                        return_value={"preset": {}, "prompt": "p", "system_prompt": "s"}):
+            eng = runner.build_engine_config(c, llama_override=ov)
+        ao.assert_not_called()
+        self.assertEqual(eng.base_url, "http://127.0.0.1:9999/v1")
+        self.assertEqual(eng.ai_workers, 2)
+        self.assertEqual(eng.llama_slots, 2)
+
+
+class TestLaunchPlan(unittest.TestCase):
+    """llama_launch_plan：override 从启动参数派生，配置与启动共用同一份。"""
+
+    @contextmanager
+    def _patched(self, status, target="C:/m.gguf", params=None):
+        from gui_app.api_mixins.experimental import ExperimentalMixin
+        api = ExperimentalMixin()
+        with mock.patch("gui_app.api_mixins.experimental.load_llama_config",
+                        return_value={"enabled": True}), \
+             mock.patch("gui_app.llama_cpp.get_status", return_value=status), \
+             mock.patch.object(api, "_llama_autostart_target", return_value=target), \
+             mock.patch.object(api, "_llama_autostart_params",
+                               return_value=params or {"host": "127.0.0.1",
+                                                       "port": 9999, "parallel": 2}):
+            yield api
+
+    def test_override_from_params(self):
+        with self._patched({"ready": True, "running": False}) as api:
+            plan = api.llama_launch_plan()
+        self.assertEqual(plan["target"], "C:/m.gguf")
+        self.assertEqual(plan["override"], {
+            "model": "model", "api_key": "not-needed",
+            "base_url": "http://127.0.0.1:9999/v1", "ai_workers": 2})
+        self.assertFalse(plan["already_running"])
+
+    def test_running_port_wins(self):
+        with self._patched({"ready": True, "running": True,
+                            "starting": False, "port": 7777}) as api:
+            plan = api.llama_launch_plan()
+        self.assertTrue(plan["already_running"])
+        self.assertEqual(plan["override"]["base_url"], "http://127.0.0.1:7777/v1")
+
+    def test_disabled_returns_none(self):
+        with mock.patch("gui_app.api_mixins.experimental.load_llama_config",
+                        return_value={"enabled": False}):
+            from gui_app.api_mixins.experimental import ExperimentalMixin
+            self.assertIsNone(ExperimentalMixin().llama_launch_plan())
+
+
+class TestLlamaStartAndWait(unittest.TestCase):
+    """llama_start_and_wait：按 plan 参数启动（不重新解析），状态判定就绪。"""
+
+    def _api(self):
+        from gui_app.api_mixins.experimental import ExperimentalMixin
+        return ExperimentalMixin()
+
+    @staticmethod
+    def _plan(running=False):
+        return {"target": "C:/m.gguf",
+                "params": {"host": "127.0.0.1", "port": 9999, "parallel": 2},
+                "already_running": running,
+                "override": {"model": "model", "api_key": "not-needed",
+                             "base_url": "http://127.0.0.1:9999/v1", "ai_workers": 2}}
+
+    def test_launch_with_plan_params_and_record(self):
+        api = self._api()
+        with mock.patch("gui_app.llama_cpp.launch",
+                        return_value={"ok": True, "model": "C:/m.gguf"}) as lp, \
+             mock.patch("gui_app.api_mixins.experimental._record_last_model") as rec, \
+             mock.patch("gui_app.llama_cpp.get_status",
+                        return_value={"running": True, "starting": False}):
+            ok = api.llama_start_and_wait(self._plan(), threading.Event())
+        self.assertTrue(ok)
+        lp.assert_called_once_with(
+            "C:/m.gguf", {"host": "127.0.0.1", "port": 9999, "parallel": 2},
+            log_fn=mock.ANY, server_log_fn=mock.ANY)
+        rec.assert_called_once_with("C:/m.gguf")
+
+    def test_launch_failure_returns_false(self):
+        api = self._api()
+        with mock.patch("gui_app.llama_cpp.launch",
+                        return_value={"ok": False, "error": "boom"}), \
+             mock.patch("gui_app.llama_cpp.get_status",
+                        return_value={"running": False, "starting": False,
+                                      "launch_failed": "boom"}):
+            ok = api.llama_start_and_wait(self._plan(), threading.Event())
+        self.assertFalse(ok)
+
+    def test_already_running_skips_launch(self):
+        api = self._api()
+        with mock.patch("gui_app.llama_cpp.launch") as lp, \
+             mock.patch("gui_app.llama_cpp.get_status",
+                        return_value={"running": True, "starting": False}):
+            ok = api.llama_start_and_wait(self._plan(running=True), threading.Event())
+        self.assertTrue(ok)
+        lp.assert_not_called()
 
 
 class TestLaunchParallelSnapshot(unittest.TestCase):

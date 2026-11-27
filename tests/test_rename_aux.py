@@ -2,6 +2,7 @@
 import queue
 import sys
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -144,6 +145,28 @@ class _PipelineStub:
                 self.tagger_queue.put(c)
 
 
+class _FakeStream:
+    """可注入结果的引擎替身：send 记录请求，try_next_result 弹出已注入结果。"""
+
+    def __init__(self):
+        self.broken = False
+        self.requests = []
+        self.ready = []
+
+    def send(self, item):
+        self.requests.append(item["index"])
+        return True
+
+    def try_next_result(self):
+        return self.ready.pop(0) if self.ready else None
+
+    def next_result(self):
+        return self.try_next_result()
+
+    def close(self):
+        pass
+
+
 class TestTaggerInjectWorker(unittest.TestCase):
     def _pipeline(self, vps):
         return _PipelineStub(vps)
@@ -211,6 +234,88 @@ class TestTaggerInjectWorker(unittest.TestCase):
             w.run(pipe)
         sa.assert_not_called()  # 停止信号先于主循环，引擎零开销
         self.assertFalse(any(c.stage_pending("tagger") for c in pipe.contexts))
+
+    def test_all_cached_skips_engine(self):
+        """tagger 阶段全部预完成（已有结果）时不启动引擎。"""
+        pipe = self._pipeline(["C:/a.mp4"])
+        for c in pipe.contexts:
+            c.complete_stage("tagger")  # runner 预完成
+        w = TaggerInjectWorker(threading.Event(), lambda lv, m: None,
+                               threshold=0.75, general_count=15, save_fn=lambda r: None)
+        with mock.patch("gui_app.tagger.load_term_library_map", return_value=None), \
+             mock.patch("gui_app.tagger.start_analyze_stream") as sa:
+            w.run(pipe)
+        sa.assert_not_called()
+
+    def test_drain_while_queue_empty_relieves_sem_deadlock(self):
+        """aux 额度占满导致队列空等时，仍收取已就绪结果并交付（解除互等闭环）。"""
+        pipe = self._pipeline(["C:/a.mp4", "C:/b.mp4"])
+        pipe.producer_done.clear()  # 模拟下个视频被 aux 额度卡住、producer 未收尾
+        stream = _FakeStream()
+        saved = {}
+        w = TaggerInjectWorker(pipe.stop_event, lambda lv, m: None,
+                               threshold=0.75, general_count=15, save_fn=saved.update)
+        t = threading.Thread(target=w.run, args=(pipe,), daemon=True)
+        with mock.patch("gui_app.tagger.load_term_library_map", return_value=None), \
+             mock.patch("gui_app.tagger.start_analyze_stream", return_value=stream):
+            t.start()
+            deadline = time.time() + 5
+            while len(stream.requests) < 2 and time.time() < deadline:
+                time.sleep(0.02)
+            self.assertEqual(len(stream.requests), 2)  # a/b 均已 send，队列已空
+            stream.ready.append({"index": 0, "name": "a.mp4", "character_tags": [],
+                                 "ip_tags": [], "general_tags": []})
+            stream.ready.append({"index": 1, "name": "b.mp4", "character_tags": [],
+                                 "ip_tags": [], "general_tags": []})
+            deadline = time.time() + 5
+            while not all(c.delivered for c in pipe.contexts) and time.time() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(all(c.delivered for c in pipe.contexts),
+                            "空等期间未收取已就绪结果（互等闭环未解除）")
+            pipe.stop_event.set()
+            t.join(5)
+        self.assertFalse(t.is_alive())
+        self.assertEqual(len(saved), 2)
+
+    def test_queue_empty_spin_without_engine_no_crash(self):
+        """引擎启动失败且队列空转（producer 未收尾）时不崩溃，停止后兜底终态。"""
+        pipe = self._pipeline(["C:/a.mp4"])
+        pipe.producer_done.clear()
+        w = TaggerInjectWorker(pipe.stop_event, lambda lv, m: None,
+                               threshold=0.75, general_count=15, save_fn=lambda r: None)
+        t = threading.Thread(target=w.run, args=(pipe,), daemon=True)
+        with mock.patch("gui_app.tagger.load_term_library_map", return_value=None), \
+             mock.patch("gui_app.tagger.start_analyze_stream", return_value=None):
+            t.start()
+            time.sleep(0.3)  # 空转若干轮（Empty 分支 stream None 守卫）
+            pipe.stop_event.set()
+            t.join(5)
+        self.assertFalse(t.is_alive())
+        self.assertFalse(any(c.stage_pending("tagger") for c in pipe.contexts))
+
+    def test_stop_collects_ready_results(self):
+        """停止时引擎已算完的结果照常记录落盘（下次复用，不重推理）。"""
+        pipe = self._pipeline(["C:/a.mp4"])
+        pipe.producer_done.clear()
+        stream = _FakeStream()
+        saved = {}
+        w = TaggerInjectWorker(pipe.stop_event, lambda lv, m: None,
+                               threshold=0.75, general_count=15, save_fn=saved.update)
+        t = threading.Thread(target=w.run, args=(pipe,), daemon=True)
+        with mock.patch("gui_app.tagger.load_term_library_map", return_value=None), \
+             mock.patch("gui_app.tagger.start_analyze_stream", return_value=stream):
+            t.start()
+            deadline = time.time() + 5
+            while len(stream.requests) < 1 and time.time() < deadline:
+                time.sleep(0.02)
+            self.assertEqual(len(stream.requests), 1)  # a 已 send
+            pipe.stop_event.set()
+            stream.ready.append({"index": 0, "name": "a.mp4", "character_tags": [],
+                                 "ip_tags": [], "general_tags": []})
+            t.join(5)
+        self.assertFalse(t.is_alive())
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[stable_id("C:/a.mp4")]["error"], None)
 
 
 class TestPipelineAuxCoordination(unittest.TestCase):

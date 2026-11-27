@@ -54,6 +54,16 @@ class TestScanStreamBucket(unittest.TestCase):
             self.assertTrue(discovery._is_stream_video(str(ts)))
             self.assertFalse(discovery._is_stream_video(str(Path(root, "a.txt"))))
 
+    def test_processable_videos_excludes_stream(self):
+        # 去重/相似等处理型扫描不收流式封装
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "a.mp4").write_bytes(b"junk")
+            Path(root, "b.ts").write_bytes(_mpegts())
+            with mock.patch.object(discovery, "load_manifest",
+                                   lambda: {"roots": [root], "adhoc_files": []}):
+                names = [Path(v).name for v in discovery.processable_videos()]
+        self.assertEqual(names, ["a.mp4"])
+
 
 if __name__ == "__main__":
     unittest.main()

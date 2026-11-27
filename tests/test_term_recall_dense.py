@@ -1,5 +1,7 @@
 """向量召回层测试：纯向量召回 / 阈值过滤 / top_n 截断 / 失败跳过第二轮 / 惰性构建与预热。"""
 import sys
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -47,6 +49,23 @@ class FakeDense:
 
 def _enh(dense=None, **kw):
     return TermRecall(ITEMS, mode="enhanced", dense=dense, **kw)
+
+
+class _GateDense:
+    """build_index 阻塞到 gate 放行的后端（模拟后台预热未完成）。"""
+
+    def __init__(self, gate: threading.Event):
+        self.gate = gate
+        self.build_count = 0
+        self.search_count = 0
+
+    def build_index(self, items):
+        self.gate.wait(5)
+        self.build_count += 1
+
+    def search(self, parts, top_k=64):
+        self.search_count += 1
+        return [{"idx": 0, "score": 0.9}]
 
 
 class TestDenseRecall(unittest.TestCase):
@@ -139,6 +158,69 @@ class TestDenseRecall(unittest.TestCase):
         self.assertFalse(tr.has_dense)
         section, kws = tr.merged_injection({"filename": "【海边】漫步"}, [])
         self.assertEqual(kws, ["海边"])
+
+
+class TestBackgroundWarmup(unittest.TestCase):
+    """预热后台化：预热未完成时第二轮召回等待构建完成，而非静默跳过。"""
+
+    def test_recall_dense_waits_for_warmup(self):
+        gate = threading.Event()
+        dense = _GateDense(gate)
+        tr = _enh(dense)
+        threading.Thread(target=tr.warmup_dense, daemon=True).start()
+        done = threading.Event()
+        out = {}
+
+        def query():
+            out["recall"] = tr.recall_dense({"plot": "海边"})
+            done.set()
+
+        threading.Thread(target=query, daemon=True).start()
+        done.wait(0.5)
+        self.assertFalse(done.is_set())  # 预热未完成：等锁阻塞
+        gate.set()
+        self.assertTrue(done.wait(2))
+        self.assertEqual([c["keyword"] for c in out["recall"]], ["海边"])
+        self.assertEqual(dense.build_count, 1)  # 并发路径仍只构建一次
+
+    def test_stopped_skips_build_and_search(self):
+        """停止信号已置位：直接返回 []，不构建也不检索。"""
+        dense = _GateDense(threading.Event())
+        tr = _enh(dense)
+        stop = threading.Event()
+        stop.set()
+        self.assertEqual(tr.recall_dense({"plot": "海边"}, stop_event=stop), [])
+        self.assertEqual(dense.build_count, 0)
+        self.assertEqual(dense.search_count, 0)
+
+    def test_stop_during_lock_wait_gives_up(self):
+        """锁等待中收到停止：立即放弃本轮（不构建不检索），预热线程不受影响。"""
+        gate = threading.Event()
+        dense = _GateDense(gate)
+        tr = _enh(dense)
+        warm = threading.Thread(target=tr.warmup_dense, daemon=True)
+        warm.start()
+        time.sleep(0.1)  # 让预热线程持锁进入构建等待
+        stop = threading.Event()
+        done = threading.Event()
+        out = {}
+
+        def query():
+            out["recall"] = tr.recall_dense({"plot": "海边"}, stop_event=stop)
+            done.set()
+
+        threading.Thread(target=query, daemon=True).start()
+        done.wait(0.5)
+        self.assertFalse(done.is_set())  # 正常在锁上等待
+        stop.set()
+        self.assertTrue(done.wait(2))
+        self.assertEqual(out["recall"], [])
+        self.assertEqual(dense.build_count, 0)  # 预热仍在等待 gate，未完成构建
+        self.assertEqual(dense.search_count, 0)
+        gate.set()  # 释放预热线程：其可自然完成构建并退出
+        warm.join(2)
+        self.assertFalse(warm.is_alive())
+        self.assertEqual(dense.build_count, 1)
 
 
 if __name__ == "__main__":

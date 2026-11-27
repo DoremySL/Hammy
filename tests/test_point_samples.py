@@ -157,13 +157,13 @@ class TestDedupPointFrames(unittest.TestCase):
     def _f(self, ts, pi):
         return Frame(ts, "", pi)
 
-    def test_same_point_similar_dropped(self):
+    def test_same_point_similar_dropped_cross_point_kept(self):
         sig = bytes([10]) * 1024
         items = [(self._f(0.0, 0), 0, sig),
                  (self._f(1.0, 0), 0, sig),
                  (self._f(2.0, 1), 0, sig)]
         out = _dedup_point_frames(items)
-        # 同点位第二条被删，跨点位同签名保留
+        # 同点位第二条被删；跨点位同签名保留（画面未变化是有效信息）
         self.assertEqual([f.ts for f in out], [0.0, 2.0])
 
     def test_dhash_prefilter_keeps_distinct(self):

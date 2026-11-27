@@ -16,9 +16,9 @@ AI模型（本地或云端均可）， 自动生成标题、剧情描述与标�
 
 - **NFO 生成**：生成包含 title / plot / tags / 时长 / 分辨率 / 编码 / 音轨等信息的 `movie` XML（Kodi/Emby/Jellyfin 兼容），可根据需要导出到视频目录。
 
-- **transcribe.cpp**：转写语音，注入提示词辅助AI理解，也可调用 AI 翻译导出中文字幕；
+- **可选transcribe.cpp**：转写语音，注入提示词辅助AI理解，也可调用 AI 翻译导出中文字幕；
 
-- **Hammy-tagger**：识别角色、作品/IP 与 General 标签，辅助检索、分类、重命名。
+- **可选Hammy-tagger**：识别角色、作品/IP 与 General 标签，辅助检索、分类、重命名。
 
 - **视频去重**：快速排除完全相同副本（非删除，可找回），可选基于时长预筛 + 分阶段指纹比对排除相似版本。
 
@@ -101,7 +101,9 @@ pip install openai pywebview pystray
 
 ## Hammy-tagger 与词条检索
 
-Hammy-tagger仅会显示与使用词条检索内`Hammy-tagger`与`Hammy-tagger-G`内已有的标签，有约3000个隐藏标签，需要的话可浏览config.json手动添加进这两个组中。
+Hammy-tagger训练数据集大量使用了Danbooru素材，其中包含NSFW标签，输出结果也可能包含。
+
+应用仅会显示与使用词条检索内`Hammy-tagger`与`Hammy-tagger-G`两个分组内已有的标签，有约3000个模型输出但应用不显示的隐藏标签，需要的话可浏览config.json手动添加进这两个组中，当然也可以让ai配合网上的D站标签数据库生成待翻译与描述的json导入。
 
 ---
 

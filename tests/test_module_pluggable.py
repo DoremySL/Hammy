@@ -4,6 +4,7 @@ import json
 import shutil
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from unittest import mock
 
@@ -12,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import unittest
 
 from gui_app.config_store import _default_config, _tagger_defaults, _transcribe_defaults
+from gui_app.api_mixins.experimental import _llama_settle
 
 
 def _cfg(**over):
@@ -132,6 +134,84 @@ class TestSetModuleConfig(unittest.TestCase):
             r = api.set_tagger_config(None)
         self.assertEqual(r, {"ok": True})
         up.assert_called_once()
+
+
+class TestLlamaSettle(unittest.TestCase):
+    """_llama_settle：以服务状态判定就绪（不信任单次启动返回值）。"""
+
+    def test_starting_settles_to_ready(self):
+        statuses = iter([
+            {"running": True, "starting": True, "launch_failed": None},
+            {"running": True, "starting": False, "launch_failed": None},
+        ])
+        with mock.patch("gui_app.llama_cpp.get_status",
+                        side_effect=lambda: next(statuses)):
+            ok = _llama_settle(threading.Event())
+        self.assertTrue(ok)
+
+    def test_launch_failed_returns_false(self):
+        statuses = iter([{"running": False, "starting": False,
+                          "launch_failed": "boom"}])
+        with mock.patch("gui_app.llama_cpp.get_status",
+                        side_effect=lambda: next(statuses)):
+            ok = _llama_settle(threading.Event())
+        self.assertFalse(ok)
+
+    def test_stopped_returns_false(self):
+        stop = threading.Event()
+        stop.set()
+        self.assertFalse(_llama_settle(stop))
+
+
+class TestTranscribeVideosProbe(unittest.TestCase):
+    """_transcribe_videos：无音频视频并行探针过滤（保序）+ 停止提前退出。"""
+
+    def _api(self):
+        from gui_app.api_mixins.experimental import ExperimentalMixin
+        return ExperimentalMixin()
+
+    def test_probe_filter_keeps_order(self):
+        vids = ["v1", "v2", "v3"]
+        paths = ["C:/a.mp4", "C:/b.mp4", "C:/c.mp4"]
+        probes = {"C:/a.mp4": {"has_audio": True},
+                  "C:/b.mp4": {"has_audio": False},
+                  "C:/c.mp4": {}}
+        batch = {"ok": True, "per_video": [
+            {"ok": True, "srt": "1\nx --> y\n第一段", "language": "ja"},
+            {"ok": True, "srt": "1\nx --> y\n第三段", "language": "ja"},
+        ]}
+
+        def fake_batch(paths, on_video_done=None, on_log=None, stop_event=None):
+            return batch
+
+        api = self._api()
+        with mock.patch("gui_app.discovery.probe_video",
+                        side_effect=lambda p: probes[p]), \
+             mock.patch("gui_app.transcribe_cpp.get_current_model", return_value="m"), \
+             mock.patch("gui_app.transcribe_cpp.run_transcription_batch",
+                        side_effect=fake_batch) as rb, \
+             mock.patch.object(api, "_save_transcribe_srt"):
+            r = api._transcribe_videos(vids, paths)
+        # b 无音频被跳过；a/c 转写结果按 vid_list 顺序对齐 per_video 索引
+        rb.assert_called_once()
+        self.assertEqual(rb.call_args[0][0], ["C:/a.mp4", "C:/c.mp4"])
+        self.assertEqual(r["results"]["v1"]["srt"], "1\nx --> y\n第一段")
+        self.assertEqual(r["results"]["v3"]["srt"], "1\nx --> y\n第三段")
+        self.assertEqual(r["skipped_ids"], ["v2"])
+        self.assertEqual((r["ok"], r["ok_count"], r["skipped"]), (True, 2, 1))
+
+    def test_stop_during_probe_aborts(self):
+        stop = threading.Event()
+        stop.set()
+        api = self._api()
+        with mock.patch("gui_app.discovery.probe_video",
+                        return_value={"has_audio": True}), \
+             mock.patch("gui_app.transcribe_cpp.run_transcription_batch") as rb, \
+             mock.patch("gui_app.api_mixins.experimental._gpu_stop_event", stop):
+            r = api._transcribe_videos(["v1"], ["C:/a.mp4"])
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["error"], "已停止")
+        rb.assert_not_called()
 
 
 class TestSaveConfigPlain(_WorkspaceTestCase):
