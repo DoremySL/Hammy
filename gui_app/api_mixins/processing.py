@@ -120,12 +120,19 @@ class ProcessingMixin:
                 except Exception as e:
                     js_pusher.push("onProcessDone", summary, {"error": str(e)})
 
+            # llama 集成：启动计划一次解析（配置与启动共用）；就绪门在 AI 阶段前等待
+            from ..llama_integration import is_active as llama_integration_active
+            plan = self.llama_launch_plan() if llama_integration_active() else None
+
             return self._runner.run(
                 paths=paths,
                 on_log=_on_log,
                 on_progress=_on_progress,
                 on_file_done=_on_file_done,
                 on_done=_on_done,
+                llama_ensure=(lambda stop: self.llama_start_and_wait(plan, stop))
+                             if plan else None,
+                llama_override=plan["override"] if plan else None,
             )
 
     def stop(self) -> Dict[str, Any]:

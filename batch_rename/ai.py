@@ -393,7 +393,8 @@ def _refine_round(client: OpenAIClient, model: str, messages: list,
         "filename": " ".join(x for x in (Path(video_path).stem, container_title) if x),
         "aux": extra_meta,
     }
-    candidates = term_recall.recall_dense(parts, exclude=literal_keywords)
+    candidates = term_recall.recall_dense(parts, exclude=literal_keywords,
+                                          stop_event=stop_event)
     if stop_event.is_set():
         return AnalyzeResult("", "", [], 0, "已取消", "cancel")
     if not candidates:

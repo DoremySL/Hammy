@@ -461,6 +461,19 @@ def _fill_positions(p: float, lo: float, hi: float, per_point: int,
     return [min(lo + step * (i + 1), end) for i in range(per_point)]
 
 
+_KF_MIN_GAP_SEC = 1.0  # 选中关键帧的最小间隔（防同秒帧与缩略图同秒混淆）
+
+
+def _kf_gap_filter(cand: List[float], last: Optional[float]) -> List[float]:
+    """时间序增量过滤：剔除与上一选中关键帧间隔不足 1s 的候选。"""
+    out: List[float] = []
+    for t in cand:
+        if last is None or t - last > _KF_MIN_GAP_SEC:
+            out.append(t)
+            last = t
+    return out
+
+
 def select_point_samples(duration: float, key_ts: List[float],
                          points: int, per_point: int,
                          frame_rate: float = 0.0) -> List[Tuple[float, int]]:
@@ -468,10 +481,12 @@ def select_point_samples(duration: float, key_ts: List[float],
 
     返回 (时间戳, 点位索引)，时间升序、点位索引单调不减；key_ts 需升序传入。
     duration 缺失时：有关键帧均匀采样，否则取首帧。
+    选中关键帧全局成对间隔 > 1s；区域内关键帧被过滤光时回退普通帧位置。
     """
     if duration <= 0:
         if not key_ts:
             return [(0.0, 0)]
+        key_ts = _kf_gap_filter(key_ts, None)
         if len(key_ts) < points:
             return [(t, i) for i, t in enumerate(key_ts)]
         return [(key_ts[i], r)
@@ -481,9 +496,12 @@ def select_point_samples(duration: float, key_ts: List[float],
     regions = _point_regions(duration, points)
     out: List[Tuple[float, int]] = []
     seen: set = set()
+    last_kf: Optional[float] = None
     for pi, p, lo, hi in regions:
         # 分区只在边界可能重合；已被前一点位取走的边界帧不重复使用
         near = [t for t in key_ts if lo <= t <= hi and t not in seen]
+        if near:
+            near = _kf_gap_filter(near, last_kf)
         if not near:
             chosen = _fill_positions(p, lo, hi, per_point, end)
         elif len(near) <= per_point:
@@ -494,6 +512,8 @@ def select_point_samples(duration: float, key_ts: List[float],
             chosen = [near[i] for i in _anchor_keyframe_indices(len(near), per_point)]
         seen.update(chosen)
         out.extend((t, pi) for t in chosen)
+        if near:
+            last_kf = max(chosen)
     return out
 
 
@@ -522,23 +542,23 @@ def probe_and_extract_keyframes(video_path: str, config: Config, stop_event: thr
 
     frame_rate = (info.get("video") or {}).get("frame_rate") or 0.0
     samples = select_point_samples(duration, key_ts, points, per_point, frame_rate)
-    timestamps = [t for t, _ in samples]
     mode = config.frame_extract_mode
     key_set = set(key_ts)
-    aligned = bool(key_ts) and all(t in key_set for t in timestamps)
+    kf_samples = [(t, pi) for t, pi in samples if t in key_set]
 
     # ── 抽帧路由 ──
-    if mode == "auto" and key_ts and aligned \
-            and not _concat_vulnerable(key_ts, timestamps, frame_rate):
-        # auto：关键帧点位单进程多段，配帧不齐回退逐帧
-        frames = _extract_frames_concat(video_path, samples, config, stop_event,
+    if mode == "auto" and kf_samples \
+            and not _concat_vulnerable(key_ts, [t for t, _ in kf_samples], frame_rate):
+        # auto：关键帧样本走 concat 快路径（普通帧位置不出帧，concat 失败才整段
+        # 逐帧兜底——此时全部样本含普通帧位置一起逐帧）
+        frames = _extract_frames_concat(video_path, kf_samples, config, stop_event,
                                         frame_rate, frame_vf=frame_vf,
                                         start_time=start_time) or []
         if not frames:
             frames = _extract_per_frame(video_path, samples, config, stop_event,
                                          frame_vf=frame_vf)
     else:
-        # per_frame / 兜底点位 / 成对关键帧：逐帧
+        # per_frame / 无关键帧 / 成对关键帧：逐帧
         frames = _extract_per_frame(video_path, samples, config, stop_event,
                                      frame_vf=frame_vf)
 

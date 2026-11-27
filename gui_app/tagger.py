@@ -439,7 +439,7 @@ def video_sampling_config() -> Config:
     from .config_store import load_config
     video = load_config().get("video") or {}
     cfg = Config(
-        sampling_points=max(1, safe_int(video.get("sampling_points"), 9)),
+        sampling_points=max(1, safe_int(video.get("sampling_points"), 7)),
         frames_per_point=max(1, safe_int(video.get("frames_per_point"), 3)),
         frame_max_side=max(64, safe_int(video.get("frame_max_side"), 672)),
     )

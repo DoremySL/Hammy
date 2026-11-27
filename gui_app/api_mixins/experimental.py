@@ -35,6 +35,21 @@ def _push_llama_log(msg: str) -> None:
     js_pusher.push("appendLlamaLog", msg)
 
 
+def _llama_settle(stop_event: threading.Event) -> bool:
+    """轮询 llama 状态至就绪；失败/停止返回 False（以状态判定，规避并发拉起误报）。"""
+    from ..llama_cpp import get_status
+    while not stop_event.is_set():
+        st = get_status()
+        if st.get("running") and not st.get("starting"):
+            return True
+        if st.get("launch_failed"):
+            return False
+        if not (st.get("running") or st.get("starting")):
+            return False
+        time.sleep(0.5)
+    return False
+
+
 def _load_tags() -> Dict[str, Any]:
     """读取 tagger 标签存储（mtime 缓存；缺失/损坏按空 dict 处理）。"""
     return read_json_cached(TAGGER_TAGS_FILE)
@@ -688,14 +703,27 @@ class ExperimentalMixin:
     def _transcribe_videos(self, vid_list: List, video_paths: List) -> Dict[str, Any]:
         """批量转写并保存 SRT（索引记录生成模型）。需持有 _gpu_task_lock。"""
         from .. import discovery
+        from ..constants import PROBE_POOL_WORKERS
         from ..transcribe_cpp import get_current_model, run_transcription_batch
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        pairs, skipped_ids = [], []
-        for vid, path in zip(vid_list, video_paths):
-            if discovery.probe_video(path).get("has_audio") is False:
-                skipped_ids.append(vid)
-            else:
-                pairs.append((vid, path))
+        # 无音频视频并行探针过滤（与探针池同限流）；停止时提前退出
+        probes: Dict[Any, Dict[str, Any]] = {}
+        with ThreadPoolExecutor(PROBE_POOL_WORKERS) as ex:
+            futures = {ex.submit(discovery.probe_video, p): v
+                       for v, p in zip(vid_list, video_paths)}
+            for fut in as_completed(futures):
+                if _gpu_stop_event.is_set():
+                    for f in futures:
+                        f.cancel()
+                    return {"ok": False, "results": {}, "ok_count": 0,
+                            "total": len(video_paths), "skipped": 0,
+                            "skipped_ids": [], "error": "已停止"}
+                probes[futures[fut]] = fut.result()
+        pairs = [(v, p) for v, p in zip(vid_list, video_paths)
+                 if probes.get(v, {}).get("has_audio") is not False]
+        skipped_ids = [v for v, p in zip(vid_list, video_paths)
+                       if probes.get(v, {}).get("has_audio") is False]
         skipped = len(skipped_ids)
         vid_list = [p[0] for p in pairs]
         video_paths = [p[1] for p in pairs]
@@ -934,6 +962,9 @@ class ExperimentalMixin:
                 self._retranscribe_stale([[vid, vpath] for vid, vpath in items
                                           if str(vid) in stale_keys])
                 stale_keys = self._stale_srt_keys(items)
+                # 重转写停掉了 llama（让出显存），翻译前恢复
+                if ov:
+                    self.ensure_llama_running()
 
             tasks = []  # [(idx, vid, vpath, src, dest)]
             errors = []
@@ -1135,6 +1166,50 @@ class ExperimentalMixin:
         else:
             _push_log(f"本地推理服务自动启动失败：{r.get('error', '未知错误')}")
         return r
+
+    def llama_launch_plan(self) -> Optional[Dict[str, Any]]:
+        """预解析集成启动目标/参数/覆盖值；配置构建与实际启动共用同一份。"""
+        from ..llama_integration import DEFAULT_API_KEY, DEFAULT_MODEL
+        from ..llama_cpp import _local_host, get_status
+        if not load_llama_config().get("enabled", False):
+            return None
+        st = get_status()
+        if not st.get("ready"):
+            return None
+        target = self._llama_autostart_target()
+        params = self._llama_autostart_params(target)
+        if st.get("running") and st.get("port"):
+            # 已运行/启动中：以实际端口为准（可能与预解析目标不同）
+            params["port"] = st["port"]
+        try:
+            port = int(params.get("port") or 8080)
+        except (TypeError, ValueError):
+            port = 8080
+        try:
+            parallel = max(1, int(params.get("parallel") or 1))
+        except (TypeError, ValueError):
+            parallel = 1
+        host = _local_host(str(params.get("host") or "127.0.0.1"))
+        return {"target": target, "params": params,
+                "already_running": bool(st.get("running")),
+                "override": {"model": DEFAULT_MODEL, "api_key": DEFAULT_API_KEY,
+                             "base_url": f"http://{host}:{port}/v1",
+                             "ai_workers": parallel}}
+
+    def llama_start_and_wait(self, plan: Dict[str, Any],
+                             stop_event: threading.Event) -> bool:
+        """按预解析计划启动 llama-server（若需要）并阻塞至就绪；失败/停止返回 False。"""
+        from ..llama_cpp import launch as _launch
+        if not plan.get("already_running"):
+            target = plan.get("target") or ""
+            r = _launch(target, plan.get("params") or {}, log_fn=_push_log,
+                        server_log_fn=_push_llama_log)
+            if r.get("ok"):
+                _push_log("本地推理服务已自动启动。")
+                _record_last_model(r.get("model") or target or "")
+            else:
+                _push_log(f"本地推理服务自动启动失败：{r.get('error', '未知错误')}")
+        return _llama_settle(stop_event)
 
     def stop_llama(self) -> Dict[str, Any]:
         """停止运行中的 llama-server。"""

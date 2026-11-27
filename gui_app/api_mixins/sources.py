@@ -93,7 +93,7 @@ class SourcesMixin:
         已处理视频优先全量保留，组内待处理重复项被推荐移除。
         """
         done = discovery.processed_paths()
-        groups = dedup.find_duplicates(discovery.collect_all(), done)
+        groups = dedup.find_duplicates(discovery.processable_videos(), done)
         out: List[Dict[str, Any]] = []
         total_remove = 0
         for g in groups:
@@ -131,7 +131,7 @@ class SourcesMixin:
         stop = threading.Event()
         _similar_stop = stop
         try:
-            paths = discovery.collect_all()
+            paths = discovery.processable_videos()
             done = discovery.processed_paths()
             with ThreadPoolExecutor(PROBE_POOL_WORKERS) as ex:
                 infos = list(ex.map(discovery.probe_video, paths))

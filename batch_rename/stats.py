@@ -40,6 +40,7 @@ class PipelineStats:
     ai_tripped: bool = False
     frame_tripped: bool = False
     context_warning_shown: bool = False
+    fatal_error: Optional[str] = None  # AI 前置就绪失败等原因（on_done 据此返回 ok:False）
 
     # 熔断窗口大小（秒）和阈值：均根据 config 动态调整
     ai_window_sec: float = _CIRCUIT_WINDOW_SEC

@@ -464,6 +464,11 @@ def _is_stream_video(path: str) -> bool:
     return Path(path).suffix.lower() in STREAM_EXTS and is_mpeg_ts(path)
 
 
+def processable_videos() -> List[str]:
+    """可处理视频：collect_all 去除流式封装（走格式修复，不进任何处理型扫描）。"""
+    return [v for v in collect_all() if not _is_stream_video(v)]
+
+
 def scan_all() -> Dict[str, Any]:
     """全量扫描：合并根 + 零散 + 失败目录；流式封装单列 stream 桶。"""
     done_paths, failed_paths, history_by_path = _build_history_path_index()

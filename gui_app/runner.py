@@ -7,10 +7,12 @@ import re
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from . import discovery, prompts
+from .constants import PROBE_POOL_WORKERS
 from .rename_aux import format_transcribe_block
 from .workspace_paths import NFO_DIR, stable_id
 from .workspace_store import (
@@ -25,7 +27,7 @@ from .workspace_service import find_cached_nfo
 from batch_rename.config import Config
 from batch_rename.dependencies import DependencyError, ensure_dependencies, bindings
 from batch_rename.env import SUBPROCESS_KWARGS, logger as engine_logger
-from batch_rename.pipeline import BatchPipeline
+from batch_rename.pipeline import BatchPipeline, ready_gate
 from batch_rename.term_recall import TermRecall
 
 
@@ -41,6 +43,24 @@ def _safe_float(d: dict, key: str, default: float) -> float:
         return float(d.get(key, default))
     except (TypeError, ValueError):
         return default
+
+
+def _asr_missing_list(paths: List[str], srt_dir: Path,
+                      stop_event: Optional[threading.Event] = None) -> List[str]:
+    """缺 SRT 的视频并行探针（与探针池同限流），无音轨不进转写；停止时提前退出。"""
+    no_srt = [vp for vp in paths
+              if not (srt_dir / f"{stable_id(vp)}.srt").exists()]
+    probes: Dict[str, Dict[str, Any]] = {}
+    with ThreadPoolExecutor(PROBE_POOL_WORKERS) as ex:
+        futures = {ex.submit(discovery.probe_video, vp): vp for vp in no_srt}
+        for fut in as_completed(futures):
+            if stop_event is not None and stop_event.is_set():
+                for f in futures:
+                    f.cancel()
+                return []
+            probes[futures[fut]] = fut.result()
+    # as_completed 完成序不定，按输入顺序输出
+    return [vp for vp in no_srt if probes.get(vp, {}).get("has_audio") is not False]
 
 
 _THUMB_TIME_RE = re.compile(r"\d{1,3}:\d{2}:\d{2}")
@@ -116,8 +136,11 @@ class _UIHandler(logging.Handler):
 # ── 从 config.json + 预设构建 batch_rename.Config ──
 
 
-def build_engine_config(cfg_dict: Dict[str, Any]) -> Config:
-    """从 GUI 的 config.json 构建 batch_rename.Config 对象。"""
+def build_engine_config(cfg_dict: Dict[str, Any],
+                        llama_override: Optional[Dict[str, Any]] = None) -> Config:
+    """从 GUI 的 config.json 构建 batch_rename.Config 对象。
+
+    llama_override：本地推理集成的显式覆盖值（与启动计划同源）；缺省回退 ai_override()。"""
     cfg = Config()
 
     def _section(name: str) -> Dict[str, Any]:
@@ -132,7 +155,7 @@ def build_engine_config(cfg_dict: Dict[str, Any]) -> Config:
     # 本地推理集成（可插拔）：开启后覆盖为本地 llama-server 地址与默认
     # 模型/密钥，磁盘上用户填写的远程 API 参数保持不动；未激活时返回 None
     from .llama_integration import ai_override
-    ov = ai_override()
+    ov = llama_override if llama_override is not None else ai_override()
     if ov:
         cfg.model = ov["model"]
         cfg.base_url = ov["base_url"]
@@ -292,14 +315,17 @@ class PipelineRunner:
         on_progress: Optional[Callable[[int, int], None]] = None,
         on_file_done: Optional[Callable[[Dict[str, Any]], None]] = None,
         on_done: Optional[Callable[[Dict[str, Any]], None]] = None,
+        llama_ensure: Optional[Callable[[threading.Event], bool]] = None,
+        llama_override: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """启动处理。"""
+        """启动处理。llama_ensure：AI 阶段前置就绪门；llama_override：显式集成覆盖值。"""
         if self.is_running:
             return {"ok": False, "error": "已有自动重命名任务在运行"}
 
         from .config_store import load_config
         cfg_dict = load_config()
-        engine_cfg = build_engine_config(cfg_dict)
+        llama_gate = ready_gate(llama_ensure, self._stop) if llama_ensure else None
+        engine_cfg = build_engine_config(cfg_dict, llama_override)
 
         # 进度统计（线程安全）
         progress_lock = threading.Lock()
@@ -433,9 +459,7 @@ class PipelineRunner:
                               and transcribe_cpp.inject_ready())
                 asr_missing: List[str] = []
                 if asr_active:
-                    asr_missing = [vp for vp in paths
-                                   if not (TRANSCRIBE_SRT_DIR / f"{stable_id(vp)}.srt").exists()
-                                   and discovery.probe_video(vp).get("has_audio") is not False]
+                    asr_missing = _asr_missing_list(paths, TRANSCRIBE_SRT_DIR, self._stop)
                 asr_active = bool(asr_missing)
 
                 # Tagger 集成：开关 + 已启用 + 引擎就绪（未就绪降级手动路径语义，不阻断）
@@ -481,8 +505,10 @@ class PipelineRunner:
                 else:
                     tagged_skip = set()
 
-                # 集成辅助开启时持锁整个批次，隔离右键手动入口（不 pause 让出显存）
-                hold_gpu_lock = bool(aux_workers)
+                # 集成辅助开启时持锁整个批次，隔离右键手动入口（不 pause 让出显存）；
+                # 全部命中已有结果时无需持锁
+                hold_gpu_lock = bool(asr_missing) or (
+                    tagger_active and len(tagged_skip) < len(paths))
                 if hold_gpu_lock:
                     acquired = False
                     while not acquired:
@@ -522,13 +548,24 @@ class PipelineRunner:
                                            dense=dense,
                                            vec_threshold=engine_cfg.rag_vec_threshold,
                                            vec_top_n=engine_cfg.rag_vec_top_n)
+                    warm_thread: Optional[threading.Thread] = None
                     if dense is not None:
-                        engine_logger.info(f"[RAG] 正在加载嵌入模型: {dense.model_title}"
+                        engine_logger.info(f"[RAG] 正在后台加载嵌入模型: {dense.model_title}"
                                            f"（device={dense.device}）…")
-                        try:
-                            term_recall.warmup_dense()  # 预构建索引，首个视频不承担耗时
-                        except Exception as e:
-                            engine_logger.info(f"[RAG] 向量索引构建失败，增强档本次降级为开启: {e}")
+
+                        def _warm() -> None:
+                            if self._stop.is_set():
+                                return
+                            try:
+                                term_recall.warmup_dense(self._stop)
+                                if term_recall.dense is None:
+                                    engine_logger.info("[RAG] 向量索引构建失败，增强档降级为单轮")
+                            except Exception as e:
+                                engine_logger.info(f"[RAG] 向量索引预热失败，增强档降级为单轮: {e}")
+
+                        # 预热后台化：与抽帧/ASR/首轮 LLM 重叠
+                        warm_thread = threading.Thread(target=_warm, name="rag-warmup", daemon=True)
+                        warm_thread.start()
                     if term_recall.mode != "off":
                         if term_recall.mode == "enhanced" and not term_recall.has_dense:
                             mode_label = "增强（向量不可用，本次降级为开启）"
@@ -550,6 +587,7 @@ class PipelineRunner:
                         aux_stages=aux_stages,
                         aux_workers=aux_workers,
                         prefill=prefill,
+                        llama_gate=llama_gate,
                     )
                     # 预完成复用已有结果的辅助阶段（与 prefill 同一口径）
                     missing_set = set(asr_missing)
@@ -559,6 +597,9 @@ class PipelineRunner:
                         if "tagger" in aux_stages and ctx.vp in tagged_skip:
                             ctx.complete_stage("tagger")
                     pipeline.run()
+                    if warm_thread is not None:
+                        # 预热线程收尾确认（在途编码不阻塞批完成）
+                        warm_thread.join(timeout=2.0)
                 finally:
                     if hold_gpu_lock:
                         _gpu_task_lock.release()
@@ -571,7 +612,8 @@ class PipelineRunner:
                 if on_done:
                     if stats is not None:
                         on_done({
-                            "ok": True,
+                            "ok": stats.fatal_error is None,
+                            "error": stats.fatal_error or "",
                             "ok_count": stats.ok,
                             "error_count": stats.error,
                             "skipped_count": stats.skipped,

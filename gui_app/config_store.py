@@ -31,7 +31,7 @@ def _default_config() -> Dict[str, Any]:
             "enforce_json_mode": True,
         },
         "video": {
-            "sampling_points": 9,
+            "sampling_points": 7,
             "frames_per_point": 3,
             "frame_max_side": 672,
             "frame_time_tags": 2,

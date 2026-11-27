@@ -98,16 +98,24 @@ class TaggerInjectWorker:
         q = pipeline.tagger_queue
         if q is None:
             return
+        if not any(ctx.stage_pending("tagger") for ctx in pipeline.contexts):
+            return
         from . import tagger as tagger_mod
         results: Dict[str, Any] = {}   # vid → tags entry（含 error，仅用于统计）
         stream = None
         sent: Dict[int, Any] = {}
         lib = tagger_mod.load_term_library_map()
         try:
+            # 引擎提前启动：模型加载与首视频抽帧重叠（已停止时不启动）
+            if not self.stop_event.is_set():
+                stream = self._start_engine(len(pipeline.contexts), tagger_mod)
             while not self.stop_event.is_set():
                 try:
                     ctx = q.get(timeout=0.5)
                 except queue.Empty:
+                    # 队列空等时照常收已就绪结果，防与 aux 额度互等成环
+                    if stream is not None:
+                        self._drain(stream, sent, results, lib, tagger_mod)
                     if pipeline.producer_done.is_set() and q.empty():
                         break
                     continue
@@ -124,12 +132,20 @@ class TaggerInjectWorker:
                     self.on_log("warn", "[标签辅助] 分析引擎中断，剩余视频降级为无标签")
                     break
             # 收尾只收已 send 的结果：引擎常驻不关 stdin，等 EOF 会挂起
-            if stream is not None and not self.stop_event.is_set():
-                while sent and not self.stop_event.is_set():
-                    vr = stream.next_result()
-                    if vr is None:
-                        break
-                    self._record(vr, sent, results, lib, tagger_mod)
+            if stream is not None:
+                if self.stop_event.is_set():
+                    # 停止路径：引擎已算完的结果照常落盘
+                    while sent:
+                        vr = stream.try_next_result()
+                        if vr is None:
+                            break
+                        self._record(vr, sent, results, lib, tagger_mod)
+                else:
+                    while sent and not self.stop_event.is_set():
+                        vr = stream.next_result()
+                        if vr is None:
+                            break
+                        self._record(vr, sent, results, lib, tagger_mod)
         except Exception as e:
             logger.error(f"Tagger 集成线程异常: {e}", exc_info=True)
         finally:
@@ -144,7 +160,7 @@ class TaggerInjectWorker:
                 logger.debug(f"[标签辅助] 集成完成：成功 {ok_n}/{len(results)}")
 
     def _start_engine(self, total: int, tagger_mod):
-        """懒启动引擎：首个待推理任务出现时才加载（全部跳过时零开销）。"""
+        """启动引擎：模型加载与首视频抽帧重叠（全部命中缓存时不启动）。"""
         self.on_log("info", "[标签辅助] 集成开启，正在启动分析引擎（与抽帧并行）…")
         return tagger_mod.start_analyze_stream(
             total, tag_threshold=self.threshold, ip_threshold=self.threshold,
@@ -175,8 +191,8 @@ class TaggerInjectWorker:
             logger.debug(f"Tagger send 失败 ({name}): {e}")
 
     def _drain(self, stream, sent, results, lib, tagger_mod) -> None:
-        """机会性收取已就绪结果（非阻塞）。"""
-        while not self.stop_event.is_set():
+        """机会性收取已就绪结果（非阻塞；停止后引擎已算完的也照常收）。"""
+        while True:
             vr = stream.try_next_result()
             if vr is None:
                 return

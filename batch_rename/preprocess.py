@@ -21,9 +21,9 @@ BAR_RATIO = 0.99     # 行/列黑像素占比 ≥ 此值计为黑边
 BAR_MAX_TRIM = 0.45  # 每条边最多裁掉的比例
 JPEG_QUALITY = 88    # 重编码质量（无裁剪时原图直接复用，不经此路径）
 
-# ── 同点位相似去重阈值 ──
-_DEDUP_DHASH_MAX = 12   # dhash 粗筛阈值（/64）
-_DEDUP_NCC_MIN = 0.90   # 32x32 灰度相关性阈值
+# ── 同点位相似去重阈值（bench 目检定标）──
+_DEDUP_DHASH_MAX = 20   # dhash 粗筛阈值（/64）
+_DEDUP_NCC_MIN = 0.80   # 32x32 灰度相关性阈值
 
 _LUT: Optional[List[int]] = None
 
@@ -88,7 +88,9 @@ def preprocess_frame_signature(jpeg: bytes) -> Optional[Tuple[bytes, int, bytes]
 
 
 def _dedup_point_frames(items: List[Tuple[Frame, int, bytes]]) -> List[Frame]:
-    """同点位近似帧去重：dhash 粗筛 + 灰度相关性确认，保留先出现的帧。"""
+    """同点位近似帧去重：dhash 粗筛 + 灰度相关性确认，保留先出现的帧。
+
+    仅限同点位：不同点位画面相同是有效信息（场景未变化/重演），不做合并。"""
     kept: List[Tuple[Frame, int, bytes]] = []
     by_point: Dict[int, List[Tuple[int, bytes]]] = {}
     for frame, dh, sig in items:

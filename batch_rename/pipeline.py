@@ -35,6 +35,25 @@ def _max_ai_seconds_per_video(config: Config) -> float:
     return (config.ai_timeout + _TIMEOUT_GRACE_SEC) * (config.retry_times + 1)
 
 
+def ready_gate(ensure: Callable[[threading.Event], bool],
+               stop_event: threading.Event) -> Callable[[], bool]:
+    """AI 阶段就绪门：首个调用触发 ensure 并阻塞等待，结果缓存后恒通过。"""
+    lock = threading.Lock()
+    state = {"done": False, "ok": False}
+
+    def gate() -> bool:
+        if state["done"]:
+            return state["ok"]
+        with lock:
+            if state["done"]:
+                return state["ok"]
+            state["ok"] = ensure(stop_event)
+            state["done"] = True
+        return state["ok"]
+
+    return gate
+
+
 def _cache_limit(config: Config) -> int:
     """帧缓存上限（任务数）：不小于消费侧在途量，防饿死。"""
     return max(32, config.ai_workers * 4 + 4)
@@ -95,6 +114,7 @@ class TaskContext:
         self.aux_slot = False
         self.aux_release: Optional[Callable[[], None]] = None
         self.on_ready: Optional[Callable[["TaskContext"], None]] = None
+        self.queued = False  # 已实际进入 ready 队列（closer 关闭条件）
         self._stages_left = {"frames", *self.aux_stages}
         self._lock = threading.Lock()
         self._released = False
@@ -160,6 +180,11 @@ class TaskContext:
                 self.aux_release()
             except Exception:
                 pass
+
+
+def _all_queued(contexts: List["TaskContext"]) -> bool:
+    """closer 关闭条件：全部交付且已实际入队（防哨兵插队到最后任务之前）。"""
+    return all(c.delivered and c.queued for c in contexts)
 
 
 # ── 抽帧生产者 ────────────────────────────────────────
@@ -292,13 +317,16 @@ class AIWorker:
                  on_file_done: Optional[OnFileDone] = None,
                  nfo_namer: Optional[Callable[[str], str]] = None,
                  slot_id: Optional[int] = None,
-                 term_recall=None):
+                 term_recall=None,
+                 llama_gate: Optional[Callable[[], bool]] = None):
         self.client = client
         self.config = config
         self.stats = stats
         self.task_queue = task_queue
         self.stop_event = stop_event
         self._on_file_done = on_file_done
+        # AI 前置就绪门：首个任务前阻塞等待，失败停止整批
+        self.llama_gate = llama_gate
         # 可选 NFO 目标命名函数（缓存模式防同 stem 冲突）
         self._nfo_namer = nfo_namer
         self.slot_id = slot_id   # llama 集成时 worker i → slot i，两轮同槽命中缓存
@@ -456,6 +484,16 @@ class AIWorker:
                     continue
                 if task is None:
                     break
+                if self.llama_gate is not None and not self.llama_gate():
+                    # 就绪门失败：AI 阶段无法进行，停止整批
+                    msg = "AI 服务未能就绪，已停止（本地推理服务启动失败或被停止）"
+                    logger.error(msg)
+                    if self.stats.fatal_error is None:
+                        self.stats.fatal_error = msg
+                    self.stats.inc_cancelled()
+                    task.release()
+                    self.stop_event.set()
+                    break
                 self._process_task(task)
         except Exception as e:
             logger.exception(f"消费者线程异常退出: {e}")
@@ -490,7 +528,8 @@ class BatchPipeline:
                  term_recall=None,
                  aux_stages: Optional[Set[str]] = None,
                  aux_workers: Optional[List[Any]] = None,
-                 prefill: Optional[Dict[str, Dict[str, Any]]] = None):
+                 prefill: Optional[Dict[str, Dict[str, Any]]] = None,
+                 llama_gate: Optional[Callable[[], bool]] = None):
         self.paths = paths
         self.config = config
         self.client = client
@@ -498,6 +537,7 @@ class BatchPipeline:
         self.on_file_done = on_file_done
         self.nfo_namer = nfo_namer
         self.term_recall = term_recall
+        self.llama_gate = llama_gate
         self.aux_stages = set(aux_stages or ())
         self.aux_workers = aux_workers or []
         self._prefill = prefill or {}
@@ -588,6 +628,7 @@ class BatchPipeline:
             while not self.stop_event.is_set():
                 try:
                     ready_queue.put(ctx, timeout=0.5)
+                    ctx.queued = True
                     return
                 except queue.Full:
                     if time.time() > deadline:
@@ -602,13 +643,15 @@ class BatchPipeline:
             ctx.on_ready = _put_ready
             ctx.release_hook = producer.release_slot_for
             ctx.aux_release = self._release_aux_slot
+            # prefill 预完成不会再走 _put_ready，直接视为已入队
+            ctx.queued = ctx.delivered
 
         def _queue_closer() -> None:
-            """全部上下文交付（或停止）后投递哨兵，让 AI worker 退出主循环。"""
+            """全部上下文交付并实际入队（或停止）后投递哨兵，让 AI worker 退出主循环。"""
             while True:
                 if self.stop_event.is_set():
                     break
-                if all(ctx.delivered for ctx in self.contexts):
+                if _all_queued(self.contexts):
                     break
                 time.sleep(0.2)
             for _ in range(self.config.ai_workers):
@@ -648,7 +691,8 @@ class BatchPipeline:
                            f"同槽视频将交替覆盖缓存，两轮同槽收益下降")
         workers = [AIWorker(self.client, self.config, stats, ready_queue, self.stop_event,
                             on_file_done=self.on_file_done, nfo_namer=self.nfo_namer,
-                            slot_id=slot_ids[i], term_recall=self.term_recall)
+                            slot_id=slot_ids[i], term_recall=self.term_recall,
+                            llama_gate=self.llama_gate)
                    for i in range(self.config.ai_workers)]
         # AI worker 设为 daemon：网络调用失效时可防进程退出挂死
         worker_threads = [threading.Thread(target=w.run, name=f"ai-{i}", daemon=True)

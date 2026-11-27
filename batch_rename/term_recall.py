@@ -146,15 +146,19 @@ class TermRecall:
         return build_section(items, _LITERAL_HEADER), [it["keyword"] for it in items]
 
     def recall_dense(self, parts: Dict[str, str],
-                     exclude: Any = ()) -> List[Dict[str, str]]:
+                     exclude: Any = (),
+                     stop_event: Optional[threading.Event] = None
+                     ) -> List[Dict[str, str]]:
         """第二轮纯向量召回：排除 exclude 关键词（首轮已注入）后取最多 vec_top_n 条。
 
-        仅 enhanced 且向量后端可用，任何失败返回 []（跳过第二轮）。"""
+        仅 enhanced 且向量后端可用；任何失败或停止返回 []（跳过第二轮）。"""
         if not self.has_dense:
             return []
         ex = {str(k) for k in (exclude or ())}
         try:
-            self._ensure_dense_built()
+            self._ensure_dense_built(stop_event)
+            if stop_event is not None and stop_event.is_set():
+                return []
             # 超额取回：排除首轮命中后仍能补足 vec_top_n 条
             vec = self.dense.search(parts, top_k=self.vec_top_n + len(ex))
         except Exception:
@@ -175,11 +179,16 @@ class TermRecall:
                 break
         return out
 
-    def _ensure_dense_built(self) -> None:
-        """惰性构建向量索引一次（items 顺序即 idx，与词条库共用）。"""
+    def _ensure_dense_built(self, stop_event: Optional[threading.Event] = None) -> None:
+        """惰性构建向量索引一次（items 顺序即 idx，与词条库共用）；停止时放弃。"""
         if self._dense_built:
             return
-        with self._dense_lock:
+        if stop_event is not None and stop_event.is_set():
+            return
+        while not self._dense_lock.acquire(timeout=0.2):
+            if stop_event is not None and stop_event.is_set():
+                return
+        try:
             if self._dense_built:
                 return
             try:
@@ -188,11 +197,13 @@ class TermRecall:
             except Exception:
                 self.dense = None
                 raise
+        finally:
+            self._dense_lock.release()
 
-    def warmup_dense(self) -> None:
+    def warmup_dense(self, stop_event: Optional[threading.Event] = None) -> None:
         """预热：提前构建向量索引（管线启动前调用，避免首个视频承担构建耗时）。"""
         if self.dense is not None and self.mode == "enhanced":
-            self._ensure_dense_built()
+            self._ensure_dense_built(stop_event)
 
     @staticmethod
     def _match(e: _Entry, hay_n: str, hay_c: str) -> Optional[str]:

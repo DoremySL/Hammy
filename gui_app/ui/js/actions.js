@@ -98,11 +98,8 @@ $('#btn-start').addEventListener('click', async () => {
   const task = currentTask();
   if (task) { await stopCurrentTask(task); return; }
   if (state.llamaPendingLaunch || !state.pending.length) return;
-  if (state.llamaIntegration && !state.aiConnected) {
-    const ok = await ensureLlamaReady();
-    if (!ok) return;
-  }
-  if (state.processing || !state.pending.length || !state.aiConnected) return;
+  if (state.processing || (!state.llamaIntegration && !state.aiConnected)) return;
+  // 集成模式：llama 就绪门在流水线内等待
   const paths = state.pending.map(v => v.path);
   await startProcessing(paths, '开始自动重命名…');
 });
@@ -114,10 +111,6 @@ async function processSelected() {
     .map(id => findVideoById(id))
     .filter(v => v && v.status === 'pending');
   if (!pendingSel.length) { toast('未选中待重命名视频', 'err'); return; }
-  if (state.llamaIntegration && !state.aiConnected) {
-    const ok = await ensureLlamaReady();
-    if (!ok) return;
-  }
   const paths = pendingSel.map(v => v.path);
   await startProcessing(paths, `开始自动重命名 ${pendingSel.length} 个视频…`);
 }

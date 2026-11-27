@@ -577,6 +577,7 @@ window.__ui = {
     const errN = summary && summary.error_count != null ? summary.error_count : 0;
     const cancelN = summary && summary.cancelled_count != null ? summary.cancelled_count : 0;
     let msg = ok ? '自动重命名完成' : '自动重命名结束（有错误）';
+    if (!ok && summary && summary.error) msg = summary.error;
     if (errN > 0) msg += `：成功 ${okN}，失败 ${errN}`;
     if (cancelN > 0) msg += `，${cancelN} 个未处理`;
     toast(msg, ok && errN === 0 ? 'ok' : 'err');
