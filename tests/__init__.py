@@ -1,9 +1,5 @@
-"""tests 包初始化：规避本机对受限 ACL 临时目录删除的慢速过滤。
-
-mkdtemp 用 0o700 创建目录会产生仅所有者 ACL，本机删除这类目录每个
-约 1.5s（实测整套测试因此从 282s 降到 74s）。创建后立即 icacls /reset
-恢复继承 ACL，删除恢复瞬时；仅 Windows 生效，失败静默降级。
-"""
+"""tests 包初始化：mkdtemp 的 0o700 ACL 目录本机删除极慢（实测拖慢 3 倍），
+创建后 icacls /reset 恢复继承 ACL；仅 Windows 生效，失败静默降级。"""
 import os
 import subprocess
 import tempfile

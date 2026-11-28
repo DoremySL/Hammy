@@ -98,9 +98,7 @@ class _WorkspaceTestCase(unittest.TestCase):
         return json.loads(self.paths["config"].read_text(encoding="utf-8"))
 
 
-# ═══════════════════════════════════════════════════════════════
 # set_tagger_config / set_transcribe_config：前端按模块提交
-# ═══════════════════════════════════════════════════════════════
 
 class TestSetModuleConfig(unittest.TestCase):
     """模块配置提交端点：values 原地并入模块文件。"""
@@ -232,9 +230,7 @@ class TestSaveConfigPlain(_WorkspaceTestCase):
         self.assertFalse(self.paths["tagger"].exists())
 
 
-# ═══════════════════════════════════════════════════════════════
 # set_*_enabled：写模块文件；模块未安装时 no-op（防止卸载后复活）
-# ═══════════════════════════════════════════════════════════════
 
 class TestSetEnabled(unittest.TestCase):
     """set_*_enabled 写入模块文件；安装目录不存在时 no-op 不落盘。"""
@@ -337,9 +333,7 @@ class TestSetEnabled(unittest.TestCase):
         ul.assert_not_called()
 
 
-# ═══════════════════════════════════════════════════════════════
 # 卸载：安装目录 + 模块文件夹一并删除
-# ═══════════════════════════════════════════════════════════════
 
 class TestRemove(unittest.TestCase):
     """remove_*：删除安装目录 + 模块配置文件夹（可插拔）。"""
@@ -469,9 +463,7 @@ class TestRemove(unittest.TestCase):
         self.assertEqual(disk["experimental"].get("rag_vec_device", ""), "")
 
 
-# ═══════════════════════════════════════════════════════════════
 # 模块配置存储（tagger / 语音转写 config.json）
-# ═══════════════════════════════════════════════════════════════
 
 class TestModuleConfigStore(_WorkspaceTestCase):
     """load/update_tagger_config、load/update_transcribe_config：roundtrip + 容错。"""
@@ -551,9 +543,7 @@ class TestModuleConfigStore(_WorkspaceTestCase):
         self.assertEqual(load_transcribe_config(), _transcribe_defaults())
 
 
-# ═══════════════════════════════════════════════════════════════
 # tagger 标签删除（手动清除误报）
-# ═══════════════════════════════════════════════════════════════
 
 class TestTaggerTagDelete(_WorkspaceTestCase):
     """delete_tagger_tag：按段删单条标签，char_ip 反映角色/IP 段余量。"""
@@ -592,9 +582,7 @@ class TestTaggerTagDelete(_WorkspaceTestCase):
         self.assertFalse(self._api().delete_tagger_tag("vid1", "tags", "x")["ok"])
 
 
-# ═══════════════════════════════════════════════════════════════
 # general_count：存储全量，展示/检索按配置截取前 N 个
-# ═══════════════════════════════════════════════════════════════
 
 class TestTaggerGeneralCount(_WorkspaceTestCase):
     """general_count 截取发生在消费侧（get_tagger_tags / get_tagger_all_tags）。"""

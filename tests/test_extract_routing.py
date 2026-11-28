@@ -152,7 +152,7 @@ class TestSingleFrameSubprocess(unittest.TestCase):
 
         def fake_run(cmd, timeout, stop):
             captured["cmd"] = cmd
-            return b"\xff\xd8\xff\xe0tail", b""
+            return 0, b"\xff\xd8\xff\xe0tail", b""
 
         with mock.patch.object(video_mod, "run_subprocess_with_cancel", fake_run):
             jpeg = video_mod._extract_single_frame("v.mp4", 5.5, "scale",

@@ -28,7 +28,7 @@ class TestFingerprintWindows(unittest.TestCase):
 
         def fake_run(cmd, timeout, stop):
             calls.append((list(cmd), timeout))
-            return _gray_raw(30), b""
+            return 0, _gray_raw(30), b""
 
         return calls, fake_run
 

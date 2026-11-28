@@ -60,6 +60,21 @@ class TestApiLayer(unittest.TestCase):
                 md.get_json("http://x/api")
         self.assertEqual(m.call_count, 3)
 
+    def test_get_json_4xx_no_retry(self):
+        err = urllib.error.HTTPError("http://x/api", 404, "Not Found", {}, io.BytesIO(b""))
+        with mock.patch("urllib.request.urlopen", side_effect=err) as m, \
+             mock.patch("gui_app.models_downloader.time.sleep"):
+            with self.assertRaises(md.HttpError):
+                md.get_json("http://x/api")
+        self.assertEqual(m.call_count, 1)
+
+    def test_get_json_429_still_retries(self):
+        err = urllib.error.HTTPError("http://x/api", 429, "Too Many Requests",
+                                     {}, io.BytesIO(b""))
+        with mock.patch("urllib.request.urlopen", side_effect=[err, _json_resp([1])]), \
+             mock.patch("gui_app.models_downloader.time.sleep"):
+            self.assertEqual(md.get_json("http://x/api"), [1])
+
     def test_search_models_params(self):
         with mock.patch("urllib.request.urlopen", return_value=_json_resp([])), \
              mock.patch("urllib.request.Request", wraps=urllib.request.Request) as req:
@@ -364,6 +379,63 @@ class TestDownloadFile(unittest.TestCase):
         retries = [s for s in self.logs if "重试" in s]
         self.assertEqual(len(retries), 2)
 
+    def test_4xx_no_retry(self):
+        err = urllib.error.HTTPError("http://x", 404, "Not Found", {}, io.BytesIO(b""))
+        with mock.patch("urllib.request.urlopen", side_effect=err) as m, \
+             mock.patch("gui_app.models_downloader.time.sleep"):
+            with self.assertRaises(md.HttpError):
+                md._download_file("http://x/model.gguf", str(self.dest),
+                                  "model.gguf", self.logs.append)
+        self.assertEqual(m.call_count, 1)
+
+    def test_slow_connection_kicked_then_final_trickles(self):
+        """窗口均速低于阈值：非末次尝试断开重连(断点续传)，末次放行跑完。"""
+        clock = {"t": 0.0}
+
+        def fake_monotonic():
+            clock["t"] += 10.0   # 每次调用前进 10s，首次读即触发测速
+            return clock["t"]
+
+        data = b"abcdef" * 8
+        calls = []
+
+        def _open(req, timeout=None):
+            rng = req.headers.get("Range")
+            if rng:
+                s, status = int(re.match(r"bytes=(\d+)-", rng).group(1)), 206
+            else:
+                s, status = 0, 200
+            calls.append(s)
+            pos = {"i": s}
+
+            class _Trickle:
+                def read(self, _n):
+                    if pos["i"] >= len(data):
+                        return b""
+                    b = data[pos["i"]:pos["i"] + 1]
+                    pos["i"] += 1
+                    return b
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+
+            t = _Trickle()
+            t.status = status
+            t.headers = {"Content-Length": str(len(data) - s)}
+            return t
+
+        with mock.patch("urllib.request.urlopen", side_effect=_open), \
+             mock.patch("gui_app.models_downloader.time.sleep"), \
+             mock.patch("gui_app.models_downloader.time.monotonic", fake_monotonic):
+            md._download_file("http://x/model.gguf", str(self.dest),
+                              "model.gguf", self.logs.append, None, None,
+                              expected_size=len(data))
+        self.assertEqual(self.dest.read_bytes(), data)
+        self.assertEqual(calls, [0, 1, 2])   # 两次踢除重连 + 末次放行
+
 
 class TestChunkedDownload(unittest.TestCase):
     """_download_file_chunked：合并 / 段内续传 / 中断重试 / 忽略Range回退 /
@@ -492,6 +564,67 @@ class TestChunkedDownload(unittest.TestCase):
         self.assertEqual(self.dest.read_bytes(), self.data[:512])  # 前缀段并入 dest
         self.assertEqual(self._parts(), [])
         self.assertTrue(any("降级单流" in s for s in self.logs))
+
+    def test_4xx_degrades_without_retries(self):
+        err = urllib.error.HTTPError("http://x", 404, "Not Found", {}, io.BytesIO(b""))
+        with mock.patch("urllib.request.urlopen", side_effect=err), \
+             mock.patch("gui_app.models_downloader.time.sleep"), \
+             mock.patch.object(md, "_download_file") as df:
+            md._download_file_chunked(
+                "http://x/model.gguf", str(self.dest), "model.gguf",
+                self.logs.append, self.events.append, None,
+                expected_size=self.SIZE)
+        df.assert_called_once()  # 4xx 直接降级，段内/外层均不重试
+        self.assertFalse(self.dest.exists())
+        self.assertEqual(self._parts(), [])
+
+    def test_slow_connection_kicked_then_final_trickles(self):
+        """窗口均速低于阈值：非末次尝试断开重连(段内续传)，末次放行跑完。"""
+        clock = {"t": 0.0}
+
+        def fake_monotonic():
+            clock["t"] += 10.0   # 每次调用前进 10s，首次读即触发测速
+            return clock["t"]
+
+        calls = []
+
+        def _open(req, timeout=None):
+            m = re.match(r"bytes=(\d+)-(\d+)", req.headers.get("Range") or "")
+            s, e = (int(m.group(1)), int(m.group(2))) if m else (0, self.SIZE - 1)
+            calls.append(s)
+            pos = {"i": s}
+            data = self.data
+
+            class _Trickle:
+                status = 206
+                headers = {"Content-Length": str(e - s + 1)}
+
+                def read(self, _n):
+                    if pos["i"] > e:
+                        return b""
+                    b = data[pos["i"]:pos["i"] + 1]
+                    pos["i"] += 1
+                    return b
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+
+            return _Trickle()
+
+        with mock.patch.object(md, "CHUNK_SEG_SIZE", self.SIZE), \
+             mock.patch.object(md, "CHUNK_WORKERS", 1), \
+             mock.patch("urllib.request.urlopen", side_effect=_open), \
+             mock.patch("gui_app.models_downloader.time.sleep"), \
+             mock.patch("gui_app.models_downloader.time.monotonic", fake_monotonic):
+            md._download_file_chunked(
+                "http://x/model.gguf", str(self.dest), "model.gguf",
+                self.logs.append, self.events.append, None,
+                expected_size=self.SIZE)
+        self.assertEqual(self.dest.read_bytes(), self.data)
+        self.assertEqual(calls, [0, 1, 2])   # 两次踢除重连 + 末次放行
 
     def test_cancel_cleans_parts(self):
         ev = threading.Event()

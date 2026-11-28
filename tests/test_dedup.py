@@ -4,7 +4,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import tempfile
 import unittest
 
-from batch_rename.dedup import DUPLICATES_DIR, _norm, find_duplicates, move_to_duplicates, partial_hash
+from batch_rename.dedup import DUPLICATES_DIR, find_duplicates, move_to_duplicates, partial_hash
+from batch_rename.utils import norm_path
 from batch_rename.collector import VideoCollector
 
 
@@ -101,7 +102,7 @@ class TestDedup(unittest.TestCase):
         # 已处理视频优先保留，待处理副本推荐移除
         pend = self._write("video.mp4", b"dup content" * 50)
         proc = self._write("20260907-1200_标题.mp4", b"dup content" * 50)
-        groups = find_duplicates([pend, proc], {_norm(proc)})
+        groups = find_duplicates([pend, proc], {norm_path(proc)})
         self.assertEqual(groups[0]["keeps"], [proc])
         self.assertEqual(groups[0]["remove"], [pend])
 
@@ -109,7 +110,7 @@ class TestDedup(unittest.TestCase):
         # 多个已处理重复默认全部保留
         a = self._write("a.mp4", b"dup content" * 50)
         b = self._write("b.mp4", b"dup content" * 50)
-        groups = find_duplicates([a, b], {_norm(a), _norm(b)})
+        groups = find_duplicates([a, b], {norm_path(a), norm_path(b)})
         self.assertEqual(set(groups[0]["keeps"]), {a, b})
         self.assertEqual(groups[0]["remove"], [])
 
@@ -117,7 +118,7 @@ class TestDedup(unittest.TestCase):
         # 已处理必进 keeps，即使其 stem 更长
         pend = self._write("x.mp4", b"dup content" * 50)
         proc = self._write("a very long processed name here.mp4", b"dup content" * 50)
-        groups = find_duplicates([pend, proc], {_norm(proc)})
+        groups = find_duplicates([pend, proc], {norm_path(proc)})
         self.assertEqual(groups[0]["keeps"], [proc])
         self.assertEqual(groups[0]["remove"], [pend])
 

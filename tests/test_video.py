@@ -108,13 +108,13 @@ class TestProbeKeyframesIntervals(unittest.TestCase):
     def test_parses_and_dedups(self):
         out = b"1.0,K_\n2.0,__\n3.0,K_\n1.0,K_\n"
         with mock.patch.object(video_mod, "run_subprocess_with_cancel",
-                               return_value=(out, b"")):
+                               return_value=(0, out, b"")):
             kf = _probe_keyframes_intervals("Z:\\a.mkv", 100.0, 10, threading.Event())
         self.assertEqual(kf, [1.0, 3.0])
 
     def test_none_stdout(self):
         with mock.patch.object(video_mod, "run_subprocess_with_cancel",
-                               return_value=(None, None)):
+                               return_value=(None, None, None)):
             self.assertEqual(
                 _probe_keyframes_intervals("Z:\\a.mkv", 100.0, 10,
                                            threading.Event()), [])
@@ -126,7 +126,7 @@ class TestProbeKeyframesIntervals(unittest.TestCase):
 
         def fake_run(cmd, timeout, stop_event):
             specs.append(cmd[cmd.index("-read_intervals") + 1])
-            return out, b""
+            return 0, out, b""
 
         with mock.patch.object(video_mod, "run_subprocess_with_cancel",
                                side_effect=fake_run):
@@ -143,9 +143,9 @@ class TestProbeKeyframesIntervals(unittest.TestCase):
             specs.append(spec)
             if spec.endswith("%+0.001"):
                 if anchors is None:
-                    return (b"", b"")  # 模拟锚点定位失败
-                return ("".join(f"{a:.3f},K__\n" for a in anchors).encode(), b"")
-            return (b"", b"")
+                    return (0, b"", b"")  # 模拟锚点定位失败
+                return (0, "".join(f"{a:.3f},K__\n" for a in anchors).encode(), b"")
+            return (0, b"", b"")
 
         with mock.patch.object(video_mod, "run_subprocess_with_cancel",
                                side_effect=fake_run):
@@ -291,8 +291,8 @@ class TestProbeVideoSampling(unittest.TestCase):
         def fake_run(cmd, timeout, stop_event):
             calls.append((cmd, timeout))
             if "-read_intervals" not in cmd:
-                return meta_json, b""
-            return b"1.0,K_\n5.0,K_\n", b""
+                return 0, meta_json, b""
+            return 0, b"1.0,K_\n5.0,K_\n", b""
 
         with mock.patch.object(video_mod, "run_subprocess_with_cancel",
                                side_effect=fake_run):

@@ -30,16 +30,16 @@ AI模型（本地或云端均可）， 自动生成标题、剧情描述与标�
 
 ## 环境要求
 
-| 依赖                     | 说明                                                |
-| ---------------------- | ------------------------------------------------- |
-| **Windows**            | GUI支持平台（脚本简单修改后或许可以在其他平台使用）                       |
-| **Python 3.8+**        | 优先使用目录内 `python\python.exe`（便携版）；缺失时回退系统 `python` |
-| **ffmpeg / ffprobe**   | 放入 `Hammy\ffmpeg\` 或加入系统 `PATH`，用于抽帧 / 探针 / 缩略图   |
-| **openai**             | `pip install "openai>=1.0"`（AI 调用 SDK）            |
-| **pywebview**          | `pip install pywebview`（GUI 渲染后端）                 |
-| **pystray**            | `pip install pystray`（最小化到托盘，自动带入 Pillow）         |
-| **WebView2 Runtime**   | Windows 版 pywebview 所需（系统自带 Edge 通常已包含）           |
-| **.NET Framework 4.8** | 原生对话框（pythonnet / WinForms）所需，Windows 一般自带        |
+| 依赖                     | 说明                                                                              |
+| ---------------------- | ------------------------------------------------------------------------------- |
+| **Windows**            | GUI支持平台（脚本简单修改后或许可以在其他平台使用）                                                     |
+| **Python 3.8+**        | 优先使用目录内 `python\python.exe`（便携版）；缺失时回退系统 `python`                               |
+| **ffmpeg / ffprobe**   | 建议8.1.1或以上，部分版本似乎有bug会导致快速抽帧不生效，放入 `Hammy\ffmpeg\` 或加入系统 `PATH`，用于抽帧 / 探针 / 缩略图 |
+| **openai**             | `pip install "openai>=1.0"`（AI 调用 SDK）                                          |
+| **pywebview**          | `pip install pywebview`（GUI 渲染后端）                                               |
+| **pystray**            | `pip install pystray`（最小化到托盘，自动带入 Pillow）                                       |
+| **WebView2 Runtime**   | Windows 版 pywebview 所需（系统自带 Edge 通常已包含）                                         |
+| **.NET Framework 4.8** | 原生对话框（pythonnet / WinForms）所需，Windows 一般自带                                      |
 
 安装 Python 依赖：
 
@@ -103,7 +103,7 @@ pip install openai pywebview pystray
 
 Hammy-tagger训练数据集大量使用了Danbooru素材，其中包含NSFW标签，输出结果也可能包含。
 
-应用仅会显示与使用词条检索内`Hammy-tagger`与`Hammy-tagger-G`两个分组内已有的标签，有约3000个模型输出但应用不显示的隐藏标签，需要的话可浏览config.json手动添加进这两个组中，当然也可以让ai配合网上的D站标签数据库生成待翻译与描述的json导入。
+应用仅会显示与使用词条检索内`Hammy-tagger`与`Hammy-tagger-G`两个分组内已有的标签，有约3000个模型输出但应用不显示的隐藏标签，需要的话可浏览config.json手动添加进这两个组中，当然也可以让ai配合网上的D站标签数据库生成带翻译与描述的json导入。
 
 ---
 
