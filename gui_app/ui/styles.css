@@ -245,9 +245,9 @@
   .source-bar .src-action.danger:hover{border-color:var(--danger);color:var(--danger);
     background:var(--danger-soft)}
   .source-bar .src-action:active{transform:translateY(0);box-shadow:none}
-  .has-fix{position:relative}
-  .has-fix::after{content:'';position:absolute;top:-3.5px;right:-3.5px;width:7px;height:7px;
-    border-radius:50%;background:var(--accent);box-shadow:0 0 0 2px var(--bg)}
+  .src-pill.has-fix{border-color:var(--accent);color:var(--accent-text)}
+  .source-bar .src-action.has-fix{border-color:var(--accent);color:var(--accent-text);
+    background:var(--accent-soft)}
 
   /* ── 网格 ── */
   .grid-wrap{flex:1;overflow-y:auto;padding:10px 6px 16px;min-height:0}
@@ -704,8 +704,7 @@
   ::-webkit-scrollbar-thumb{background:var(--scrollbar);border-radius:var(--r-full);border:2px solid transparent;background-clip:content-box}
   ::-webkit-scrollbar-thumb:hover{background:var(--scrollbar-hover);background-clip:content-box}
   ::-webkit-scrollbar-thumb:active{background:var(--scrollbar-hover);background-clip:content-box}
-  /* 恒定预留滚动条位置（两侧对称）：出现/消失不再挤压内容产生抖动。
-     下列容器的左右 padding 已相应减回，保持内容宽度与原布局一致（见各自规则） */
+  /* 恒定预留滚动条位置（两侧对称），防出现/消失时内容抖动 */
   .grid-wrap,.modal-body,.log,.detail,.dedup-body,.tm-list,
   .xarg-list,.rename-preview,.dd-panel{scrollbar-gutter:stable both-edges}
 
@@ -991,8 +990,6 @@
   .transcribe-model-dd.is-empty .dd-btn:hover{border-color:var(--border-strong)}
   .transcribe-model-dd.is-empty .dd-panel{width:min(330px,calc(100vw - 24px))}
   .transcribe-model-dd.is-empty .dd-opt{white-space:normal;line-height:1.6;cursor:pointer}
-  .ragvec-model-dd .dd-opt{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .ragvec-model-dd.open .dd-opt.disabled{pointer-events:auto;cursor:pointer}
   .exp-badge{font-size:11px;font-weight:600;padding:2px 8px;border-radius:var(--r-sm);display:inline-flex;align-items:center;gap:4px}
   .exp-badge .ic{width:11px;height:11px}
   .exp-badge.ok{color:var(--ok);background:var(--ok-soft)}

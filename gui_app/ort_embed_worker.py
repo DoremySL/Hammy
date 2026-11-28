@@ -1,13 +1,7 @@
-"""ort_embed_worker.py — ONNX Runtime 嵌入 worker（在 ort-embedding venv 内运行）。
+"""ONNX Runtime 嵌入 worker（venv 内运行）。
 
-模型：EmbeddingGemma-300m ONNX（图内含 mean-pooling + 归一化，输出 [B,768] 句向量）。
-fp32 图（model.onnx）输入 int64；int8_qat 图（model_int8_qat.onnx）输入 int32 且需要
-position_ids——按 sess.get_inputs() 的实际签名组装 feeds，两种变体共用本 worker。
-
-协议（stdin/stdout，JSON 行）：
-  ← {"event": "ready", "dim", "device", "file", "load_s"}
-  → {"op": "build", "hash", "texts"}   → {"event": "progress"*, "built"}
-  → {"op": "query", "parts", "top_k"}  → {"event": "matches"}
+fp32 图输入 int64；int8_qat 图输入 int32+position_ids，按 sess.get_inputs() 签名组装。
+协议（JSON 行）：← ready；→ build → progress* → built；→ query → matches
 """
 from __future__ import annotations
 
@@ -41,8 +35,7 @@ def _load(model_path: Path, device: str):
     import contextlib
     import onnxruntime as ort
     if device == "gpu":
-        # Windows：把 pip 安装的 CUDA/cuDNN DLL 目录暴露给加载器。缺 DLL 时 ORT
-        # 会 print 警告，重定向到 stderr——stdout 是 JSON 协议流，不能被污染
+        # 暴露 CUDA DLL 目录；ORT 的 print 警告重定向到 stderr，防污染 stdout 协议流
         with contextlib.redirect_stdout(sys.stderr):
             try:
                 ort.preload_dlls()
@@ -78,8 +71,7 @@ def main() -> None:
     # 图签名 → 输入组装（fp32: int64；int8_qat: int32 + position_ids）
     dtypes = {i.name: (np.int32 if "int32" in i.type else np.int64)
               for i in sess.get_inputs()}
-    # 输出选择：社区 fp32 图带多个输出（last_hidden_state 在前），
-    # 句向量统一按名取；无名时取最后一个（ST 导出把最终输出放末位）
+    # 句向量输出按名取；无名时取末位（ST 导出最终输出在末位）
     out_names = [o.name for o in sess.get_outputs()]
     out_idx = (out_names.index("sentence_embedding")
                if "sentence_embedding" in out_names else len(out_names) - 1)
@@ -121,7 +113,7 @@ def main() -> None:
     _emit({"event": "ready", "dim": dim, "device": actual, "file": model_file.name,
            "load_s": round(time.time() - t0, 1)})
 
-    # 缓存键带模型文件名：换装变体（fp32 ↔ int8）后旧索引不会误命中
+    # 缓存键带模型文件名，换变体后旧索引不误命中
     model_key = f"{model_path.as_posix()}|{model_file.name}"
 
     state = {"hash": None, "mat": None, "count": 0}

@@ -1,4 +1,4 @@
-"""app.py — pywebview 主入口。"""
+"""pywebview 主入口。"""
 from __future__ import annotations
 
 import atexit
@@ -24,7 +24,7 @@ if sys.stdout is None:
 if sys.stderr is None:
     sys.stderr = open(os.devnull, "w", encoding="utf-8")
 
-# 记录 pythonnet 是否成功初始化，供 mainthread.py 选择对话框实现（WinForms STA vs 原生 ctypes）
+# pythonnet 状态供 mainthread 选择对话框实现
 try:
     from gui_app.mainthread import set_pythonnet_status
     __import__("clr")  # 能 import 说明 pythonnet 已就绪
@@ -96,11 +96,11 @@ _setup_crash_handlers()
 try:
     import webview
 except ImportError:
-    from gui_app.env import _resolve_python
+    from gui_app.env import PYTHON_EXE
     _msgbox(
         "缺少 pywebview 库。\n\n"
         "请用当前生效的 Python 解释器安装:\n"
-        f'"{_resolve_python()}" -m pip install pywebview',
+        f'"{PYTHON_EXE}" -m pip install pywebview',
         "依赖缺失",
     )
     sys.exit(1)
@@ -202,7 +202,7 @@ def _ensure_single_instance() -> None:
                 u32.SetForegroundWindow(hwnd)
         except Exception:
             pass
-        # 补写就绪标志：本进程不会走到 _on_started，需让等待本次启动的 bat 退出
+        # 补写就绪标志让等待的启动器退出
         try:
             READY_FLAG.write_text("ok", encoding="utf-8")
         except Exception:
@@ -219,7 +219,7 @@ def _ensure_single_instance() -> None:
 
 def _init_workspace() -> str:
     """依赖检测 + workspace 初始化 + 构建 HTML。返回 html_content。"""
-    # 保留上次崩溃日志（重命名为 .prev），而非无条件删除
+    # 崩溃日志留档为 .prev
     try:
         if CRASH_LOG.exists():
             CRASH_LOG.replace(CRASH_LOG_PREV)
@@ -232,7 +232,7 @@ def _init_workspace() -> str:
         sys.exit(1)
 
     ensure_workspace()
-    # 启动时清除上次添加的文件夹/文件记录（NFO/缩略图保留，可手动清理）
+    # 启动时清空源记录（缩略图/NFO 保留）
     try:
         clear_sources()
     except Exception:
@@ -263,7 +263,7 @@ def _create_window(api: "Api", html_content: str):
 
 def _bind_window_events(window, api: "Api"):
     """绑定窗口事件（closing/closed 清理）。"""
-    # ── 关窗/退出时清理 ffmpeg 子进程（幂等：atexit + closed 只执行一次）──
+    # ── 关窗/退出清理（幂等）──
     _cleaned_up = threading.Event()
 
     def _cleanup_subprocesses():
@@ -279,7 +279,7 @@ def _bind_window_events(window, api: "Api"):
             api.stop_similar_scan()
         except Exception:
             pass
-        # 等待 runner 线程落盘 history：每 0.5s 轮询，最长 30s，超时则告警而非静默丢失。
+        # 等 runner 落盘 history（最长 30s，超时告警不静默）
         try:
             import time as _time
             runner = getattr(api, "_runner", None)
@@ -312,7 +312,7 @@ def _bind_window_events(window, api: "Api"):
         try:
             runner = getattr(api, "_runner", None)
             if runner and runner.is_running:
-                # 弹原生确认框（前端 confirm 在 closing 事件里不可靠）
+                # 前端 confirm 在 closing 里不可靠，弹原生框
                 MB_YESNO = 0x04
                 MB_ICONQUESTION = 0x20
                 MB_DEFBUTTON2 = 0x100
@@ -372,7 +372,7 @@ def _apply_window_icon_async() -> None:
     except Exception:
         return
     hwnd = None
-    for _ in range(20):  # 最多等 5s：webview.start 回调后 HWND 可能仍需片刻就绪
+    for _ in range(20):  # 最多等 5s 等 HWND 就绪
         hwnd = u32.FindWindowW(None, WINDOW_TITLE)
         if hwnd:
             break
@@ -391,16 +391,13 @@ def _apply_window_icon_async() -> None:
 
 
 def _start_background_loops(api=None) -> callable:
-    """构建后台循环，返回 webview.start 的 func 回调。
-
-    """
+    """构建 webview.start 的启动回调（就绪信号 / flush / 托盘 / 图标 / 自动运行）。"""
 
     def _on_started():
         from gui_app.js_push import js_pusher
         import time as _time
 
-        # 页面加载完成（窗口内容真正可见）后才通知启动器脚本退出，
-        # 避免 bat 窗口先消失、程序窗口后出现带来的"闪退感"
+        # 页面加载完成才通知启动器退出，避免闪退感
         _ready_signaled = threading.Event()
 
         def _signal_ready():
@@ -416,8 +413,7 @@ def _start_background_loops(api=None) -> callable:
         if window is not None:
             try:
                 window.events.loaded += lambda *_a: _signal_ready()
-                # 兜底：loaded 不触发（订阅前已触发/注册失败）时 5s 后强制放行，
-                # 避免启动器空等 60s 超时
+                # 兜底：loaded 不触发时 5s 后放行
                 def _ready_fallback():
                     _time.sleep(5)
                     _signal_ready()
@@ -435,9 +431,8 @@ def _start_background_loops(api=None) -> callable:
                 js_pusher.flush()
                 _time.sleep(0.06)
 
-        # flush 线程必须等页面加载完成（前端 core.js 已定义 window.__ui）再启动：
-        # 页面未就绪时 evaluate_js 会报错，连续失败会触发 js_push.py 的 5s 暂停
-        # 并清空队列，导致启动期推送事件（llama 状态等）丢失
+        # flush 线程等页面加载完成再启动：过早启动会因 evaluate_js 连续失败
+        # 触发 js_push 的暂停并清空队列，丢启动期事件
         _flush_started = threading.Event()
 
         def _start_flush():
@@ -450,8 +445,7 @@ def _start_background_loops(api=None) -> callable:
         if window is not None:
             try:
                 window.events.loaded += lambda *_a: _start_flush()
-                # 兜底：若订阅前 loaded 已触发（pywebview 事件不重放），延迟后直接
-                # 启动；期间推送在队列中正常积压，flush 启动后统一发出，不丢事件
+                # 兜底：loaded 已错过时延迟启动，积压事件随后统一发出
                 def _flush_fallback():
                     _time.sleep(15)
                     _start_flush()
@@ -464,7 +458,7 @@ def _start_background_loops(api=None) -> callable:
         else:
             _start_flush()
 
-        # 托盘（pystray 未安装时自动降级为普通最小化）
+        # 托盘（pystray 缺失自动降级为普通最小化）
         if window is not None:
             try:
                 from gui_app.tray import start_tray
@@ -476,7 +470,7 @@ def _start_background_loops(api=None) -> callable:
         threading.Thread(target=_apply_window_icon_async,
                          name="win-icon", daemon=True).start()
 
-        # 本地推理自动运行（扩展功能，未安装/未启用时在端点内直接跳过）
+        # 本地推理自动运行（未安装/未启用时内部跳过）
         if api is not None and hasattr(api, "auto_run_llama"):
             def _auto_run():
                 try:
@@ -489,11 +483,10 @@ def _start_background_loops(api=None) -> callable:
 
 
 def main() -> None:
-    _ensure_single_instance()  # 必须先于 _init_workspace（避免清空运行中实例的 manifest / 双进程写配置）
+    _ensure_single_instance()  # 先于 _init_workspace：防双实例互踩配置
     html_content = _init_workspace()
 
-    # 尽早创建作业对象（kill-on-close）：此后注册的所有子进程（ffmpeg、
-    # llama-server 等）都会挂入其中，程序以任意方式退出时由内核自动终止
+    # 尽早创建 kill-on-close 作业对象，子进程随进程退出自动终止
     try:
         from batch_rename.job_object import init_job_object
         init_job_object()
@@ -507,8 +500,7 @@ def main() -> None:
     on_started = _start_background_loops(api)
 
     try:
-        # Windows 上使用 winforms backend（pywebview 6.x 唯一支持），
-        # 页面渲染由 WebView2 Runtime 提供
+        # winforms 后端 + WebView2 渲染
         webview.start(func=on_started, private_mode=False,
                       storage_path=str(APP_ROOT / "_workspace" / "webview"))
     except Exception as e:

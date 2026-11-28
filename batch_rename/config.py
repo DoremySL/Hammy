@@ -2,7 +2,7 @@
 from dataclasses import dataclass
 from typing import Any, Optional, TYPE_CHECKING
 
-# openai 延迟导入：TYPE_CHECKING 用真实类型，运行时回落为 Any
+# openai 延迟导入，运行时回落为 Any
 if TYPE_CHECKING:
     from openai import OpenAI as OpenAIClient
 else:

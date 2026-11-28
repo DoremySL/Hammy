@@ -130,12 +130,7 @@ def _extract_first_json(text: str, require_key: Optional[str] = "title") -> Opti
 
 
 class AnalyzeResult(NamedTuple):
-    """analyze_frames 的返回值。
-
-    recalled：增强档=第二轮向量候选数，供管线完成日志追加「召回N个关键词」
-    （-1 = 未发生向量召回：开启档首轮字面注入 / 降级 / 关闭 均不追加）。
-    recalled_keywords：与 recalled 对应的关键词列表（调试日志用）。
-    """
+    """analyze_frames 结果；recalled=-1 表示未发生向量召回（完成日志不追加召回后缀）。"""
     title: str
     plot: str
     tags: List[str]
@@ -403,7 +398,7 @@ def _refine_round(client: OpenAIClient, model: str, messages: list,
         return result._replace(recalled=0, recalled_keywords=[])
     keywords = [it["keyword"] for it in candidates]
 
-    # frame_time_tags==2 时提示模板才含 thumb_time 字段，修订项随之插入
+    # frame_time_tags==2 时提示词模板才含 thumb_time 字段
     thumb_line = "4. thumb_time：保持首轮结果不变。\n" if config.frame_time_tags == 2 else ""
     cand_sec = term_recall.build_candidates_section(candidates)
     refine_prompt = cand_sec + "\n\n" + _REFINE_INSTRUCTION + thumb_line + _REFINE_TAIL
@@ -420,7 +415,7 @@ def _refine_round(client: OpenAIClient, model: str, messages: list,
         {"role": "user", "content": refine_prompt},
     ]
     refined: Optional[AnalyzeResult] = None
-    for _attempt2 in range(2):
+    for _attempt in range(2):
         if stop_event.is_set():
             return AnalyzeResult("", "", [], 0, "已取消", "cancel")
         try:

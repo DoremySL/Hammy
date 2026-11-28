@@ -1,4 +1,4 @@
-"""ConfigPresetMixin — 配置读写、提示词预设 CRUD、词条检索管理/导入导出。"""
+"""配置读写、提示词预设 CRUD 与词条检索导入导出。"""
 from __future__ import annotations
 
 import json
@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from .. import config_store, prompts
+from .system import _dialog_type
 
 
 class ConfigPresetMixin:
@@ -68,32 +69,19 @@ class ConfigPresetMixin:
 
     def import_term_library(self) -> Dict[str, Any]:
         """弹出文件选择对话框导入词条检索 JSON（不落地，返回给前端载入页面）。"""
-        import webview
-        from ..mainthread import run_on_ui_thread
-
-        dlg = getattr(webview, "FileDialog", None)
-        open_type = dlg.OPEN if dlg else webview.OPEN_DIALOG
-
-        def _do():
-            return self._window.create_file_dialog(
-                open_type,
-                directory=self._initial_dir(),
-                allow_multiple=False,
-                file_types=("JSON 文件 (*.json)",),
-            )
-
         try:
-            result = run_on_ui_thread(_do)
+            result = self._invoke_dialog(_dialog_type("open"), allow_multiple=False,
+                                         file_types=("JSON 文件 (*.json)",))
         except Exception as e:
             return {"ok": False, "error": f"对话框失败: {e}"}
         if not result:
             return {"ok": False, "cancelled": True}
-        path = result[0] if isinstance(result, (list, tuple)) else result
+        path = result[0]
         try:
             data = json.loads(Path(path).read_text(encoding="utf-8"))
         except Exception as e:
             return {"ok": False, "error": f"读取/解析失败: {e}"}
-        # 兼容 {items} 与纯数组两种根结构（旧文件的 mode/disabled_groups 忽略）
+        # 支持 {items} 与纯数组两种根结构
         if isinstance(data, list):
             items = data
         elif isinstance(data, dict):
@@ -108,27 +96,14 @@ class ConfigPresetMixin:
 
     def export_term_library(self, items: Any) -> Dict[str, Any]:
         """弹出保存对话框，把当前词条检索导出为 JSON 文件。"""
-        import webview
-        from ..mainthread import run_on_ui_thread
-
-        dlg = getattr(webview, "FileDialog", None)
-        save_type = dlg.SAVE if dlg else webview.SAVE_DIALOG
-
-        def _do():
-            return self._window.create_file_dialog(
-                save_type,
-                directory=self._initial_dir(),
-                save_filename="term_library.json",
-                file_types=("JSON 文件 (*.json)",),
-            )
-
         try:
-            result = run_on_ui_thread(_do)
+            result = self._invoke_dialog(_dialog_type("save"), save_filename="term_library.json",
+                                         file_types=("JSON 文件 (*.json)",))
         except Exception as e:
             return {"ok": False, "error": f"对话框失败: {e}"}
         if not result:
             return {"ok": False, "cancelled": True}
-        path = result[0] if isinstance(result, (list, tuple)) else result
+        path = result[0]
         data = prompts.normalize_term_library_items(items)
         try:
             Path(path).write_text(

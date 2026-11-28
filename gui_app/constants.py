@@ -1,4 +1,4 @@
-"""gui_app/constants.py — GUI 层数值常量集中管理。"""
+"""GUI 层数值常量。"""
 
 # ── 缩略图 ──
 THUMB_MAX_SIDE = 320          # 缩略图最大边长（px）

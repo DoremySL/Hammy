@@ -1,4 +1,4 @@
-"""workspace_store.py — JSON 原子读写 + 线程安全 + History 缓存/批量落盘 + Manifest CRUD。"""
+"""JSON 原子读写、进程内缓存与批量落盘、Manifest/History CRUD。"""
 from __future__ import annotations
 
 import json
@@ -9,6 +9,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from batch_rename.utils import norm_path
 from .workspace_paths import (
     HISTORY_FILE,
     MANIFEST_FILE,
@@ -19,8 +20,7 @@ from .workspace_paths import (
 
 _lock = threading.RLock()
 
-# update_json 的 mutator 返回此哨兵 → 跳过写入，函数直接返回当前值
-# （用于「读 + 按需补全」场景：文件完整时保持纯读，不产生任何磁盘写）
+# mutator 返回此哨兵 → 跳过写入（读+按需补全场景不产生磁盘写）
 NO_WRITE = object()
 
 # ── History 进程内缓存（按 mtime 失效）+ 批量落盘 ──
@@ -59,10 +59,7 @@ def ensure_workspace() -> None:
 
 
 def read_json(path: Path, default: Any) -> Any:
-    """读取 JSON；文件缺失/损坏/不可读时返回 default。
-
-    写侧为 tmp + os.replace 原子替换，读到的是完整新旧之一，无需加锁。
-    """
+    """读 JSON；缺失/损坏/不可读返回 default（写侧原子替换，读无需加锁）。"""
     try:
         if not path.exists():
             return default
@@ -80,11 +77,7 @@ _json_read_cache: Dict[str, Tuple[Any, Any]] = {}
 
 
 def read_json_cached(path: Path) -> Dict[str, Any]:
-    """read_json 的 mtime 缓存版（dict 专用）：高频轮询读免重复读盘。
-
-    （mtime_ns, size）未变时返回缓存快照（顶层拷贝，调用方按只读使用）；
-    update_json 写入会主动失效，绕过它直改磁盘则靠 mtime 变化自然失效。
-    """
+    """mtime 缓存版读 JSON（dict 专用）：高频轮询免重复读盘；update_json 写后主动失效。"""
     key = str(path)
     try:
         st = path.stat()
@@ -113,7 +106,7 @@ def update_json(path: Path, mutator: Callable[[Any], Any],
                 default_factory: Optional[Callable[[], Any]] = None) -> Any:
     """原子读-改-写（进程内由 RLock 串行化；跨进程由单实例守卫保证无并发）。"""
     with _lock:
-        # 读取（内联而非调用 read_json，避免重复解析缓存读）
+        # 内联读：不走 read_json 的缓存快照路径
         try:
             if path.exists():
                 with open(path, "r", encoding="utf-8") as f:
@@ -130,13 +123,13 @@ def update_json(path: Path, mutator: Callable[[Any], Any],
         result = mutator(current)
         if result is NO_WRITE:
             return current
-        # 写入（内联，避免 write_json 重复获取锁的开销）
+        # 内联写：避免重复获取锁
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(path.suffix + ".tmp")
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
         os.replace(tmp, path)
-        _json_read_cache.pop(str(path), None)  # 写后失效，read_json_cached 下次重读
+        _json_read_cache.pop(str(path), None)  # 写后失效缓存
         return result
 
 
@@ -166,10 +159,10 @@ def _update_manifest(mutator: Callable[[Dict[str, Any]], Any]) -> Any:
 
 def add_root(path: str) -> Dict[str, Any]:
     """追加一个根（文件夹或文件）。返回更新后的 manifest。"""
-    norm = os.path.normcase(os.path.normpath(path))
+    norm = norm_path(path)
 
     def _mutate(m):
-        if norm not in {os.path.normcase(os.path.normpath(r)) for r in m["roots"]}:
+        if norm not in {norm_path(r) for r in m["roots"]}:
             m["roots"].append(path)
         return m
 
@@ -179,9 +172,9 @@ def add_root(path: str) -> Dict[str, Any]:
 def add_adhoc_files(paths: List[str]) -> Dict[str, Any]:
     """追加零散文件。"""
     def _mutate(m):
-        existing = {os.path.normcase(os.path.normpath(p)) for p in m["adhoc_files"]}
+        existing = {norm_path(p) for p in m["adhoc_files"]}
         for p in paths:
-            n = os.path.normcase(os.path.normpath(p))
+            n = norm_path(p)
             if n not in existing:
                 m["adhoc_files"].append(p)
                 existing.add(n)
@@ -191,8 +184,8 @@ def add_adhoc_files(paths: List[str]) -> Dict[str, Any]:
 
 
 def _remove_from_list(lst: list, path: str) -> list:
-    target = os.path.normcase(os.path.normpath(path))
-    return [r for r in lst if os.path.normcase(os.path.normpath(r)) != target]
+    target = norm_path(path)
+    return [r for r in lst if norm_path(r) != target]
 
 
 def remove_root(path: str) -> Dict[str, Any]:
@@ -213,13 +206,13 @@ def remove_adhoc(path: str) -> Dict[str, Any]:
 
 def update_adhoc_path(old_path: str, new_path: str) -> bool:
     """把 manifest 中 adhoc_files 的 old_path 替换为 new_path（含去重），返回是否发生替换。"""
-    target = os.path.normcase(os.path.normpath(old_path))
+    target = norm_path(old_path)
     changed = {"v": False}
 
     def _mutate(m):
         new_list = []
         for p in m["adhoc_files"]:
-            if os.path.normcase(os.path.normpath(p)) == target:
+            if norm_path(p) == target:
                 new_list.append(new_path)
                 changed["v"] = True
             else:
@@ -229,7 +222,7 @@ def update_adhoc_path(old_path: str, new_path: str) -> bool:
         seen = set()
         deduped = []
         for p in new_list:
-            n = os.path.normcase(os.path.normpath(p))
+            n = norm_path(p)
             if n not in seen:
                 seen.add(n)
                 deduped.append(p)

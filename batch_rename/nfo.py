@@ -8,9 +8,9 @@ from typing import List, Dict, Any, Optional
 from xml.etree import ElementTree as ET
 from xml.dom import minidom
 
-from .utils import to_long_path
 from .env import logger
 from .naming import parse_creation_time
+from .utils import to_long_path
 
 
 # XML 1.0 不允许的字符：U+0000-U+001F 中除 tab(0x09)、LF(0x0a)、CR(0x0d) 外
@@ -65,7 +65,7 @@ def _add_stream_fields(parent: ET.Element, stream: Dict[str, Any], field_map) ->
 
 def _build_nfo_xml(title: str, plot: str, tags: List[str], info: Dict[str, Any],
                     original_name: str, status: str = "ok") -> str:
-    """使用 xml.etree.ElementTree 构建 NFO XML 内容并序列化为字符串。"""
+    """构建 NFO XML 并序列化为字符串。"""
     root = ET.Element("movie")
 
     ET.SubElement(root, "title").text = _safe_xml_text(title)
@@ -107,7 +107,7 @@ def _build_nfo_xml(title: str, plot: str, tags: List[str], info: Dict[str, Any],
     hammy = ET.SubElement(root, "hammy", {"version": "1"})
     ET.SubElement(hammy, "status").text = _safe_xml_text(status or "ok")
     ET.SubElement(hammy, "processed_at").text = f"{time.time():.3f}"
-    thumb_time = (info or {}).get("thumb_time") or ""
+    thumb_time = info.get("thumb_time") or ""
     if thumb_time:
         ET.SubElement(hammy, "thumb_time").text = _safe_xml_text(thumb_time)
 
@@ -121,9 +121,7 @@ def write_nfo(video_path: str, title: str, plot: str, tags: List[str],
               target_dir: Optional[str] = None,
               nfo_name: Optional[str] = None,
               status: str = "ok") -> str:
-    """写入 NFO 文件；target_dir 指定缓存目录时可通过 nfo_name 指定唯一文件名。
-    返回最终路径，失败返回空串。
-    """
+    """写入 NFO；target_dir 缓存模式下可用 nfo_name 唯一命名。失败返回空串。"""
     try:
         vp = Path(video_path)
         if target_dir:

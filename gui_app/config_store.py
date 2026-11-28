@@ -1,7 +1,7 @@
 """GUI 托管的结构化配置；主配置唯一来源 _workspace/config.json（由 GUI 读写）。"""
 from __future__ import annotations
 
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Optional
 
 from .workspace_paths import (
     CONFIG_FILE,
@@ -116,6 +116,27 @@ def update_config(mutator: Callable[[Dict[str, Any]], Dict[str, Any]]) -> Dict[s
 # ── 试验模块配置（独立文件 _workspace/<模块>/config.json） ──
 
 
+def _load_module_config(path, defaults: Dict[str, Any]) -> Dict[str, Any]:
+    """读取模块配置并合并默认值（仅保留 schema 内的键）。"""
+    data = read_json_cached(path)
+    merged = dict(defaults)
+    merged.update({k: v for k, v in data.items() if k in merged})
+    return merged
+
+
+def _update_module_config(path, defaults: Dict[str, Any],
+                          mutator: Callable[[Dict[str, Any]], Optional[Dict[str, Any]]]) -> Dict[str, Any]:
+    """原子读-改-写模块配置（mutator 就地修改后可返回 None）。"""
+    def _wrapped(current):
+        current = current if isinstance(current, dict) else {}
+        merged = dict(defaults)
+        merged.update(current)
+        result = mutator(merged)
+        return merged if result is None else result
+
+    return update_json(path, _wrapped, default_factory=dict)
+
+
 def _tagger_defaults() -> Dict[str, Any]:
     """tagger 模块配置默认值（文件缺失/损坏时的兜底）。"""
     return {"enabled": False, "integration": False, "threshold": 0.75,
@@ -130,51 +151,27 @@ def _transcribe_defaults() -> Dict[str, Any]:
 
 
 def load_tagger_config() -> Dict[str, Any]:
-    """读取 Hammy-tagger 模块配置。文件不存在/损坏时返回默认值（enabled=False）。
-    只保留当前 schema 内的键（丢弃旧版本的遗留键）。"""
-    data = read_json_cached(TAGGER_CONFIG_FILE)
-    merged = dict(_tagger_defaults())
-    merged.update({k: v for k, v in data.items() if k in merged})
-    return merged
+    """读取 Hammy-tagger 模块配置（缺失/损坏回退默认值）。"""
+    return _load_module_config(TAGGER_CONFIG_FILE, _tagger_defaults())
 
 
 def update_tagger_config(
     mutator: Callable[[Dict[str, Any]], Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """原子读-改-写 tagger 模块配置（与 config.json 同一 RLock 互斥）。
-
-    mutator 接收已补全默认值的配置 dict，就地修改后返回（或返回 None 表示原地修改）。
-    """
-    def _wrapped(current):
-        current = current if isinstance(current, dict) else {}
-        merged = dict(_tagger_defaults())
-        merged.update(current)
-        result = mutator(merged)
-        return merged if result is None else result
-
-    return update_json(TAGGER_CONFIG_FILE, _wrapped, default_factory=dict)
+    """原子读-改-写 tagger 模块配置。"""
+    return _update_module_config(TAGGER_CONFIG_FILE, _tagger_defaults(), mutator)
 
 
 def load_transcribe_config() -> Dict[str, Any]:
     """读取语音转写模块配置。"""
-    data = read_json_cached(TRANSCRIBE_CONFIG_FILE)
-    merged = dict(_transcribe_defaults())
-    merged.update({k: v for k, v in data.items() if k in merged})
-    return merged
+    return _load_module_config(TRANSCRIBE_CONFIG_FILE, _transcribe_defaults())
 
 
 def update_transcribe_config(
     mutator: Callable[[Dict[str, Any]], Dict[str, Any]],
 ) -> Dict[str, Any]:
     """原子读-改-写语音转写模块配置。"""
-    def _wrapped(current):
-        current = current if isinstance(current, dict) else {}
-        merged = dict(_transcribe_defaults())
-        merged.update(current)
-        result = mutator(merged)
-        return merged if result is None else result
-
-    return update_json(TRANSCRIBE_CONFIG_FILE, _wrapped, default_factory=dict)
+    return _update_module_config(TRANSCRIBE_CONFIG_FILE, _transcribe_defaults(), mutator)
 
 
 def load_llama_config() -> Dict[str, Any]:
@@ -206,6 +203,4 @@ def update_llama_model_configs(
         result = mutator(current)
         return current if result is None else result
 
-    return update_json(
-        LLAMA_MODEL_CONFIGS_FILE, _wrapped, default_factory=dict
-    )
+    return update_json(LLAMA_MODEL_CONFIGS_FILE, _wrapped, default_factory=dict)

@@ -64,8 +64,8 @@ DEFAULT_INJECT_MODEL = "sensevoice"
 # 注入模式分窗时长（秒）
 INJECT_WIN_SEC = {"sensevoice": 30.0, "whisper": 60.0, "moss": 300.0}
 
-# ── 官方 Silero VAD（transcribe.cpp 内置，与 ASR 同引擎零新依赖）──
-# 区段级推理跳过静音/底噪/纯音乐（防幻觉）；模型缺失时整段推理
+# ── 官方 Silero VAD ──
+# 区段级推理跳过静音/底噪（防幻觉）；模型缺失时整段推理
 VAD_MODEL_META = {
     "gguf": "silero-vad-v6.2-F32.gguf",
     "hf_repo": "handy-computer/silero-vad-v6.2-gguf",
@@ -95,7 +95,7 @@ def _download_vad(log_fn=None, stop_event=None) -> bool:
 
 # ── 引擎安装 ──
 _INSTALL_TIMEOUT_SEC = 600.0
-# 整批挂起兜底预算：Σ(视频时长 × 0.25s) + 120s；时长未知的视频按 600s
+# 整批超时预算：Σ时长×0.25 + 120s，未知时长按 600s
 _TIMEOUT_PER_VIDEO_SEC = 0.25
 _TIMEOUT_FLAT_SEC = 120.0
 _TIMEOUT_NO_DURATION_SEC = 600.0
@@ -341,9 +341,7 @@ def _run_batch_script(params: Dict[str, Any], per_video: List[Dict[str, Any]],
                       on_video_done: Optional[Callable[[int, Dict[str, Any]], None]],
                       on_log: Optional[Callable[[str], None]],
                       stop_event, err_label: str) -> Tuple[Optional[str], List[Dict[str, Any]]]:
-    """运行转写子进程并解析逐行 JSON 输出。返回 (error, items)，error=None 表示成功。
-
-    临时目录由父进程持有（work_dir 传入脚本）：子进程被杀后的残留由 finally 统一清理。"""
+    """运行转写子进程并解析逐行 JSON；临时目录由父进程持有，finally 统一清理。"""
 
     def _on_line(line: str):
         line = line.strip()
@@ -416,7 +414,7 @@ def run_transcription_batch(video_paths: List[str],
         "workers": _config_workers(),
         "ffmpeg": FFMPEG_EXE,
         "venv_site_packages": str(VENV_DIR / "Lib" / "site-packages"),
-        # 官方 Silero VAD（缺失则整段推理/不做静音判断）
+        # 官方 Silero VAD（缺失则整段推理）
         "vad_model": str(vad) if vad else "",
         "mode": "srt",
     }
@@ -458,7 +456,7 @@ def run_inject_batch(video_paths: List[str],
         "venv_site_packages": str(VENV_DIR / "Lib" / "site-packages"),
         "max_chars": int(max_chars),
         "inject_win_sec": INJECT_WIN_SEC[TRANSCRIBE_MODELS[inject_key]["family"]],
-        # 官方 Silero VAD（缺失则脚本内整段推理，静音不跳过）
+        # Silero VAD（缺失则脚本内整段推理，静音不跳过）
         "vad_model": str(vad_path) if vad_path else "",
         "mode": "text",
     }
@@ -477,5 +475,5 @@ def run_inject_batch(video_paths: List[str],
     return {"ok": True, "texts": texts, "error": None}
 
 
-# ── 转写 worker（真实文件：可 lint/可单测，venv 内按路径执行）──
+# ── 转写 worker（venv 内按路径执行）──
 _WORKER_SCRIPT = Path(__file__).resolve().parent / "transcribe_worker.py"

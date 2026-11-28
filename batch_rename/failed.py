@@ -9,9 +9,7 @@ from .naming import resolve_collision
 
 
 def move_with_companion(full_path: str, subdir: str) -> Tuple[bool, Optional[Path], str]:
-    """把文件移入自身目录的 <subdir>/ 子目录，并带上同名 .nfo。
-    返回 (ok, dest, err)。
-    """
+    """移入自身目录的 <subdir>/ 子目录，并带上同名 .nfo。返回 (ok, dest, err)。"""
     try:
         if not path_exists(full_path):
             return False, None, "文件不存在"
@@ -27,10 +25,7 @@ def move_with_companion(full_path: str, subdir: str) -> Tuple[bool, Optional[Pat
             return False, None, "系统重命名失败"
         src_nfo = p.with_suffix(".nfo")
         if path_exists(str(src_nfo)):
-            try:
-                rename_file(str(src_nfo), str(dest.with_suffix(".nfo")))
-            except Exception as e:
-                logger.debug(f"同名 NFO 移动失败（忽略）: {e}")
+            rename_file(str(src_nfo), str(dest.with_suffix(".nfo")))
         return True, dest, ""
     except Exception as e:
         return False, None, str(e)

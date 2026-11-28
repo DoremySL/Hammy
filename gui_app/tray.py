@@ -1,8 +1,4 @@
-"""tray.py — 最小化隐藏到系统托盘（pystray）。
-
-pystray/PIL 未安装时 start_tray 返回 False，窗口保持普通最小化行为。
-有 hammy.ico / icon.ico 时用作托盘图标，否则程序生成占位图标。
-"""
+"""最小化隐藏到系统托盘（pystray）；pystray 缺失时保持普通最小化。"""
 from __future__ import annotations
 
 import sys

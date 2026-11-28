@@ -1,4 +1,4 @@
-"""models_downloader.py — 模型搜索与下载：HF-Mirror / ModelScope 双源 + 通用直连下载。"""
+"""模型搜索与下载：HF-Mirror / ModelScope 双源 + 通用直连下载。"""
 from __future__ import annotations
 
 import json
@@ -23,13 +23,16 @@ MS_ENDPOINT = os.environ.get("MODELSCOPE_ENDPOINT", "https://modelscope.cn").rst
 DEFAULT_TIMEOUT = 30          # 网络/单请求超时(秒)
 DEFAULT_RETRIES = 3
 DOWNLOAD_CHUNK = 1024 * 256
+# 慢速连接看门狗：窗口内均速低于阈值则断开重连（末次尝试放行）
+MIN_SPEED = 64 * 1024                  # 字节/秒
+SPEED_WINDOW = 10                      # 秒
 USER_AGENT = "video-rename-gui"
 
 # 单文件分片下载（多连接并行，仅大文件启用）
 CHUNK_MIN_SIZE = 200 * 1024 * 1024
-CHUNK_WORKERS = 6
+CHUNK_WORKERS = 4
 CHUNK_SEG_SIZE = 64 * 1024 * 1024
-CHUNK_MAX_SEGS = 36                    # 段数上限（取并发数的整数倍）
+CHUNK_MAX_SEGS = 256                   # 段数上限
 CHUNK_TIMEOUT = 30                     # 分片连接超时(秒)
 
 _O_BINARY = getattr(os, "O_BINARY", 0)
@@ -48,7 +51,7 @@ class ChunkedFallback(Exception):
 
 
 class _SegmentIncomplete(Exception):
-    """单段未下满即连接提前关闭，触发该段重试。"""
+    """连接未正常完成段下载（提前关闭/速度过低），触发重试。"""
 
 
 # ── 并发保护：同一时刻只允许一个下载任务 ──
@@ -83,7 +86,7 @@ def set_cancel() -> None:
     _dl_cancel.set()
 
 
-# ============================== 工具函数 ==============================
+# ── 工具函数 ──
 def split_repo_id(repo_id: str) -> Tuple[str, str]:
     """仓库 ID -> (author, repo_name)。"""
     if "/" in repo_id:
@@ -98,12 +101,28 @@ def _safe_relpath(path: str) -> bool:
                for p in path.split("/"))
 
 
-# ============================== HTTP 请求层 ==============================
+def _backoff(cancel_event: Optional[threading.Event], seconds: float) -> None:
+    """退避等待，期间响应取消。"""
+    if cancel_event is not None:
+        if cancel_event.wait(seconds):
+            raise DownloadCancelled()
+    else:
+        time.sleep(seconds)
+
+
+# ── HTTP 请求层 ──
 def _headers(extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     h = {"User-Agent": USER_AGENT}
     if extra:
         h.update(extra)
     return h
+
+
+def _retriable(e: Exception) -> bool:
+    """仅 4xx（除 408/429）不重试，其余一律重试。"""
+    if isinstance(e, urllib.error.HTTPError) and 400 <= e.code < 500:
+        return e.code in (408, 429)
+    return True
 
 
 def _retry_request(req: urllib.request.Request,
@@ -120,14 +139,15 @@ def _retry_request(req: urllib.request.Request,
             if out_headers is not None:
                 out_headers.update(dict(resp.headers))
             return resp
-        except DownloadCancelled:
-            raise
         except Exception as e:  # noqa
             if cancel_event is not None and cancel_event.is_set():
                 raise DownloadCancelled()
+            if not _retriable(e):
+                raise HttpError(f"请求失败: {getattr(req, 'full_url', req)}\n原因: {e}")
             last_err = e
-            time.sleep(1.0 * attempt)
-    raise HttpError(f"请求失败({DEFAULT_RETRIES}次重试后): {getattr(req, 'full_url', req)}\n原因: {last_err}")
+            if attempt < DEFAULT_RETRIES:
+                _backoff(cancel_event, 1.0 * attempt)
+    raise HttpError(f"请求失败({DEFAULT_RETRIES}次尝试后): {getattr(req, 'full_url', req)}\n原因: {last_err}")
 
 
 def get_json(url: str, params: Optional[Dict[str, Any]] = None,
@@ -153,7 +173,7 @@ def put_json(url: str, body: Dict[str, Any],
         return json.loads(r.read().decode("utf-8"))
 
 
-# ============================== 源适配层 ==============================
+# ── 源适配层 ──
 class HFSource:
     """hf-mirror.com（HuggingFace API 兼容）。"""
     id = "hf"
@@ -182,7 +202,7 @@ class HFSource:
 
     @staticmethod
     def _next_cursor(headers: Dict[str, str]) -> Optional[str]:
-        """从 Link 响应头解析 rel="next" 的翻页游标（热门榜等排序不支持 offset，只能游标翻页）。"""
+        """从 Link 响应头解析 rel="next" 翻页游标。"""
         m = re.search(r'<([^>]+)>;\s*rel="next"', headers.get("Link", ""))
         if not m:
             return None
@@ -223,10 +243,7 @@ class MSSource:
 
     def search(self, keyword: str, sort: str = "trendingScore", limit: int = 20,
                cursor: str = "") -> Tuple[List[Dict[str, Any]], Optional[str]]:
-        """搜索模型（PUT dolphin 接口）。空关键词 = 浏览全站。
-
-        魔搭无游标翻页，cursor 约定传页码字符串（"2"、"3"…），None 为第一页。
-        """
+        """搜索模型（PUT dolphin 接口）；无游标翻页，cursor 约定为页码字符串。"""
         page = int(cursor) if str(cursor).strip().isdigit() else 1
         body = {
             "PageSize": limit,
@@ -330,9 +347,9 @@ def repo_page_url(source: str, repo_id: str) -> str:
     return get_source(source).repo_page_url(repo_id)
 
 
-# ============================== 文件分类 ==============================
+# ── 文件分类 ──
 def classify_files(files: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
-    """按文件名分类: mmproj（含 'mmproj' 字样，与 scan_mmprojs 判定一致）→ mmproj；"""
+    """按文件名分类 mmproj / gguf / other（mmproj 判定与 scan_mmprojs 一致）。"""
     out: Dict[str, List[Dict[str, Any]]] = {"gguf": [], "mmproj": [], "other": []}
     for f in files:
         if f.get("type") == "directory":
@@ -352,7 +369,7 @@ def classify_files(files: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]
     return out
 
 
-# ============================== 下载层 ==============================
+# ── 下载层 ──
 def _delete_quiet(path: str) -> None:
     try:
         os.remove(path)
@@ -360,19 +377,54 @@ def _delete_quiet(path: str) -> None:
         pass
 
 
+def _delete_sibling_parts(dest_path: str) -> None:
+    """清理 dest 的孤儿分片临时文件（合并中途崩溃的残留）。"""
+    parent = os.path.dirname(os.path.abspath(dest_path))
+    prefix = os.path.basename(dest_path) + ".part"
+    for name in os.listdir(parent):
+        if name.startswith(prefix):
+            _delete_quiet(os.path.join(parent, name))
+
+
+def _open_with_cancel(req: urllib.request.Request, timeout: int,
+                      cancel_event: Optional[threading.Event],
+                      stop_event: Optional[threading.Event] = None):
+    """后台线程 urlopen，连接期间可响应取消；返回响应（stop_event 置位时为 None），失败抛原始异常。"""
+    box: dict = {}
+
+    def _do():
+        try:
+            box["resp"] = urllib.request.urlopen(req, timeout=timeout)
+        except Exception as e:  # noqa
+            box["err"] = e
+
+    t = threading.Thread(target=_do, daemon=True)
+    t.start()
+    while t.is_alive():
+        if cancel_event is not None and cancel_event.is_set():
+            raise DownloadCancelled()
+        if stop_event is not None and stop_event.is_set():
+            return None
+        t.join(timeout=0.2)
+    if "err" in box:
+        raise box["err"]
+    return box["resp"]
+
+
 def _download_once(url: str, dest_path: str, filename: str,
                    log_fn: Callable[[str], None],
                    progress_cb: Optional[Callable[[Dict[str, Any]], None]],
                    cancel_event: Optional[threading.Event],
-                   expected_size: int, timeout: int) -> None:
-    """单次下载尝试：Range 续传(206)/从头(200)/已完整(416)，完成后校验大小。"""
+                   expected_size: int, timeout: int,
+                   slow_kick: bool = True) -> None:
+    """单次下载尝试：Range 续传(206)/从头(200)/已完整(416)，慢速断开重连，完成后校验大小。"""
     resumed = os.path.getsize(dest_path) if os.path.exists(dest_path) else 0
     headers = _headers()
     if resumed > 0:
         headers["Range"] = f"bytes={resumed}-"
     req = urllib.request.Request(url, headers=headers)
     try:
-        resp = urllib.request.urlopen(req, timeout=timeout)
+        resp = _open_with_cancel(req, timeout, cancel_event)
     except urllib.error.HTTPError as e:
         if e.code == 416:  # Range 超出：本地已 >= 服务器大小
             if not expected_size or resumed == expected_size:
@@ -402,6 +454,8 @@ def _download_once(url: str, dest_path: str, filename: str,
             stop_watch = start_cancel_watcher(cancel_event, resp.close)
         try:
             with open(dest_path, mode) as fp:
+                speed_t0 = time.monotonic()
+                speed_n0 = downloaded
                 while True:
                     chunk = resp.read(DOWNLOAD_CHUNK)
                     if not chunk:
@@ -410,6 +464,13 @@ def _download_once(url: str, dest_path: str, filename: str,
                     downloaded += len(chunk)
                     if cancel_event and cancel_event.is_set():
                         raise DownloadCancelled()
+                    dt = time.monotonic() - speed_t0
+                    if dt >= SPEED_WINDOW:
+                        speed = (downloaded - speed_n0) / dt
+                        if speed < MIN_SPEED and slow_kick:
+                            raise _SegmentIncomplete(f"速度过低 {fmt_size(int(speed))}/s")
+                        speed_t0 = time.monotonic()
+                        speed_n0 = downloaded
                     if progress_cb:
                         if total:
                             pct = downloaded / total
@@ -439,8 +500,9 @@ def _download_file(url: str, dest_path: str, filename: str, log_fn: Callable[[st
                    cancel_event: Optional[threading.Event] = None,
                    expected_size: int = 0,
                    timeout: int = DEFAULT_TIMEOUT) -> None:
-    """下载单个文件：已完整跳过，不完整续传，失败重试（保留断点），取消清理半成品。"""
+    """下载单个文件：已完整跳过，不完整续传，失败/慢速重试（保留断点），取消清理半成品。"""
     os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
+    _delete_sibling_parts(dest_path)
     if cancel_event and cancel_event.is_set():
         raise DownloadCancelled()
     exist_size = os.path.getsize(dest_path) if os.path.exists(dest_path) else 0
@@ -459,7 +521,8 @@ def _download_file(url: str, dest_path: str, filename: str, log_fn: Callable[[st
             raise DownloadCancelled()
         try:
             _download_once(url, dest_path, filename, log_fn, progress_cb,
-                           cancel_event, expected_size, timeout)
+                           cancel_event, expected_size, timeout,
+                           slow_kick=attempt < DEFAULT_RETRIES)
             return
         except DownloadCancelled:
             _delete_quiet(dest_path)
@@ -468,18 +531,14 @@ def _download_file(url: str, dest_path: str, filename: str, log_fn: Callable[[st
             if cancel_event and cancel_event.is_set():
                 _delete_quiet(dest_path)
                 raise DownloadCancelled()
+            if not _retriable(e):
+                raise HttpError(f"下载失败: {filename}\n原因: {e}")
             last_err = e
         if attempt < DEFAULT_RETRIES:
-            if cancel_event and cancel_event.is_set():
-                raise DownloadCancelled()
             log_fn(f"  下载中断（{last_err}），{attempt}s 后重试"
                    f"（{attempt}/{DEFAULT_RETRIES - 1}）…")
-            if cancel_event is not None:
-                if cancel_event.wait(attempt):
-                    raise DownloadCancelled()
-            else:
-                time.sleep(attempt)
-    raise HttpError(f"下载失败({DEFAULT_RETRIES}次重试后): {filename}\n原因: {last_err}")
+            _backoff(cancel_event, attempt)
+    raise HttpError(f"下载失败({DEFAULT_RETRIES}次尝试后): {filename}\n原因: {last_err}")
 
 
 def _make_chunk_ranges(size: int) -> List[Tuple[int, int, int]]:
@@ -545,11 +604,8 @@ def _download_file_chunked(url: str, dest_path: str, filename: str,
                            cancel_event: Optional[threading.Event],
                            expected_size: int = 0,
                            timeout: int = CHUNK_TIMEOUT) -> None:
-    """单文件多连接分片下载：段级断点续传 + 失败降级单流。"""
+    """单文件多连接分片下载：段级断点续传 + 慢速断开重连 + 失败降级单流。"""
     os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
-    if not expected_size or expected_size < CHUNK_MIN_SIZE:
-        raise HttpError(f"分片条件不足: {filename}")
-
     ranges = _make_chunk_ranges(expected_size)
     part_paths = [f"{dest_path}.part{i}" for (_s, _e, i) in ranges]
     log_fn(f"  分片下载: {filename}（{fmt_size(expected_size)}，"
@@ -579,47 +635,41 @@ def _download_file_chunked(url: str, dest_path: str, filename: str,
                     headers = _headers()
                     headers["Range"] = f"bytes={start + existing}-{end - 1}"
                     req = urllib.request.Request(url, headers=headers)
-                    box: dict = {}
-
-                    def _do_urlopen():
-                        try:
-                            box["resp"] = urllib.request.urlopen(req, timeout=timeout)
-                        except Exception as e:
-                            box["err"] = e
-
-                    t_urlopen = threading.Thread(target=_do_urlopen, daemon=True)
-                    t_urlopen.start()
-                    while t_urlopen.is_alive():
-                        if cancel_event is not None and cancel_event.is_set():
-                            raise DownloadCancelled()
-                        if abort.is_set():
-                            return
-                        t_urlopen.join(timeout=0.2)
-                    if "err" in box:
-                        e = box["err"]
-                        if isinstance(e, urllib.error.HTTPError):
-                            if e.code == 416:
-                                raise HttpError(f"分片下载失败: {filename}"
-                                                f"（段 {idx} 返回 416，文件树大小与服务器不符）") from e
-                            raise
+                    try:
+                        resp = _open_with_cancel(req, timeout, cancel_event, abort)
+                    except urllib.error.HTTPError as e:
+                        if e.code == 416:
+                            raise HttpError(f"分片下载失败: {filename}"
+                                            f"（段 {idx} 返回 416，文件树大小与服务器不符）") from e
                         raise e
-                    resp = box.get("resp")
+                    if resp is None:
+                        return
                     with resp:
                         if getattr(resp, "status", 200) == 200:
                             raise ChunkedFallback()
                         stop_watch = (start_cancel_watcher(cancel_event, resp.close)
                                       if cancel_event else None)
+                        speed_t0 = time.monotonic()
+                        speed_n0 = written
                         try:
                             while written < seg_bytes:
                                 if abort.is_set():
                                     return
                                 if cancel_event and cancel_event.is_set():
                                     raise DownloadCancelled()
-                                chunk = resp.read(DOWNLOAD_CHUNK)
+                                chunk = resp.read(min(DOWNLOAD_CHUNK, seg_bytes - written))
                                 if not chunk:
-                                    raise _SegmentIncomplete()
+                                    raise _SegmentIncomplete("连接提前关闭")
                                 os.write(wfd, chunk)
                                 written += len(chunk)
+                                dt = time.monotonic() - speed_t0
+                                if dt >= SPEED_WINDOW:
+                                    speed = (written - speed_n0) / dt
+                                    if speed < MIN_SPEED and attempt < DEFAULT_RETRIES:
+                                        raise _SegmentIncomplete(
+                                            f"速度过低 {fmt_size(int(speed))}/s")
+                                    speed_t0 = time.monotonic()
+                                    speed_n0 = written
                                 if progress.add(len(chunk)) and progress_cb:
                                     progress_cb({"type": "progress", "file": filename,
                                                  "done": progress.done,
@@ -636,13 +686,11 @@ def _download_file_chunked(url: str, dest_path: str, filename: str,
             except Exception as e:  # noqa
                 if cancel_event and cancel_event.is_set():
                     raise DownloadCancelled()
+                if not _retriable(e):
+                    raise
                 last_err = e
             if attempt < DEFAULT_RETRIES:
-                if cancel_event is not None:
-                    if cancel_event.wait(attempt):
-                        raise DownloadCancelled()
-                else:
-                    time.sleep(attempt)
+                _backoff(cancel_event, attempt)
         raise HttpError(f"分片下载失败: {filename}（段 {idx}: {last_err}）")
 
     outer_tries = 2
@@ -683,13 +731,11 @@ def _download_file_chunked(url: str, dest_path: str, filename: str,
             raise
         except Exception as e:
             last_err = e
+            if not _retriable(e):
+                break
             if outer < outer_tries:
                 log_fn(f"  分片失败，保留进度重试（{outer}/{outer_tries - 1}）: {e}")
-                if cancel_event is not None:
-                    if cancel_event.wait(outer):
-                        raise DownloadCancelled()
-                else:
-                    time.sleep(outer)
+                _backoff(cancel_event, outer)
 
     log_fn(f"  分片多次失败（{last_err}），降级单流: {filename}")
     try:
@@ -732,11 +778,10 @@ def _download_entries(entries: List[Dict[str, Any]], cleanup_dir: str,
                       cancel_event: Optional[threading.Event],
                       cleanup_on_cancel: bool,
                       concurrent: bool = False) -> Dict[str, Any]:
-    """逐条目下载（download_files / download_urls_parallel 共用）。
+    """逐条目下载，entries = [{url, dest, display, size}]。
 
-    entries = [{"url", "dest", "display", "size"}]；concurrent=False 逐个下载，
-    进度事件带 idx/count（大文件走分片多连接）；concurrent=True 全部条目按序号
-    错峰 1 秒同时单流下载，进度事件为总字节口径的总进度，取消时仅清理未完成的文件。
+    concurrent=False：逐个下载（大文件分片多连接），进度带 idx/count；
+    concurrent=True：全部错峰并发单流，进度为总字节口径；取消只清理未完成文件。
     """
     partial_files: set = set()
 
@@ -830,11 +875,7 @@ def _download_entries(entries: List[Dict[str, Any]], cleanup_dir: str,
                     log_fn(msg)
 
             if delay:
-                if cancel_event is not None:
-                    if cancel_event.wait(delay):
-                        raise DownloadCancelled()
-                else:
-                    time.sleep(delay)
+                _backoff(cancel_event, delay)
             if cancel_event and cancel_event.is_set():
                 raise DownloadCancelled()
             _download_file(ent["url"], ent["dest"], ent["display"], quiet_log, cb,

@@ -1,4 +1,4 @@
-"""discovery.py — 多源视频发现、已处理过滤与缩略图/探针。"""
+"""多源视频发现、已处理过滤与缩略图/探针缓存。"""
 from __future__ import annotations
 
 import base64
@@ -27,15 +27,10 @@ from .constants import (
 )
 from .env import FFMPEG_EXE, FFPROBE_EXE
 from batch_rename.env import SUBPROCESS_KWARGS
-from batch_rename.utils import path_stat
+from batch_rename.utils import norm_path, path_stat
 from batch_rename.collector import VideoCollector, is_video_file, is_mpeg_ts
 from batch_rename.format_fix import STREAM_EXTS
 from batch_rename.dedup import DUPLICATES_DIR
-
-
-def _norm(p: str) -> str:
-    """路径归一化（Windows 大小写/斜杠不敏感）。"""
-    return os.path.normcase(os.path.normpath(p))
 
 
 # ── 视频发现 ──
@@ -47,9 +42,9 @@ def collect_all() -> List[str]:
     roots = [r for r in m.get("roots", []) if os.path.exists(r)]
     adhoc = [f for f in m.get("adhoc_files", []) if os.path.isfile(f)]
     videos = VideoCollector.collect(roots)
-    seen = {_norm(v) for v in videos}
+    seen = {norm_path(v) for v in videos}
     for f in adhoc:
-        n = _norm(f)
+        n = norm_path(f)
         if n not in seen and is_video_file(f):
             videos.append(f)
             seen.add(n)
@@ -99,8 +94,8 @@ def prune_excluded_dirs(dirs: List[str]) -> None:
 
 
 def _is_processed(path: str, history_paths: Set[str]) -> bool:
-    """判断视频是否已处理：history 中有记录（且 status 为 ok/skipped）。"""
-    return _norm(path) in history_paths
+    """路径在已处理集合中。"""
+    return norm_path(path) in history_paths
 
 
 def _build_history_path_index() -> Tuple[Set[str], Set[str], Dict[str, Dict[str, Any]]]:
@@ -115,17 +110,17 @@ def _build_history_path_index() -> Tuple[Set[str], Set[str], Dict[str, Dict[str,
         # by_path 同时映射新名/原名 → 条目（供已处理视频查 id / 标题）
         for p in (new_p, orig_p):
             if p:
-                by_path[_norm(p)] = e
+                by_path[norm_path(p)] = e
         if status in ("ok", "skipped"):
             # done 只记 new_path：用户手动改回原名后，原名不在 done → 回到待处理重新处理
             if new_p:
-                done.add(_norm(new_p))
+                done.add(norm_path(new_p))
             if status == "skipped" and orig_p:
-                done.add(_norm(orig_p))
+                done.add(norm_path(orig_p))
         elif status in ("error", "frame_error"):
             for p in (new_p, orig_p):
                 if p:
-                    failed.add(_norm(p))
+                    failed.add(norm_path(p))
     return done, failed, by_path
 
 
@@ -161,10 +156,9 @@ _thumb_inflight_lock = threading.Lock()
 
 _probe_mem: Dict[str, Dict[str, Any]] = {}
 _probe_loaded = False
-# 探针缓存攒批落盘：miss 只进内存，批量/防抖后统一写一次（避免每次 miss 全文件读-改-写）
+# 探针缓存攒批落盘：miss 只进内存，防抖后统一写盘
 _probe_dirty = False
-# _probe_mem 的唯一保护锁：pywebview 多线程并发 probe_video / prune 与 flush 遍历之间互斥，
-# 落盘写快照（dict 拷贝）而非原 dict，避免 json.dump 遍历期间 dict 变更
+# _probe_mem 唯一锁：并发 probe/prune/flush 互斥；落盘写快照避免遍历期间变更
 _probe_lock = threading.Lock()
 _probe_last_flush = 0.0
 
@@ -172,7 +166,7 @@ _probe_last_flush = 0.0
 def probe_video(path: str) -> Dict[str, Any]:
     """探针元数据子集：先读缓存（mtime+size 校验），未命中真探针并写回。"""
     global _probe_loaded, _probe_dirty
-    key = _norm(path)
+    key = norm_path(path)
     try:
         st = path_stat(path)
         mtime, size = int(st.st_mtime), st.st_size
@@ -214,7 +208,7 @@ def prune_probe_cache(paths) -> None:
     global _probe_dirty
     if not _probe_loaded:
         return
-    keep = {_norm(p) for p in paths}
+    keep = {norm_path(p) for p in paths}
     with _probe_lock:
         stale = [k for k in _probe_mem if k not in keep]
         for k in stale:
@@ -380,7 +374,7 @@ def generate_thumbnail(path: str, vid: str, max_side: int = THUMB_MAX_SIDE) -> O
                     break
         if result is not None and result.returncode == 0 and result.stdout \
                 and result.stdout[:2] == b'\xff\xd8':
-            # 原子写入磁盘缓存（tmp + os.replace，避免并发写出截断 JPEG）
+            # 原子写磁盘缓存
             try:
                 tmp = cache.with_suffix(".jpg.tmp")
                 with open(tmp, "wb") as f:
@@ -401,10 +395,7 @@ def generate_thumbnail(path: str, vid: str, max_side: int = THUMB_MAX_SIDE) -> O
 
 def generate_thumbnail_from_jpeg(vid: str, jpeg: bytes,
                                  max_side: int = THUMB_MAX_SIDE) -> Optional[str]:
-    """从抽帧缓存帧直接生成缩略图（省一次 ffmpeg 抽帧）。
-
-    画面为预处理后的裁剪帧（无黑边）；失败返回 None，调用方回退 ffmpeg 路径。
-    """
+    """用抽帧缓存帧直接生成缩略图（省一次抽帧）；失败返回 None 走 ffmpeg 路径。"""
     try:
         if not jpeg or jpeg[:2] != b"\xff\xd8":
             return None
@@ -436,7 +427,7 @@ def make_entry(path: str, info: Optional[Dict[str, Any]] = None,
                status: str = "pending", extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     p = Path(path)
     info = info or {}
-    # 文件系统元数据：mtime 供前端按修改时间排序；size 探针值缺失时用 stat 兜底
+    # mtime 供前端排序；size 探针缺失时 stat 兜底
     try:
         st = p.stat()
         mtime = int(st.st_mtime)
@@ -477,11 +468,11 @@ def scan_all() -> Dict[str, Any]:
     stream: List[Dict[str, Any]] = []
     processed: List[Dict[str, Any]] = []
     failed: List[Dict[str, Any]] = []
-    failed_norm: Set[str] = set()  # 已收录的失败视频归一化路径，用于 O(1) 去重
+    failed_norm: Set[str] = set()  # 已收录失败视频的归一化路径
 
     all_videos = collect_all()
     for vp in all_videos:
-        norm = _norm(vp)
+        norm = norm_path(vp)
         info = {}  # 不在主线程同步探针；交给前端按需请求
         if _is_processed(vp, done_paths):
             # 用 history 中的稳定 id（原路径哈希），保持改名后命中缓存
@@ -495,7 +486,7 @@ def scan_all() -> Dict[str, Any]:
                 entry["tags"] = hist.get("tags", [])
                 entry["original_name"] = hist.get("original_name", "")
                 entry["processed_at"] = hist.get("processed_at", 0)
-                # 处理时已探针的元数据直接回填：免去前端重新探针，也供按时长排序
+                # 回填处理时的探针元数据
                 hinfo = hist.get("info") or {}
                 if hinfo.get("duration"):
                     entry["duration"] = hinfo["duration"]
@@ -516,7 +507,7 @@ def scan_all() -> Dict[str, Any]:
             pending.append(make_entry(vp, info, "pending"))
 
     for vp, status in collect_excluded():
-        norm = _norm(vp)
+        norm = norm_path(vp)
         if norm in failed_norm:
             continue
         failed.append(make_entry(vp, {}, status))

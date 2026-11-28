@@ -1,3 +1,4 @@
+"""无后缀视频补后缀、TS 流封装转 MP4/MKV。"""
 from __future__ import annotations
 
 import json
@@ -6,15 +7,16 @@ import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .collector import is_mpeg_ts, mpegts_packet_size
 from .dedup import DUPLICATES_DIR
 from .dependencies import ffmpeg_tools
-from .env import SUBPROCESS_KWARGS, logger
+from .env import logger
+from .video import run_subprocess_with_cancel
 from .failed import move_with_companion
 from .naming import resolve_collision
-from .utils import path_exists, path_stat, rename_file, to_long_path
+from .utils import norm_path, path_exists, path_stat, rename_file, to_long_path
 
 _SKIP_DIRS = frozenset({"_failed", DUPLICATES_DIR})
 
@@ -37,7 +39,7 @@ _RM_FAMILY = "rm"
 _RMVB_CODECS = frozenset({"rv30", "rv40"})
 _MP4_LIKE_EXTS = (".mp4", ".mov", ".m4v", ".3gp")
 
-# 流式封装（抽帧 seek 不友好）：待处理时转 MP4 的目标格式
+# 流封装：处理前先转 MP4
 STREAM_EXTS = (".ts", ".mts", ".m2ts")
 
 
@@ -47,21 +49,11 @@ def _ensure_tools() -> None:
         ffmpeg_tools.locate()
 
 
-_cancel = threading.Event()
-_procs: Set[subprocess.Popen] = set()
-_proc_lock = threading.Lock()
+_cancel = threading.Event()  # 转换任务取消标志（request_cancel 置位）
 
 
 def request_cancel() -> None:
     _cancel.set()
-    with _proc_lock:
-        procs = list(_procs)
-    for proc in procs:
-        if proc.poll() is None:
-            try:
-                proc.kill()
-            except OSError:
-                pass
 
 
 def reset_cancel() -> None:
@@ -69,31 +61,16 @@ def reset_cancel() -> None:
 
 
 def _run(cmd: List[str], timeout: float) -> Optional[subprocess.CompletedProcess]:
+    """统一子进程运行（文本模式）；取消/超时/启动失败返回 None。"""
     if _cancel.is_set():
         return None
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                encoding="utf-8", errors="replace", **SUBPROCESS_KWARGS)
+        rc, stdout, stderr = run_subprocess_with_cancel(cmd, timeout, _cancel, text=True)
     except OSError:
         return None
-    with _proc_lock:
-        _procs.add(proc)
-    try:
-        stdout, stderr = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        try:
-            stdout, stderr = proc.communicate(timeout=5)
-        except (subprocess.TimeoutExpired, OSError):
-            stdout, stderr = "", ""
-    except OSError:
+    if rc is None:
         return None
-    finally:
-        with _proc_lock:
-            _procs.discard(proc)
-    if _cancel.is_set():
-        return None
-    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+    return subprocess.CompletedProcess(cmd, rc, stdout, stderr)
 
 
 def _probe_json(path: str) -> Optional[Dict[str, Any]]:
@@ -153,9 +130,9 @@ def _sniff_mp4(path: str) -> bool:
 
 def _mp4_complete(path: str) -> bool:
     try:
-        long = to_long_path(path)
-        fsize = os.path.getsize(long)
-        with open(long, "rb") as f:
+        full = to_long_path(path)
+        fsize = os.path.getsize(full)
+        with open(full, "rb") as f:
             pos = 0
             while pos < fsize:
                 f.seek(pos)
@@ -179,7 +156,7 @@ def _mp4_complete(path: str) -> bool:
 
 
 def _decodable(path: str) -> bool:
-    # null muxer 丢弃输出，避免二进制帧走文本管道
+    # null muxer 验证可解码
     r = _run([ffmpeg_tools.ffmpeg, "-v", "error", "-nostats",
               "-i", to_long_path(path), "-map", "0:v:0", "-frames:v", "1",
               "-f", "null", "-"], _VALIDATE_TIMEOUT_SEC)
@@ -244,7 +221,7 @@ def scan_extensionless(roots: List[str]) -> List[Dict[str, Any]]:
                 full = os.path.join(dirpath, f)
                 if Path(full).suffix:
                     continue
-                norm = os.path.normcase(os.path.normpath(full))
+                norm = norm_path(full)
                 if norm in seen:
                     continue
                 seen.add(norm)

@@ -1,6 +1,4 @@
-"""mainthread.py — 把阻塞 UI 调用（文件对话框）封送到 WinForms 主线程。
-
-"""
+"""把阻塞 UI 调用（文件对话框）封送到 WinForms 主线程。"""
 from __future__ import annotations
 
 import sys

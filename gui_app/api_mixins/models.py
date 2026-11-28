@@ -1,4 +1,4 @@
-"""ModelDownloadMixin — 模型搜索/下载 API（HF-Mirror / ModelScope 双源，本地推理页「下载模型」）。"""
+"""模型搜索与下载 API（HF-Mirror / ModelScope 双源）。"""
 from __future__ import annotations
 
 from typing import Any, Dict, List
@@ -62,16 +62,16 @@ class ModelDownloadMixin:
         """下载勾选的模型文件到模型文件夹（作者/仓库名两级目录）。"""
         from .. import models_downloader
         from ..llama_cpp import get_models_dir
-        from .experimental import _install_lock
+        from .experimental import _install_slot
 
         files = files or []
         if not repo_id:
             return {"ok": False, "error": "未指定仓库"}
         if not files:
             return {"ok": False, "error": "未选择任何文件"}
-        if not _install_lock.acquire(blocking=False):
-            return {"ok": False, "busy": True, "error": "已有模块正在安装，请等待完成后再试"}
-        try:
+        with _install_slot(clear_stop=False) as ok:
+            if not ok:
+                return {"ok": False, "busy": True, "error": "已有模块正在安装，请等待完成后再试"}
             if not models_downloader.begin_download():
                 return {"ok": False, "busy": True, "error": "已有下载任务进行中，请稍后再试"}
 
@@ -93,8 +93,6 @@ class ModelDownloadMixin:
                 js_pusher.push("hfDownloadDone", result)
                 models_downloader.end_download()
             return result
-        finally:
-            _install_lock.release()
 
     def model_cancel_download(self) -> Dict[str, Any]:
         """请求取消当前下载（立即返回，下载线程在下一个分块处中断）。"""

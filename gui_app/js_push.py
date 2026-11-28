@@ -20,7 +20,7 @@ class JSPushQueue:
     def __init__(self):
         self._queue: List[str] = []
         self._lock = threading.Lock()
-        # 兜底串行化 evaluate_js：即使未来出现第二个 flush 调用方也不会并发
+        # 串行化 evaluate_js
         self._eval_lock = threading.Lock()
         self._window = None
         self._consecutive_failures = 0
@@ -39,7 +39,6 @@ class JSPushQueue:
             return
         with self._lock:
             self._queue.append(js)
-            # 防止积压过多
             if len(self._queue) > PUSH_QUEUE_MAX:
                 self._queue = self._queue[-PUSH_QUEUE_MAX:]
 
@@ -48,7 +47,7 @@ class JSPushQueue:
         if self._window is None:
             return
         if time.monotonic() < self._paused_until:
-            # 暂停期内丢弃推送，避免向疑似断开的 WebView 无效重试
+            # 暂停期内丢弃推送
             with self._lock:
                 self._queue.clear()
             return

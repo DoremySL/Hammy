@@ -2,7 +2,13 @@
 
 参数经 JSON 文件传入，stdout 逐行回传 JSON（log/idx/done，解析方见
 transcribe_cpp._run_batch_script）。业务全局量由 main() 赋值，import 无副作用。"""
-import sys, json, os, queue, shutil, subprocess, threading
+import json
+import os
+import queue
+import shutil
+import subprocess
+import sys
+import threading
 
 # 超长区段分块上限（VAD 缺失回退成整段区段时生效）
 FAMILY_CHUNK_SEC = {'moss': 1800}
@@ -30,7 +36,7 @@ def _vad_regions(vad, audio, sr):
     if vad is None:
         return whole
     try:
-        # max_speech 29s：长语音段在停顿处预切，单段 ≤30s 可整段送模型
+        # 单段 ≤30s 送模型，长段在停顿处预切
         res = vad.run(audio, min_silence_ms=2000, speech_pad_ms=300,
                       max_speech_ms=29000)
         segs = [(s.start_sample / sr, s.end_sample / sr) for s in res.segments]
@@ -120,7 +126,7 @@ def _extract_wav(vp, out_wav):
 
 
 def transcribe_one(sess, vad, i, vp):
-    # 临时目录由父进程持有（work_dir），子进程被杀后残留由父进程统一清理
+    # 临时目录由父进程持有，残留由父进程清理
     td = os.path.join(params['work_dir'], 'v%d' % i)
     os.makedirs(td, exist_ok=True)
     try:
@@ -133,7 +139,7 @@ def transcribe_one(sess, vad, i, vp):
         if mode == 'text':
             regions = _vad_regions(vad, audio, sr)
             if not regions:
-                # VAD 零区段：静音/底噪/纯音乐，不送推理（防模型幻觉）
+                # 静音/底噪：不送推理防幻觉
                 entry = {'ok': True, 'text': '', 'srt': '', 'language': '',
                          'duration': round(dur, 1), 'error': None, 'silent': True}
             else:
@@ -146,7 +152,7 @@ def transcribe_one(sess, vad, i, vp):
         else:
             regions = _vad_regions(vad, audio, sr)
             if not regions:
-                # 静音/底噪/纯音乐：跳过推理防幻觉（与注入模式同语义）
+                # 静音/底噪：跳过推理防幻觉
                 entry = {'ok': True, 'srt': '', 'text': '', 'language': '',
                          'duration': round(dur, 1), 'error': None, 'silent': True}
             elif not has_ts:
@@ -158,7 +164,7 @@ def transcribe_one(sess, vad, i, vp):
                 entry = {'ok': True, 'srt': srt, 'language': '', 'text': '',
                          'duration': round(dur, 1), 'error': None}
             else:
-                # 逐句时间戳：逐 VAD 区段推理，时间戳加区段偏移；超长区段按家族上限分块
+                # 逐 VAD 区段出 SRT，超长区段按家族上限分块
                 chunk = FAMILY_CHUNK_SEC.get(family) or dur
                 max_ms = int(dur * 1000)
                 parts, lang, idx = [], '', 1
@@ -207,7 +213,7 @@ def main():
     if not vad_model_path:
         plog('VAD 模型未配置，本次跳过静音判断')
 
-    # venv 库优先于脚本目录（gui_app/ 下存在同名项目模块，防止遮蔽 wheel 库）
+    # venv 库优先于脚本目录，防同名模块遮蔽
     if site_packages:
         sys.path.insert(0, site_packages)
     import transcribe_cpp as tc
@@ -238,7 +244,7 @@ def main():
     if language:
         run_kw['language'] = language
 
-    # K 路并发：各领一个视频直到队列取空；结果按 idx 归位（乱序完成）
+    # K 路并发领任务，结果按 idx 归位
     jobs = queue.Queue()
     for i, vp in enumerate(video_paths):
         jobs.put((i, vp))

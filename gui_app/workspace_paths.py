@@ -1,4 +1,4 @@
-"""workspace_paths.py — 工作区路径常量与稳定 ID。"""
+"""工作区路径常量与稳定 ID。"""
 from __future__ import annotations
 
 import hashlib
@@ -16,15 +16,15 @@ PROMPTS_FILE = WORKSPACE_DIR / "prompts.json"
 CONFIG_FILE = WORKSPACE_DIR / "config.json"
 PROBE_CACHE_FILE = WORKSPACE_DIR / "probe_cache.json"
 SIMILAR_CACHE_FILE = WORKSPACE_DIR / "similar_cache.json"
-# ── 扩展模块数据目录（可插拔：卸载模块时整目录删除，config.json 不持有模块键）──
-# llama.cpp：全局运行参数与开关 / 每模型一套运行参数 / 模型扫描缓存
+# ── 扩展模块数据目录（卸载时整目录删除）──
+# llama.cpp
 LLAMA_CONFIG_FILE = WORKSPACE_DIR / "llama" / "config.json"
 LLAMA_MODEL_CONFIGS_FILE = WORKSPACE_DIR / "llama" / "model_configs.json"
 LLAMA_SCAN_CACHE_FILE = WORKSPACE_DIR / "llama" / "scan_cache.json"
-# Hammy-tagger：配置与标签结果
+# Hammy-tagger
 TAGGER_CONFIG_FILE = WORKSPACE_DIR / "tagger" / "config.json"
 TAGGER_TAGS_FILE = WORKSPACE_DIR / "tagger" / "tags.json"
-# 语音转写：配置、转写索引与 SRT 字幕
+# 语音转写
 TRANSCRIBE_CONFIG_FILE = WORKSPACE_DIR / "transcribe" / "config.json"
 TRANSCRIBE_TRANSCRIPTS_FILE = WORKSPACE_DIR / "transcribe" / "transcripts.json"
 TRANSCRIBE_SRT_DIR = WORKSPACE_DIR / "transcribe" / "srt"

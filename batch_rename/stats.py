@@ -30,7 +30,7 @@ class PipelineStats:
     ok: int = 0
     error: int = 0
     skipped: int = 0
-    cancelled: int = 0  # 停止时已入队但未处理的任务数（用于计数核对）
+    cancelled: int = 0  # 停止时已入队未处理的任务数
     results: List[RenameRecord] = field(default_factory=list)
     error_files: List[Tuple[str, str]] = field(default_factory=list)
     done: int = 0
@@ -83,7 +83,7 @@ class PipelineStats:
 
     def record_failure(self, stop_event: threading.Event, scenario: str = "处理失败",
                        category: str = "ai") -> bool:
-        """记录一次失败。基于时间窗口判断最近一段时间内的失败率是否超过阈值。"""
+        """记录失败；窗口内失败数超阈值则熔断。"""
         now = time.time()
         tripped_msg: Optional[str] = None
         with self._lock:
@@ -115,14 +115,14 @@ class PipelineStats:
                     stop_event.set()
                     self.ai_tripped = True
                     tripped_msg = f"最近 {window:.0f} 秒内 AI 任务失败 {failures} 次（{scenario}）！已停止自动重命名。"
-        # 日志在锁外输出
+        # 锁外打日志
         if tripped_msg:
             logger.critical(tripped_msg)
             return True
         return False
 
     def record_success(self, category: str = "ai"):
-        """记录一次成功；连续成功达阈值则软复位对应熔断窗口。"""
+        """记录成功；连续成功则软复位熔断窗口。"""
         with self._lock:
             if category == "frame":
                 self._frame_success_streak += 1
@@ -159,6 +159,6 @@ class PipelineStats:
                 ok=self.ok, skipped=self.skipped, error=self.error,
                 cancelled=self.cancelled,
                 elapsed=elapsed,
-                # 实际处理数用 done（停止时未处理的任务不计入，避免虚报）
+                # 处理数用 done，不含停止时未处理的任务
                 processed_count=self.done,
             )

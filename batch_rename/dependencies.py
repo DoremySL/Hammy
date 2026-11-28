@@ -83,7 +83,7 @@ def find_tool(name: str) -> str:
     if found:
         return found
     if platform.system() == "Windows":
-        # WinGet Links 目录（旧版 winget v1.7 及以前）
+        # WinGet Links 目录（旧版 winget）
         winget_links = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" / "Links"
         if winget_links.exists():
             p = winget_links / (name + ext)

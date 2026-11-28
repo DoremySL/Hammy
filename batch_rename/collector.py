@@ -5,10 +5,10 @@ from typing import List, Optional
 
 from .env import VIDEO_EXTS_CERTAIN, VIDEO_EXTS_AMBIGUOUS
 from .dedup import DUPLICATES_DIR
-from .utils import to_long_path
+from .utils import norm_path, to_long_path
 
 
-# 扫描时跳过的特殊子目录（_failed 由失败收尾创建，_duplicates 由去重创建）
+# 跳过的特殊子目录（失败收尾 / 去重产出）
 _SKIP_DIRS = frozenset({"_failed", DUPLICATES_DIR})
 
 
@@ -58,26 +58,25 @@ class VideoCollector:
     @staticmethod
     def collect(paths: List[str]) -> List[str]:
         videos: List[str] = []
-        seen: set = set()  # 去重：避免传入重叠文件夹时同一文件被收集多次
+        seen: set = set()  # 重叠输入去重
         for path_str in paths:
             p = Path(path_str)
             if p.is_file() and is_video_file(str(p)):
-                norm = os.path.normcase(os.path.normpath(str(p)))
+                norm = norm_path(str(p))
                 if norm not in seen:
                     seen.add(norm)
                     videos.append(str(p))
             elif p.is_dir():
                 for root, dirs, files in os.walk(str(p)):
-                    # 防御：用户直接传入 _failed / _duplicates 时不继续递归
+                    # 特殊目录本身不递归
                     if os.path.basename(root).lower() in _SKIP_DIRS:
                         dirs[:] = []
                         continue
-                    # 正常遍历时过滤掉特殊子目录，阻止 walk 进入
                     dirs[:] = sorted(d for d in dirs if d.lower() not in _SKIP_DIRS)
                     for f in sorted(files):
                         full = os.path.join(root, f)
                         if is_video_file(full):
-                            norm = os.path.normcase(os.path.normpath(full))
+                            norm = norm_path(full)
                             if norm not in seen:
                                 seen.add(norm)
                                 videos.append(full)

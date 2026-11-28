@@ -1,4 +1,4 @@
-"""llama_cpp.py — 简易 llama.cpp 安装/启动器：拉起 llama-server 并注册到子进程表，主程序退出自动终止。"""
+"""llama.cpp 安装/启动器：拉起 llama-server 并注册子进程表，退出自动终止。"""
 from __future__ import annotations
 
 import gzip
@@ -23,11 +23,11 @@ from .installer import detect_gpu, pick_cuda_version, start_cancel_watcher, Inst
 from .js_push import js_pusher
 from batch_rename.env import SUBPROCESS_KWARGS
 from batch_rename.subprocess_registry import register_subprocess, unregister_subprocess
-from batch_rename.utils import force_rmtree
+from batch_rename.utils import force_rmtree, safe_int
 
 # ── 路径 ──
 LLAMA_DIR = APP_ROOT / "llama.cpp"
-# 模型文件夹与 llama.cpp 同级（卸载 llama.cpp 时不删除，可复用）
+# 模型目录与 llama.cpp 同级，卸载不删
 MODELS_DIR = LLAMA_DIR.parent / "models"
 EXE_NAME = "llama-server.exe"
 
@@ -50,12 +50,11 @@ def get_models_dir() -> Path:
         return MODELS_DIR
 
 
-# 稳定版：官方 release 不带预编译包，win 构建挂在其对应的 b 号构建上（nightly-tag.txt 指针）；
-# 升级正式版时同步修改这两个常量
+# 稳定版构建指针（升级正式版时同步改这两个常量）
 STABLE_VERSION = "v1.0.0"
 STABLE_BUILD_TAG = "b12359"
 GITHUB_TAG_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/"
-# 预发布版走列表取首个（通常为最新 b 号构建），per_page 过大会多传数倍 JSON
+# 预发布版取列表首个
 GITHUB_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=5"
 
 # ── 默认启动参数 ──
@@ -133,7 +132,7 @@ def _fetch_json(url: str, timeout: float = 20.0,
         if cancel_event is not None and cancel_event.is_set():
             raise InstallCancelled()
         try:
-            # 声明可接受 gzip：GitHub 的 JSON 压缩后体积约为原始的 1/10
+            # 声明 gzip（GitHub JSON 压缩后约 1/10 体积）
             req = urllib.request.Request(url, headers={
                 "User-Agent": "video-rename-gui",
                 "Accept-Encoding": "gzip",
@@ -144,7 +143,7 @@ def _fetch_json(url: str, timeout: float = 20.0,
                     stop_watch = start_cancel_watcher(cancel_event, resp.close)
                 try:
                     raw = resp.read()
-                    # urllib 不自动解压；magic 兜底覆盖代理强制压缩但不回传编码头的情形
+                    # urllib 不自动解压，magic 兜底
                     if (resp.headers.get("Content-Encoding", "").lower() == "gzip"
                             or raw[:2] == b"\x1f\x8b"):
                         raw = gzip.decompress(raw)
@@ -196,7 +195,7 @@ _CUDART_RE = re.compile(r"cudart-llama-bin-win-cuda-(\d+\.\d+)-x64\.zip$")
 _CACHE_TTL = 10 * 60
 _cached_release_at = 0.0
 
-# 启动健康检查超时（秒）：大模型加载可能更慢，但超时后会自动停止未就绪进程
+# 启动健康检查超时（秒）
 _HEALTH_TIMEOUT_SEC = 90.0
 
 
@@ -408,7 +407,7 @@ def _read_gguf_meta(path: Path, max_bytes: int = 8 << 20) -> Dict[str, Any]:
     except struct.error:
         return {}
     for _ in range(kv_count):
-        # 顺序读完全部 KV（键数有限，均在头部；不读张量区）
+        # 顺序读 KV（不读张量区）
         try:
             n, = struct.unpack_from(endian + "Q", head, pos)
             pos += 8
@@ -495,10 +494,7 @@ def _dir_fingerprint(base: Path, force: bool = False) -> str:
 
 
 def _load_scan_cache() -> Dict[str, Any]:
-    """读取模型扫描缓存（mtime 缓存）；缺失 / 损坏 / 非 dict 一律按无缓存处理。
-
-    结构：{"dirs": {models_dir: {"fingerprint": str, "models": [...]}}}。
-    """
+    """读模型扫描缓存（mtime 缓存），缺失/损坏按无缓存处理；结构 {"dirs": {dir: {fingerprint, models}}}。"""
     try:
         from .workspace_paths import LLAMA_SCAN_CACHE_FILE
         from .workspace_store import read_json_cached
@@ -986,21 +982,11 @@ def _local_host(host: str) -> str:
     return "127.0.0.1" if host in ("0.0.0.0", "::", "") else host
 
 
-def _to_int(v: Any, default: int) -> int:
-    """宽松转 int；失败返回 default。"""
-    try:
-        return int(v)
-    except (ValueError, TypeError):
-        return default
-
-
 def _build_args(model_path: Path, p: Dict[str, Any], layers: int = 0) -> List[str]:
     def num(key, default):
-        return _to_int(p.get(key, default), default)
+        return safe_int(p.get(key, default), default)
 
-    # ngl 恰好等于层数时视为「全量卸载」，自动改写为 999：
-    # llama.cpp 的卸载单位是「N 个块 + 输出层」共 N+1 个、从后往前分（i_gpu_start = N+1-ngl），
-    # ngl = 层数时恰好把块 0 留在 CPU；tensor 并行下该 CPU 块每步串行执行，吞吐显著下降
+    # ngl=层数时 llama.cpp 会把块 0 留在 CPU（卸载单位 N+1），tensor 并行下拖慢吞吐 → 改写 999
     ngl = num("ngl", DEFAULTS["ngl"])
     if ngl > 0 and layers > 0 and ngl == layers:
         ngl = 999
@@ -1046,8 +1032,7 @@ def _build_args(model_path: Path, p: Dict[str, Any], layers: int = 0) -> List[st
     imax = str(p.get("image_max_tokens", DEFAULTS["image_max_tokens"]) or "").strip()
     if imax.isdigit():
         args += ["--image-max-tokens", imax]
-    # 推理控制：off 关闭思考（默认，防复读）；auto/on 显式开关；
-    # 思考深度 = --reasoning-effort 档位（minimal/low/medium/high/xhigh/max）
+    # 推理控制：off（默认）/ auto / on / --reasoning-effort 档位
     mode = str(p.get("reasoning_mode", DEFAULTS["reasoning_mode"]) or "off").strip().lower()
     if mode == "auto":
         args += ["--reasoning", "auto"]
@@ -1061,8 +1046,7 @@ def _build_args(model_path: Path, p: Dict[str, Any], layers: int = 0) -> List[st
     kv = str(p.get("kv_quant", DEFAULTS["kv_quant"]) or "").strip().lower()
     if kv:
         args += ["--cache-type-k", kv, "--cache-type-v", kv]
-    # mmproj：空 = 不使用（自动检测关闭时显式 --no-mmproj，防新版 llama-server 自动加载同目录 mmproj）；
-    # 权重放 CPU 时附加 --no-mmproj-offload
+    # mmproj：显式指定 / auto 检测 / 显式 --no-mmproj（防自动加载同目录投影）
     mmproj = p.get("mmproj", "") or ""
     if mmproj:
         args += ["--mmproj", str(mmproj)]
@@ -1078,7 +1062,7 @@ def _build_args(model_path: Path, p: Dict[str, Any], layers: int = 0) -> List[st
         if draft:
             args += ["--model-draft", str(draft)]
     extra = p.get("extra_args", "") or ""
-    # 前端传 argv 列表（可嵌套）；兜底：非列表（手改配置）按空格拆分
+    # argv 列表（可嵌套）；非列表按空格拆分（手改配置）
     if isinstance(extra, (list, tuple)):
         for e in extra:
             if isinstance(e, (list, tuple)):
@@ -1089,7 +1073,7 @@ def _build_args(model_path: Path, p: Dict[str, Any], layers: int = 0) -> List[st
                     args.append(e)
     elif str(extra).strip():
         args += str(extra).split()
-    # 别名 -a：空 = 不传；argv 列表无 shell 解析，值内空格天然安全
+    # 别名 -a：空 = 不传
     alias = str(p.get("alias", "") or "").strip()
     if alias:
         args += ["-a", alias]
@@ -1174,10 +1158,7 @@ def _wait_for_health(host: str, port: int, timeout: float, log_fn, proc: subproc
 
 def launch(model_path: str, params: Dict[str, Any], log_fn=None,
            server_log_fn=None) -> Dict[str, Any]:
-    """启动 llama-server。model_path 为空时自动从 models/ 选取（仅一个则用，多个则报错）。
-
-    log_fn 收生命周期提示（进普通日志栏），server_log_fn 收 llama-server 原始输出（进专用视图）。
-    """
+    """启动 llama-server；model_path 空时自动选模型。log_fn 收生命周期提示，server_log_fn 收原始输出。"""
     log_fn = log_fn or _stderr_log
     server_log_fn = server_log_fn or log_fn
 
@@ -1232,8 +1213,8 @@ def launch(model_path: str, params: Dict[str, Any], log_fn=None,
         args = _build_args(mp, merged, layers)
         cmd = [str(exe)] + args
 
-        # 端口占用预检：被占立即报错，避免启动后健康检查白等超时、误判模型加载失败
-        chk_port = _to_int(merged.get("port"), 8080)
+        # 端口占用预检，避免健康检查白等
+        chk_port = safe_int(merged.get("port"), 8080)
         if not 0 < chk_port < 65536:
             return {"ok": False, "error": f"端口 {chk_port} 无效，请填写 1-65535 之间的端口"}
         if _port_in_use(_local_host(str(merged.get("host", DEFAULTS["host"]))), chk_port):
@@ -1283,7 +1264,7 @@ def launch(model_path: str, params: Dict[str, Any], log_fn=None,
     if not _wait_for_health(_local_host(host), port, timeout=_HEALTH_TIMEOUT_SEC, log_fn=log_fn, proc=proc):
         alive = proc.poll() is None
         if alive:
-            # 超时但进程仍存活：回收并清状态，否则残留进程与「启动失败」矛盾、无法重启动
+            # 超时且进程存活：回收清状态防残留
             log_fn("健康检查超时，正在停止未就绪的 llama-server…")
             fail_head = (f"服务启动后未在 {int(_HEALTH_TIMEOUT_SEC)} 秒内就绪"
                          "（模型加载可能过慢或显存不足）")
@@ -1291,7 +1272,7 @@ def launch(model_path: str, params: Dict[str, Any], log_fn=None,
                 _terminate_process(proc)
             except Exception as e:
                 if proc.poll() is None:
-                    # 强杀后仍存活：保留句柄与注册，报「启动失败」，再次启动/停止时可回收重试
+                    # 强杀后仍存活：保留句柄报启动失败
                     fail_msg = f"{fail_head}，自动停止失败（PID {proc.pid}）：{e}"
                     with _state_lock:
                         if _llama_proc is proc:
@@ -1309,7 +1290,7 @@ def launch(model_path: str, params: Dict[str, Any], log_fn=None,
             if tail:
                 fail_msg += f"，最后输出：{tail}"
             with _state_lock:
-                # 仅当自己仍是当前进程时才清状态/句柄，避免误清并发启动的新进程
+                # 仅当自己仍是当前进程时才清状态
                 if _llama_proc is proc:
                     _llama_state["running"] = False
                     _llama_state["starting"] = False
@@ -1322,7 +1303,7 @@ def launch(model_path: str, params: Dict[str, Any], log_fn=None,
         tail = _tail_snippet(out_tail, out_tail_lock)
         fail_msg += f"，最后输出：{tail}" if tail else "，请查看日志"
         with _state_lock:
-            # 启动窗口内退出：_reader_thread 可能已清理，这里兜底补记失败原因
+            # 启动窗口内退出，兜底补记失败原因
             if _llama_proc is proc:
                 _llama_state["running"] = False
                 _llama_state["starting"] = False
@@ -1334,11 +1315,11 @@ def launch(model_path: str, params: Dict[str, Any], log_fn=None,
             return {"ok": False, "cancelled": True, "error": "启动已手动停止"}
         return {"ok": False, "error": fail_msg}
     log_fn("模型加载完成，服务已就绪。")
-    # 并发数快照：记录本次启动实际生效的 -np，供本地推理集成接管 ai_workers
+    # 记录生效 -np，供本地推理集成接管 ai_workers
     try:
         from .config_store import update_llama_config
         update_llama_config(
-            lambda c: c.update(parallel=_to_int(merged.get("parallel"), DEFAULTS["parallel"])))
+            lambda c: c.update(parallel=safe_int(merged.get("parallel"), DEFAULTS["parallel"])))
     except Exception:
         pass
     with _state_lock:
@@ -1370,7 +1351,7 @@ def stop(log_fn=None, grace: float = 5.0) -> Dict[str, Any]:
         _terminate_process(proc, wait=grace)
     except Exception as e:
         if proc.poll() is None:
-            # 强杀后仍存活：保留句柄与注册，状态如实保持「运行中」，可再次停止
+            # 强杀后仍存活：保留句柄，可再次停止
             return {"ok": False, "error": f"停止失败: {e}"}
     try:
         unregister_subprocess(proc)

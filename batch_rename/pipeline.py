@@ -85,13 +85,9 @@ def _worker_slot_ids(n_workers: int, slots: int) -> List[Optional[int]]:
 OnFileDone = Callable[..., None]
 
 
-# ── 任务上下文 ────────────────────────────────────────
+# ── 任务上下文 ──
 class TaskContext:
-    """单视频任务上下文：辅助阶段状态 + LLM 就绪交付。
-
-    阶段集合 = {"frames"} ∪ aux_stages（如 {"tagger", "asr"}）；
-    complete_stage() 标记单阶段终态，全部终态时经 on_ready 交付一次且仅一次。
-    """
+    """单视频任务上下文：frames 与辅助阶段全部终态时经 on_ready 交付一次。"""
 
     def __init__(self, vp: str, index: int, aux_stages: Optional[Set[str]] = None,
                  extra_meta: str = "", literal_meta: Optional[str] = None,
@@ -105,7 +101,7 @@ class TaskContext:
         self.extra_meta = extra_meta
         self.literal_meta = literal_meta
         self.tagger_hits = tagger_hits  # A 组优先注入条目（分数序）
-        # 缩略图缓存：int(ts + 0.5) 秒 → Frame（与提示词时间标签同一取整口径）
+        # 缩略图缓存：取整秒 → Frame
         self.thumb_lookup: Optional[Dict[int, Frame]] = None
         # 帧缓存额度（FrameProducer 信号量）：提交抽帧前置位，release 时归位
         self.cache_slot = False
@@ -143,12 +139,7 @@ class TaskContext:
         return deliver
 
     def fail_remaining(self, stage_key: Optional[str] = None) -> None:
-        """把未终态的阶段标记终态，避免「永久等待」。
-
-        stage_key 指定时只兜底该辅助阶段（worker 退出用，不越权其他阶段）；
-        缺省时兜底除 frames 外的全部阶段（管线 join 后用，frames 已由生产者
-        线程保证终态）。
-        """
+        """把未终态阶段标记终态防挂死；stage_key 指定时只兜底该阶段。"""
         with self._lock:
             if stage_key is not None:
                 left = {stage_key} if stage_key in self._stages_left else set()
@@ -187,13 +178,9 @@ def _all_queued(contexts: List["TaskContext"]) -> bool:
     return all(c.delivered and c.queued for c in contexts)
 
 
-# ── 抽帧生产者 ────────────────────────────────────────
+# ── 抽帧生产者 ──
 class FrameProducer:
-    """抽帧生产者：ThreadPoolExecutor 并发抽帧，结果写入任务上下文。
-
-    帧缓存信号量限制「已抽帧但未交付」的任务数（等待辅助阶段期间的内存上限）；
-    额度在任务提交前获取、在 LLM 消费完毕或取消清理时经 ctx.release() 归位。
-    """
+    """抽帧生产者：并发抽帧写入上下文；帧缓存信号量限制已抽帧未交付的任务数。"""
 
     def __init__(self, contexts: List[TaskContext], config: Config,
                  stop_event: threading.Event, ai_secs: Optional[float] = None):
@@ -209,9 +196,7 @@ class FrameProducer:
 
     def _submit_frame_task(self, exec_: ThreadPoolExecutor,
                            ctx: TaskContext) -> Optional[Future]:
-        """获取缓存额度后提交抽帧任务；停止或额度等待超限返回 None。
-
-        额度获取成功才置位 ctx.cache_slot，release 才归位（未提交不占额度）。"""
+        """获取缓存额度后提交抽帧任务；停止或额度等待超限返回 None。"""
         deadline = time.time() + self._ai_secs
         while True:
             if self.stop_event.is_set():
@@ -307,7 +292,7 @@ class FrameProducer:
                 ctx.complete_stage("frames")
 
 
-# ── AI 任务处理器 ─────────────────────────────────────
+# ── AI 任务处理器 ──
 class AIWorker:
     """AI 任务消费者：出队 → 调 AI → 重命名 → 更新统计。"""
 
@@ -499,8 +484,7 @@ class AIWorker:
             logger.exception(f"消费者线程异常退出: {e}")
             self.stop_event.set()
         finally:
-            # 提前停止后排空队列剩余任务，计入 cancelled 并释放缓存；
-            # None 哨兵放回并停止，保住其它 worker 的退出信号
+            # 排空剩余任务计入 cancelled 并释放缓存；哨兵放回保其它 worker 退出
             while True:
                 try:
                     task = self.task_queue.get_nowait()
@@ -513,13 +497,9 @@ class AIWorker:
                 task.release()
 
 
-# ── 管线编排 ──────────────────────────────────────────
+# ── 管线编排 ──
 class BatchPipeline:
-    """批量重命名管线编排器：组装各组件并执行。
-
-    aux_stages/aux_workers：辅助阶段（tagger/asr）与对应 worker（rename_aux）；
-    prefill：视频路径 → {"extra_meta"/"literal_meta"}（复用已有结果的上下文）。
-    """
+    """批量重命名管线编排器；aux_* 辅助阶段，prefill 复用已有结果上下文。"""
 
     def __init__(self, paths: List[str], config: Config, client: OpenAIClient,
                  stop_event: threading.Event,
@@ -553,8 +533,7 @@ class BatchPipeline:
         self._videos: List[str] = []
         self.contexts: List[TaskContext] = []
         self._start_time: float = 0.0
-        # 收集视频并在构造期建立任务上下文（调用方可在 run() 前对
-        # 「已有结果跳过推理」的上下文预完成对应辅助阶段）
+        # 构造期收集视频并建上下文；调用方可在 run() 前预完成辅助阶段
         self._videos = VideoCollector.collect(paths)
         self.contexts = self._build_contexts(self._videos)
 
@@ -566,7 +545,7 @@ class BatchPipeline:
                 for i, vp in enumerate(videos)]
 
     def run(self):
-        # 入口防御：ai_workers=0 等非法配置会假死
+        # 先校验配置
         self.config.validate()
         stats = self._discover_and_filter()
         self.stats = stats  # 暴露给外部读取

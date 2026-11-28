@@ -1,4 +1,4 @@
-"""MediaMixin — 视频探针、缩略图、NFO 导出、还原、失败文件移回。"""
+"""视频探针、缩略图、NFO 导出、还原与排除文件移回。"""
 from __future__ import annotations
 
 import os
@@ -191,7 +191,7 @@ class MediaMixin:
         except Exception as e:
             return {"ok": False, "error": f"无法创建目标目录: {e}"}
 
-        # 语音转写开启时，除 NFO 外还一并带走视频同目录的导出字幕
+    # 转写开启时随视频带走同目录字幕
         from ..config_store import load_transcribe_config
         transcribe_on = load_transcribe_config().get("enabled", False)
 
@@ -218,28 +218,28 @@ class MediaMixin:
                 exported_paths.append(fp)
 
                 if with_nfo:
-                    nfo_exported = False
-                    # 优先：视频同目录的 sibling NFO（移动）
+                    nfo_done = False
+                    # 优先移动视频同目录 NFO
                     sibling = p.with_suffix(".nfo")
                     if sibling.is_file():
                         nfo_target = target.with_suffix(".nfo")
                         try:
                             os.replace(to_long_path(str(sibling)),
                                        to_long_path(str(nfo_target)))
-                            nfo_exported = True
+                            nfo_done = True
                         except Exception:
                             pass
-                    # 其次：从缓存复制
-                    if not nfo_exported and vid:
+                    # 其次复制缓存 NFO
+                    if not nfo_done and vid:
                         cached = nfo_path(vid)
                         if cached.exists():
                             nfo_target = target.with_suffix(".nfo")
                             try:
                                 shutil.copy2(str(cached), str(nfo_target))
-                                nfo_exported = True
+                                nfo_done = True
                             except Exception:
                                 pass
-                    if nfo_exported:
+                    if nfo_done:
                         nfo_count += 1
 
                 # 字幕导出：语音转写开启时，随视频一起移动同目录字幕
@@ -254,7 +254,7 @@ class MediaMixin:
                             except Exception:
                                 pass
 
-                # 海报（<stem>-poster.jpg）随附件一起移动
+                # 海报随附件移动
                 if with_nfo:
                     poster = p.with_name(f"{p.stem}-poster.jpg")
                     if poster.is_file():
@@ -310,12 +310,10 @@ class MediaMixin:
         # 编号模板计数器：replace 且替换串含 ${...} 时，仅结果发生变化的文件
         # 按选中顺序消耗序号（无变化的文件不编号，保证 S1E01、S1E02 连续）
         counter = 0
-        # 批次内预留的目标文件名（按目录分组，小写归一）：
-        # dry_run 逐文件跑时磁盘上还没有新文件，若两个文件变换后同名，
-        # 不预留的话两者都会预览成同一个新名，但执行时第二个会变成 _N——
-        # 预留后预览与执行结果一致。
+        # 批次内预留目标名（按目录归一）：dry_run 下磁盘无新文件，
+        # 预留后预览与执行结果一致（撞名同样递增 _N）
         planned: Dict[str, set] = {}
-        # 匹配字幕：仅当开启且所有视频同目录（跨目录时前端不显示按钮，这里兜底忽略）
+        # 字幕匹配仅同目录批次生效
         sub_map: Dict[int, List[Tuple[str, str]]] = {}
         if match_subtitles:
             dirs = {os.path.normcase(os.path.dirname(it.get("path", ""))) for it in items}
@@ -334,7 +332,7 @@ class MediaMixin:
                 errors.append(f"{p.name}: 文件不存在")
                 continue
             if mode == "replace" and "${" in text2:
-                # 先不带编号算一次判断是否变化，变化才消耗序号并展开模板
+                # 变化才消耗序号并展开编号模板
                 new_stem, err = apply_manual_transform(p.stem, mode, text, text2, use_regex,
                                                    None, match_all, case_mode)
                 if not err and new_stem != p.stem:
@@ -345,7 +343,7 @@ class MediaMixin:
                 new_stem, err = apply_manual_transform(p.stem, mode, text, text2, use_regex,
                                                    None, match_all, case_mode)
             if err:
-                # dry_run 时错误也返回预览行（原名 + note 原因），预览不因整批失败而清空
+                # dry_run 错误也返回预览行
                 if dry_run:
                     previews.append({"id": vid, "path": fp, "name": p.name,
                                      "new_name": p.name, "changed": False, "note": err})
@@ -356,7 +354,7 @@ class MediaMixin:
                 skipped += 1
                 previews.append({"id": vid, "path": fp, "name": p.name,
                                  "new_name": p.name, "changed": False, "note": ""})
-                # 视频未变化时字幕只展示配对关系（不改名），供空输入确认匹配结果
+                # 视频未变时字幕仅展示配对关系
                 for sp, lang in sub_map.get(idx, []):
                     sub_path = Path(sp)
                     previews.append({"id": "", "path": sp, "name": sub_path.name,
@@ -419,7 +417,7 @@ class MediaMixin:
                 continue
             renamed += 1
             _sync_after_manual_rename(vid, fp, new_path)
-            # 配对字幕跟随改名（视频成功后执行；失败跳过报错，不影响视频结果）
+            # 配对字幕跟随改名，失败不回滚视频
             for sp, lang in sub_map.get(idx, []):
                 sub_path = Path(sp)
                 sub_name = f"{Path(new_path).stem}.{lang}.ass" if lang \

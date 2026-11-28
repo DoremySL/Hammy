@@ -1,8 +1,4 @@
-"""Hammy Tagger：安装、模型管理、抽帧复用与推理子进程管理。
-
-推理/引擎构建逻辑在模型仓库（REPO_ID）内：hammy_server.py 流式分析服务、
-build_trt.py 引擎构建（构建后自动删除 ONNX 节省磁盘）。
-"""
+"""Hammy-tagger：安装、模型管理、抽帧复用与推理子进程（推理/构建脚本在模型仓库内）。"""
 from __future__ import annotations
 
 import json
@@ -61,7 +57,7 @@ _INSTALL_TIMEOUT_SEC = 2400.0
 _BUILD_TIMEOUT_SEC = 1800.0
 _INFERENCE_BASE_SEC = 240.0
 _INFERENCE_PER_VIDEO_SEC = 120.0
-_CLOSE_GRACE_SEC = 30.0   # close() 优雅等待上限：引擎 stdin EOF 秒退；卡死时封顶后强杀
+_CLOSE_GRACE_SEC = 30.0   # close() 优雅等待上限
 
 
 _log = make_logger("tagger")
@@ -107,10 +103,7 @@ _lib_cache: Dict[str, Any] = {"mtime": None, "map": None}
 
 
 def load_term_library_map() -> Optional[Dict[str, Dict[str, str]]]:
-    """词条库英文标签名 → {zh, desc, group}（A/C 两组全量，mtime 缓存）。
-
-    返回 None = 库缺失/损坏/无已知分组条目（不加过滤）；同 related 重复取首见。
-    """
+    """词条库英文名 → {zh, desc, group}（A/C 组全量，mtime 缓存）；None = 库缺失/损坏。"""
     from .workspace_paths import TERM_LIBRARY_FILE
     from .workspace_store import read_json
     global _lib_cache
@@ -198,9 +191,7 @@ def import_preset_terms(log_fn: Optional[Callable[[str], None]] = None) -> Dict[
 
 def tagger_injection(entry: Dict[str, Any], lib: Optional[Dict[str, Dict[str, str]]],
                      gen_n: int) -> Tuple[List[Dict[str, str]], str]:
-    """entry → (置顶注入条目[分数序], C 段查询词)；手动/集成两路径共用。
-
-    A 组条目置顶，G 组走查询词，库外丢弃；lib 缺失时退化为原始英文名查询词。"""
+    """entry → (A 组置顶注入条目[分数序], G 组查询词)；lib 缺失退化为英文名查询词。"""
     if lib is None:
         names: List[str] = []
         for _, key in _SEC_KEYS:
@@ -365,7 +356,7 @@ def install_dependencies(
 
         steps.push(4)
         files = [f"{precision}-onnx/tagger.onnx", *SHARED_FILES]
-        _log(f"━━ 步骤 4/5：从魔搭下载 Hammy tagger 模型与脚本"
+        _log(f"━━ 步骤 4/5：下载 Hammy tagger 模型与脚本"
              f"（{precision.upper()}，共 {len(files)} 个文件）━━", log_fn)
         dl = models_downloader.download_files(
             "ms", REPO_ID, files, str(MODEL_DIR),
@@ -381,7 +372,7 @@ def install_dependencies(
 
     # ── 步骤 5：构建 TRT 引擎（build_trt.py 构建成功后自动删除 ONNX）──
     steps.push(5)
-    _log("━━ 步骤 5/5：构建 TensorRT 引擎（5 档动态单引擎）━━", log_fn)
+    _log("━━ 步骤 5/5：构建 TensorRT 引擎 ━━", log_fn)
     from .llama_cpp import pause_for_task
     pause_for_task(log_fn=log_fn)  # 让出显存
     rc, out = _run_subprocess_streaming(

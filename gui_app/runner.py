@@ -25,24 +25,11 @@ from .workspace_store import (
 )
 from .workspace_service import find_cached_nfo
 from batch_rename.config import Config
+from batch_rename.utils import safe_get
 from batch_rename.dependencies import DependencyError, ensure_dependencies, bindings
 from batch_rename.env import SUBPROCESS_KWARGS, logger as engine_logger
 from batch_rename.pipeline import BatchPipeline, ready_gate
 from batch_rename.term_recall import TermRecall
-
-
-def _safe_int(d: dict, key: str, default: int) -> int:
-    try:
-        return int(d.get(key, default))
-    except (TypeError, ValueError):
-        return default
-
-
-def _safe_float(d: dict, key: str, default: float) -> float:
-    try:
-        return float(d.get(key, default))
-    except (TypeError, ValueError):
-        return default
 
 
 def _asr_missing_list(paths: List[str], srt_dir: Path,
@@ -152,37 +139,36 @@ def build_engine_config(cfg_dict: Dict[str, Any],
     cfg.base_url = ai.get("base_url", cfg.base_url)
     cfg.api_key = ai.get("api_key", cfg.api_key)
 
-    # 本地推理集成（可插拔）：开启后覆盖为本地 llama-server 地址与默认
-    # 模型/密钥，磁盘上用户填写的远程 API 参数保持不动；未激活时返回 None
+    # 本地推理集成：激活时覆盖连接参数，远程 API 配置保持不动
     from .llama_integration import ai_override
     ov = llama_override if llama_override is not None else ai_override()
     if ov:
         cfg.model = ov["model"]
         cfg.base_url = ov["base_url"]
         cfg.api_key = ov["api_key"]
-        cfg.llama_slots = max(1, _safe_int(ov, "ai_workers", 1))
+        cfg.llama_slots = max(1, safe_get(ov, "ai_workers", 1))
 
-    cfg.max_tokens = _safe_int(ai, "max_tokens", cfg.max_tokens)
-    cfg.temperature = _safe_float(ai, "temperature", cfg.temperature)
-    cfg.top_p = _safe_float(ai, "top_p", cfg.top_p)
-    cfg.retry_times = _safe_int(ai, "retry_times", cfg.retry_times)
-    cfg.ai_timeout = _safe_int(ai, "ai_timeout", cfg.ai_timeout)
-    cfg.ai_workers = _safe_int(ai, "ai_workers", cfg.ai_workers)
+    cfg.max_tokens = safe_get(ai, "max_tokens", cfg.max_tokens)
+    cfg.temperature = safe_get(ai, "temperature", cfg.temperature, cast=float)
+    cfg.top_p = safe_get(ai, "top_p", cfg.top_p, cast=float)
+    cfg.retry_times = safe_get(ai, "retry_times", cfg.retry_times)
+    cfg.ai_timeout = safe_get(ai, "ai_timeout", cfg.ai_timeout)
+    cfg.ai_workers = safe_get(ai, "ai_workers", cfg.ai_workers)
     if ov:
-        cfg.ai_workers = max(1, _safe_int(ov, "ai_workers", cfg.ai_workers))
+        cfg.ai_workers = max(1, safe_get(ov, "ai_workers", cfg.ai_workers))
     cfg.enforce_json_mode = bool(ai.get("enforce_json_mode", cfg.enforce_json_mode))
-    cfg.rag_top_k = _safe_int(ai, "rag_top_k", cfg.rag_top_k)
+    cfg.rag_top_k = safe_get(ai, "rag_top_k", cfg.rag_top_k)
     exp = cfg_dict.get("experimental") if isinstance(cfg_dict.get("experimental"), dict) else {}
     cfg.rag_vec_enabled = bool(exp.get("rag_vec_enabled", False))
     cfg.rag_vec_device = str(exp.get("rag_vec_device", "") or "")
-    cfg.rag_vec_threshold = _safe_float(exp, "rag_vec_threshold", cfg.rag_vec_threshold)
-    cfg.rag_vec_top_n = _safe_int(exp, "rag_vec_top_n", cfg.rag_vec_top_n)
+    cfg.rag_vec_threshold = safe_get(exp, "rag_vec_threshold", cfg.rag_vec_threshold, cast=float)
+    cfg.rag_vec_top_n = safe_get(exp, "rag_vec_top_n", cfg.rag_vec_top_n)
 
     video = _section("video")
-    cfg.sampling_points = _safe_int(video, "sampling_points", cfg.sampling_points)
-    cfg.frames_per_point = _safe_int(video, "frames_per_point", cfg.frames_per_point)
-    cfg.frame_max_side = _safe_int(video, "frame_max_side", cfg.frame_max_side)
-    cfg.frame_time_tags = _safe_int(video, "frame_time_tags", cfg.frame_time_tags)
+    cfg.sampling_points = safe_get(video, "sampling_points", cfg.sampling_points)
+    cfg.frames_per_point = safe_get(video, "frames_per_point", cfg.frames_per_point)
+    cfg.frame_max_side = safe_get(video, "frame_max_side", cfg.frame_max_side)
+    cfg.frame_time_tags = safe_get(video, "frame_time_tags", cfg.frame_time_tags)
     cfg.frame_extract_mode = str(video.get("frame_extract_mode", cfg.frame_extract_mode) or "auto")
 
     naming = _section("naming")
@@ -195,8 +181,7 @@ def build_engine_config(cfg_dict: Dict[str, Any],
     # debug 模式（config.json 顶层手动开关）
     cfg.debug_log = bool(cfg_dict.get("debug_log", False))
 
-    # NFO 输出模式：默认（nfo_auto_export 关闭）缓存到 _workspace/nfo/，导出时再复制到视频目录；
-    # 开启「自动输出 NFO 至视频目录」后直接写视频所在目录（nfo_target_dir=None）
+    # NFO 输出：默认写缓存目录，开启自动导出后直接写视频目录
     if not cfg_dict.get("nfo_auto_export", False):
         cfg.nfo_target_dir = str(NFO_DIR)
     else:
@@ -246,8 +231,7 @@ class PipelineRunner:
         self._handler: Optional[_UIHandler] = None
         self._client = None
         self._bindings = None  # batch_rename.dependencies.AIClientBindings
-        # 退出期 history 落盘完成信号：finally 的 flush_batch 成功后置位，
-        # 供 app.py 退出清理轮询——比「硬等线程结束」更能区分「已落盘」与「线程未退出」
+        # history 落盘完成信号，供 app.py 退出清理轮询
         self._history_flushed: threading.Event = threading.Event()
 
     @property
@@ -267,7 +251,7 @@ class PipelineRunner:
             return {}
         from .tagger import load_term_library_map, tagger_injection
         lib = load_term_library_map()
-        gen_n = max(0, _safe_int(tcfg, "general_count", 15))
+        gen_n = max(0, safe_get(tcfg, "general_count", 15))
 
         result: Dict[str, tuple] = {}
         for vp in paths:
@@ -286,7 +270,7 @@ class PipelineRunner:
         from .workspace_paths import TRANSCRIBE_SRT_DIR, TRANSCRIBE_TRANSCRIPTS_FILE
         if not TRANSCRIBE_SRT_DIR.exists():
             return {}
-        max_chars = max(100, _safe_int(wcfg, "max_chars", 2000))
+        max_chars = max(100, safe_get(wcfg, "max_chars", 2000))
         inject_ts = wcfg.get("inject_timestamps", False)
         store = read_json(TRANSCRIBE_TRANSCRIPTS_FILE, {})
         result: Dict[str, str] = {}
@@ -380,13 +364,13 @@ class PipelineRunner:
                         except Exception:
                             pass
                     entry["thumb_refresh"] = True
-            # 停止检查点：stop 后每完成一个文件即落盘一次，避免 daemon 线程退出时整批记录丢失。
+            # stop 后逐文件落盘，防 daemon 线程退出丢记录
             if self._stop.is_set():
                 try:
                     flush_batch(keep_mode=True)
                 except Exception as e:
                     sys.stderr.write(f"[runner] stop 检查点 history 落盘失败: {e}\n")
-            # 重命名成功后同步更新 manifest 中的 adhoc 路径（旧→新），避免重新扫描时找不到文件
+            # 重命名成功同步 manifest 的 adhoc 路径
             if status == "ok" and new_path and new_path != orig:
                 try:
                     update_adhoc_path(orig, new_path)
@@ -425,7 +409,7 @@ class PipelineRunner:
                                   "error_count": 0, "skipped_count": 0})
                     return
 
-                # 2. 复用全局 bindings（ensure_dependencies 已完成加载）
+                # 复用全局 bindings
                 self._bindings = bindings
 
                 try:
@@ -462,7 +446,7 @@ class PipelineRunner:
                     asr_missing = _asr_missing_list(paths, TRANSCRIBE_SRT_DIR, self._stop)
                 asr_active = bool(asr_missing)
 
-                # Tagger 集成：开关 + 已启用 + 引擎就绪（未就绪降级手动路径语义，不阻断）
+                # Tagger 集成：开关 + 引擎就绪，未就绪降级不阻断
                 tagger_active = (bool(tcfg.get("enabled", False))
                                  and bool(tcfg.get("integration", False)))
                 if tagger_active:
@@ -477,7 +461,7 @@ class PipelineRunner:
                 aux_stages: set = set()
                 prefill: Dict[str, Dict[str, Any]] = {}
                 if asr_active:
-                    max_chars = max(100, _safe_int(wcfg, "max_chars", 2000))
+                    max_chars = max(100, safe_get(wcfg, "max_chars", 2000))
                     aux_workers.append(AsrInjectWorker(asr_missing, max_chars,
                                                        _log_cb, self._stop))
                     aux_stages.add("asr")
@@ -489,7 +473,7 @@ class PipelineRunner:
                         threshold = 0.75
                     aux_workers.append(TaggerInjectWorker(
                         self._stop, _log_cb, threshold=threshold,
-                        general_count=max(0, _safe_int(tcfg, "general_count", 15)),
+                        general_count=max(0, safe_get(tcfg, "general_count", 15)),
                         save_fn=tagger_mod.save_tag_results))
                     aux_stages.add("tagger")
 
@@ -505,8 +489,7 @@ class PipelineRunner:
                 else:
                     tagged_skip = set()
 
-                # 集成辅助开启时持锁整个批次，隔离右键手动入口（不 pause 让出显存）；
-                # 全部命中已有结果时无需持锁
+                # 集成辅助开启时持 GPU 锁整批，隔离右键手动入口
                 hold_gpu_lock = bool(asr_missing) or (
                     tagger_active and len(tagged_skip) < len(paths))
                 if hold_gpu_lock:
@@ -541,8 +524,6 @@ class PipelineRunner:
                             engine_logger.info("[RAG] 向量检索已启用但 ort-embedding 未就绪，"
                                                "增强档本次降级为开启（仅首轮字面召回）")
                     term_recall = TermRecall(items=pt_items,
-                                           # GUI 三档值与内部模式同名直传
-                                           #（on=首轮字面召回注入，enhanced=字面+第二轮向量召回）
                                            mode=pt_mode,
                                            top_k=engine_cfg.rag_top_k,
                                            dense=dense,
@@ -563,7 +544,7 @@ class PipelineRunner:
                             except Exception as e:
                                 engine_logger.info(f"[RAG] 向量索引预热失败，增强档降级为单轮: {e}")
 
-                        # 预热后台化：与抽帧/ASR/首轮 LLM 重叠
+                        # 预热后台化
                         warm_thread = threading.Thread(target=_warm, name="rag-warmup", daemon=True)
                         warm_thread.start()
                     if term_recall.mode != "off":
@@ -580,8 +561,7 @@ class PipelineRunner:
                     pipeline = BatchPipeline(
                         paths, engine_cfg, self._client, self._stop,
                         on_file_done=_emit_file_done,
-                        # NFO 缓存模式（nfo_target_dir 非空）下直接以 stable_id 命名写入，
-                        # 避免不同目录下同 stem 视频映射到同一文件互相覆盖
+                        # NFO 缓存模式以 stable_id 命名，防同 stem 覆盖
                         nfo_namer=lambda vp: f"{stable_id(vp)}.nfo",
                         term_recall=term_recall,
                         aux_stages=aux_stages,
@@ -598,14 +578,13 @@ class PipelineRunner:
                             ctx.complete_stage("tagger")
                     pipeline.run()
                     if warm_thread is not None:
-                        # 预热线程收尾确认（在途编码不阻塞批完成）
+                        # 预热线程收尾
                         warm_thread.join(timeout=2.0)
                 finally:
                     if hold_gpu_lock:
                         _gpu_task_lock.release()
 
-                # 4. 先把累积的 history 落盘，再通知前端完成
-                #    （on_done 里会 scan_all 重读 history，必须保证读到的是已持久化的数据）
+                # 先落盘 history 再通知前端（on_done 会重读）
                 flush_batch()
 
                 stats = getattr(pipeline, "stats", None)
@@ -639,11 +618,10 @@ class PipelineRunner:
                     on_done({"ok": False, "error": str(e),
                               "ok_count": 0, "error_count": 0, "skipped_count": 0})
             finally:
-                # 把批量累积的 history 变更一次性落盘（异常/停止路径同样保证写入）
+                # 异常/停止路径同样落盘
                 try:
                     flush_batch()
-                    # 落盘完成信号：app.py 退出清理据此判断可以放行，
-                    # 而不是靠硬性线程超时猜测
+                    # 落盘完成信号，app.py 退出清理据此放行
                     self._history_flushed.set()
                 except Exception:
                     pass
@@ -682,10 +660,7 @@ def _format_resolution(info: Dict[str, Any]) -> str:
 
 
 def export_nfo(vid: str) -> Dict[str, Any]:
-    """把缓存的 NFO 复制到视频同目录，命名为 <新名>.nfo。
-
-    返回 {ok, message, target_path}。
-    """
+    """缓存 NFO 复制到视频目录 <新名>.nfo，返回 {ok, message, target_path}。"""
     import shutil
     from batch_rename.utils import path_exists, to_long_path
     entry = get_history_by_id(vid)

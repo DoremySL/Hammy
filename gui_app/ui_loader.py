@@ -1,4 +1,4 @@
-"""UI 装配：把拆分后的 ui/ 目录（index.html + styles.css + js/*.js）"""
+"""UI 装配：把 ui/ 目录资源拼接进 index.html 模板。"""
 
 from pathlib import Path
 
@@ -10,10 +10,7 @@ JS_DIR = UI_DIR / "js"
 CSS_PLACEHOLDER = "<!--INJECT_CSS-->"
 JS_PLACEHOLDER = "<!--INJECT_JS-->"
 
-# JS 拼接顺序至关重要：
-# - core.js 必须最先（定义 state / $ / $$ 等顺序敏感的顶层绑定）
-# - bootstrap.js 必须最后（含立即执行的 renderGrid()/updateStats()/启动序列）
-# - 其余模块之间顺序不敏感（均为函数声明，存在提升）
+# JS 拼接顺序敏感：core.js 最先（顶层绑定），bootstrap.js 最后（立即执行的启动序列）
 JS_MODULES = [
     "core.js",
     "grid.js",

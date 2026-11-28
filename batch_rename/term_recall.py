@@ -1,5 +1,4 @@
-"""词条检索：on/enhanced 共用首轮字面召回（关键词+关联词两级匹配：精确/紧凑）；
-enhanced 追加第二轮纯向量召回（dense 不可用时自动等同 on）。"""
+"""词条检索：首轮字面召回（on/enhanced 共用），enhanced 追加第二轮向量召回（dense 缺失等同 on）。"""
 from __future__ import annotations
 
 import re
@@ -77,8 +76,7 @@ class TermRecall:
     def __init__(self, items: Any, top_k: int = 40, dense=None,
                  vec_threshold: float = 0.45, vec_top_n: int = 20,
                  mode: str = "off"):
-        """mode：off=不注入 / on=首轮字面召回注入（单轮）/
-        enhanced=字面注入 + 第二轮向量召回修订（dense 不可用时等同 on）；非法值按 off。"""
+        """mode：off / on（字面召回）/ enhanced（追加向量召回，dense 缺失等同 on）；非法值按 off。"""
         norm_items: List[Dict[str, str]] = []
         if isinstance(items, list):
             for it in items:
@@ -101,7 +99,7 @@ class TermRecall:
         self._dense_built = False
         self._dense_lock = threading.Lock()
 
-        # 空库一律不注入；模式显式给定，不做条目数自动降级
+        # 空库一律不注入
         m = str(mode or "").strip().lower()
         self.mode = m if m in ("off", "on", "enhanced") and self.total_items > 0 else "off"
 
@@ -110,7 +108,7 @@ class TermRecall:
 
     @property
     def has_dense(self) -> bool:
-        """enhanced 档两轮生效的前提：向量后端存在（构建失败会被置 None）。"""
+        """enhanced 且向量后端可用（构建失败时被置 None）。"""
         return self.mode == "enhanced" and self.dense is not None
 
     def recall_literal(self, parts: Dict[str, str]) -> List[Dict[str, str]]:
@@ -129,9 +127,7 @@ class TermRecall:
         return [e.item for _, _, e in hits[: self.top_k]]
 
     def merged_injection(self, parts: Dict[str, str], hits: Any) -> Tuple[str, List[str]]:
-        """tagger 置顶条目在前 + 字面召回命中补足（共享 top_k、去重）→ (段落, 关键词列表)。
-
-        hits 为 tagger 视觉确认条目（分数序）；检索模式 off 时仅注入 hits。"""
+        """tagger 置顶条目 + 字面召回补足（共享 top_k、去重），返回 (段落, 关键词列表)。"""
         items = [it for it in (hits or []) if isinstance(it, dict) and it.get("keyword")]
         seen = {it["keyword"] for it in items}
         for it in self.recall_literal(parts):
@@ -149,9 +145,7 @@ class TermRecall:
                      exclude: Any = (),
                      stop_event: Optional[threading.Event] = None
                      ) -> List[Dict[str, str]]:
-        """第二轮纯向量召回：排除 exclude 关键词（首轮已注入）后取最多 vec_top_n 条。
-
-        仅 enhanced 且向量后端可用；任何失败或停止返回 []（跳过第二轮）。"""
+        """第二轮向量召回：排除首轮已注入关键词后取 vec_top_n 条；失败或停止返回 []。"""
         if not self.has_dense:
             return []
         ex = {str(k) for k in (exclude or ())}

@@ -1,4 +1,4 @@
-"""job_object.py — Windows Job Object：程序以任意方式退出时自动终止全部子进程。"""
+"""Windows Job Object：进程退出时内核自动终止全部子进程。"""
 import sys
 import ctypes
 import threading
@@ -49,7 +49,7 @@ class _JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
 
 
 def init_job_object() -> bool:
-    """创建作业对象（进程内只需一次，线程安全）。失败返回 False。"""
+    """创建作业对象（单次、线程安全），失败返回 False。"""
     global _JOB_HANDLE, _INIT_FAILED
     if _JOB_HANDLE is not None or _INIT_FAILED:
         return _JOB_HANDLE is not None
@@ -88,7 +88,7 @@ def init_job_object() -> bool:
 
 
 def assign_process(pid: int) -> bool:
-    """把已创建的进程加入作业对象。失败时静默返回 False（调用方忽略即可）。"""
+    """把进程加入作业对象，失败静默返回 False。"""
     if _JOB_HANDLE is None or sys.platform != "win32":
         return False
     try:
@@ -97,7 +97,6 @@ def assign_process(pid: int) -> bool:
         kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
         kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
         kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-        # PROCESS_SET_QUOTA | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION
         PROCESS_SET_QUOTA = 0x0100
         PROCESS_TERMINATE = 0x0001
         PROCESS_QUERY_LIMITED_INFORMATION = 0x1000

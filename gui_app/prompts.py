@@ -37,7 +37,7 @@ _STRUCTURE_EXAMPLE = (
     '}}'
 )
 
-# 「时间标签」选项2 追加项：thumb_time 字段，引导/示例文案来自模板内容层（界面可编辑）
+# thumb_time 引导/示例文案来自模板内容层
 
 
 # ── 内置模板 ──
@@ -167,8 +167,7 @@ def set_active(pid: str) -> Dict[str, Any]:
 
 def _active_from(presets: List[Dict[str, Any]], cfg: Dict[str, Any],
                  with_thumb_time: bool = False) -> Dict[str, Any]:
-    """从模板列表 + 配置拼出激活模板信息（回退：激活 id 不存在取列表第一个，
-    列表为空（prompts.json 被外部清空）用内置默认）。"""
+    """拼出激活模板信息；激活 id 失效回退列表第一个，列表空用内置默认。"""
     pid = cfg.get("active_prompt_id", "default")
     preset = next((p for p in presets if p.get("id") == pid), None)
     if preset is None:
@@ -202,11 +201,7 @@ def get_prompts_page() -> Dict[str, Any]:
 
 def build_prompt(preset: Dict[str, Any], include_header: bool = True,
                  with_thumb_time: bool = False, use_example: bool = False) -> str:
-    """从模板的内容层字段 + 锁定的结构层模板，拼出最终 prompt 字符串。
-
-    include_header=False 时不含结构约束头部（仅供前端预览展示用）。
-    use_example=False 时不拼接示例段（示例内容仍随模板保存，仅不注入提示词）。
-    """
+    """内容层字段 + 结构层模板拼出 prompt；include_header/use_example 控制注入段。"""
     f = preset.get("fields", {})
     tags_dim = f.get("tags_dim", "")
     tags_dim_inline = f" ({tags_dim})" if tags_dim else ""
@@ -271,12 +266,7 @@ def normalize_disabled_groups(value: Any) -> List[str]:
 
 
 def load_term_library() -> Dict[str, Any]:
-    """读取 _workspace/term_library.json；不存在/结构非法返回默认。
-
-    mode ∈ off/on/enhanced（关闭 / 开启=首轮字面召回注入（单轮） /
-    增强=字面注入+第二轮向量召回，嵌入模型不可用时等同开启）；
-    disabled_groups 为停用分组黑名单（命中组的条目不参与检索）。
-    """
+    """读取 term_library.json；mode ∈ off/on/enhanced，disabled_groups 为停用分组黑名单。"""
     data = read_json(TERM_LIBRARY_FILE, None)
     mode = ""
     items: List[Dict[str, str]] = []
@@ -292,10 +282,7 @@ def load_term_library() -> Dict[str, Any]:
 
 def save_term_library(items: Any, mode: Any,
                      disabled_groups: Any = None) -> Dict[str, Any]:
-    """保存词条检索到 _workspace/term_library.json（mode ∈ off/on/enhanced）。
-
-    黑名单只保留现存分组（含默认分组 ""），组被删空/改名后的残留条目顺手清理。
-    """
+    """保存词条检索（mode ∈ off/on/enhanced）；黑名单只保留现存分组。"""
     m = str(mode or "").strip().lower()
     norm_items = normalize_term_library_items(items)
     live = {it["group"] for it in norm_items}

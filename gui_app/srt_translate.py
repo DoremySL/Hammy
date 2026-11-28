@@ -1,4 +1,4 @@
-"""srt_translate.py — SRT 字幕翻译模块（独立模块，方便测试）。"""
+"""SRT 字幕翻译（独立模块便于测试）。"""
 from __future__ import annotations
 
 import math
@@ -14,8 +14,7 @@ from .env import make_logger
 _BATCH_SIZE = 64         # 初始每批段落数
 _RETRY_SIZES = {16, 8}   # 这些批次大小有 1 次重试机会，其余失败直接拆分
 
-# 翻译任务专用请求参数（不读取设置页的 ai_timeout / max_tokens /
-# temperature / top_p / response_format —— 那些面向视频重命名场景）：
+# 请求参数专用：不读设置页的 ai_*（那些面向视频重命名场景）
 _REQUEST_TIMEOUT = 60    # 单次请求超时（秒）：整批 64 行翻译响应可能较慢
 _TEMPERATURE = 0.2       # 翻译用低温：输出更稳定、措辞更一致
 
@@ -70,13 +69,13 @@ def _build_srt(segments: List[dict]) -> str:
     return '\n'.join(parts)
 
 
-# ── OpenAI SDK 调用（与项目其他 AI 调用统一）─────────────────
+# ── OpenAI SDK 调用 ──
 _client_cache: dict = {}
 _client_cache_lock = threading.Lock()
 
 
 def _get_client(api_key: str, base_url: str):
-    """获取（并缓存）OpenAI client，与项目其他 AI 调用统一走 openai SDK。"""
+    """获取并缓存 OpenAI client。"""
     key = (api_key, base_url)
     with _client_cache_lock:
         client = _client_cache.get(key)
@@ -155,17 +154,9 @@ def translate_srt_file(src_path: str, dest_path: str,
                        workers: int = 4,
                        log_fn: Optional[Callable[[str], None]] = None,
                        stop_event: Optional[object] = None) -> None:
-    """翻译 SRT 文件为简体中文并保存。
-        Args:
-        src_path: 源 SRT 文件路径
-        dest_path: 目标 SRT 文件路径（.zh.srt）
-        api_key: AI API 密钥
-        base_url: AI API 基础地址
-        model: 模型名称
-        workers: 并发数（将字幕拆成多少份并行处理）
-        log_fn: 警告日志回调（如小批次翻译失败保留原文）
-        stop_event: threading.Event；置位后在下一批翻译前抛 TranslationCancelled
-        （进行中的单批请求完成后生效）
+    """翻译 SRT 为简体中文并保存；按 workers 拆分并行，批内按 _BATCH_SIZE 分批。
+
+    stop_event 置位后在下一批翻译前抛 TranslationCancelled（进行中的批完成后生效）。
     """
     log_fn = log_fn or _default_log
 
@@ -200,7 +191,7 @@ def translate_srt_file(src_path: str, dest_path: str,
         with ThreadPoolExecutor(max_workers=chunk_count) as pool:
             futures = [pool.submit(_translate_chunk, chunk) for chunk in chunks]
             for future in as_completed(futures):
-                future.result()  # 抛出异常（含 TranslationCancelled）则向上传播
+                future.result()  # 异常向上传播
 
     result = _build_srt(segments)
     Path(dest_path).write_text(result, encoding='utf-8')

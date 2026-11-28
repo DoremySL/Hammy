@@ -1,4 +1,4 @@
-"""installer.py — 扩展模块共享安装基础设施（UV + 镜像 + GPU 检测 + 子进程工具）。"""
+"""扩展模块共享安装设施：UV + 镜像 + GPU 检测 + 子进程工具。"""
 from __future__ import annotations
 
 import collections
@@ -102,7 +102,6 @@ _CUDA_CANDIDATES: List[Tuple[str, str]] = sorted(
 
 
 # ── 镜像 / GPU 检测 ──
-
 def detect_gpu() -> Dict[str, Any]:
     """检测 NVIDIA GPU：型号 / 驱动版本 / 驱动支持的 CUDA 上限 + 推荐档位 + 显存。"""
     result = {
@@ -139,18 +138,6 @@ def detect_gpu() -> Dict[str, Any]:
     return result
 
 
-_GPU_CACHE: Dict[str, Any] = {"data": None, "t": 0.0}
-
-
-def detect_gpu_cached(ttl: float = 60.0) -> Dict[str, Any]:
-    """带 TTL 缓存的 detect_gpu。"""
-    now = time.time()
-    if _GPU_CACHE["data"] is None or now - _GPU_CACHE["t"] > ttl:
-        _GPU_CACHE["data"] = detect_gpu()
-        _GPU_CACHE["t"] = now
-    return _GPU_CACHE["data"]
-
-
 def _query_cuda_version() -> str:
     """从 nvidia-smi 表头解析驱动支持的最高 CUDA 版本。"""
     try:
@@ -162,7 +149,7 @@ def _query_cuda_version() -> str:
         )
         out, _ = p.communicate(timeout=5)
         if p.returncode == 0:
-            # 表头：新版 CUDA UMD Version: 13.3 / 英文 CUDA Version: / 中文 CUDA 版本:
+        # 表头：新版 CUDA UMD Version / 英文 CUDA Version / 中文 CUDA 版本
             patterns = [
                 r"CUDA\s+UMD\s+Version\s*:?\s*([\d.]+)",
                 r"CUDA\s+Version\s*:?\s*([\d.]+)",

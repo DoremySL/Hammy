@@ -1,8 +1,4 @@
-"""重命名流水线辅助阶段 worker：ASR 注入与 Tagger 集成。
-
-辅助 worker 由 BatchPipeline 统一调度（异常即兜底其所辖阶段），
-各自负责把阶段推进到终态并回填上下文（extra_meta / literal_meta）。
-"""
+"""重命名流水线辅助 worker：ASR 注入与 Tagger 集成，由 BatchPipeline 调度。"""
 import queue
 import threading
 from pathlib import Path
@@ -21,7 +17,7 @@ def format_transcribe_block(text: str, lang: str = "", max_chars: int = 2000) ->
     if len(text) > max_chars:
         text = text[:max_chars] + "…（已截断）"
     parts = ["【语音辅助参考】",
-             "以下为自动语音转写结果，仅供参考。请结合视频画面自行判断："]
+             "以下为自动语音转写结果，可能混入ASR模型幻觉，尤其是人名部分仅供参考。请结合视频画面自行判断："]
     if lang:
         parts.append(f"- 语言: {lang}")
     parts.append(f"- 转写文本: {text}")
@@ -30,11 +26,7 @@ def format_transcribe_block(text: str, lang: str = "", max_chars: int = 2000) ->
 
 
 class AsrInjectWorker:
-    """ASR 注入辅助阶段：单子进程批内逐视频转写，完成即回填上下文。
-
-    仅处理缺失 SRT 的视频（runner 传入 missing 列表）；停止/失败时已完成的
-    视频保留转写文本，其余阶段兜底终态（空文本降级）。
-    """
+    """ASR 注入辅助阶段：仅处理缺失 SRT 的视频，停止/失败时空文本降级。"""
 
     stage_key = "asr"
 
@@ -161,7 +153,7 @@ class TaggerInjectWorker:
 
     def _start_engine(self, total: int, tagger_mod):
         """启动引擎：模型加载与首视频抽帧重叠（全部命中缓存时不启动）。"""
-        self.on_log("info", "[标签辅助] 集成开启，正在启动分析引擎（与抽帧并行）…")
+        logger.debug("[标签辅助] 集成开启，正在启动分析引擎（与抽帧并行）…")
         return tagger_mod.start_analyze_stream(
             total, tag_threshold=self.threshold, ip_threshold=self.threshold,
             stop_event=self.stop_event,

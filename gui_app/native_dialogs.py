@@ -1,8 +1,4 @@
-"""native_dialogs.py — Windows 原生文件/文件夹对话框（ctypes 实现）。
-
-- 文件选择: comdlg32.GetOpenFileNameW (支持多选)
-- 文件夹选择: shell32.SHBrowseForFolderW
-"""
+"""Windows 原生文件/文件夹对话框（ctypes）：GetOpenFileNameW / SHBrowseForFolderW。"""
 from __future__ import annotations
 
 import ctypes
@@ -86,9 +82,7 @@ def pick_files(
     if not _comdlg32.GetOpenFileNameW(ctypes.byref(ofn)):
         return []
 
-    # 解析多选结果：
-    # 单选: "C:\\path\\file.mp4\0"
-    # 多选: "C:\\dir\0file1.mp4\0file2.mp4\0\0"
+    # 多选结果：首段为目录，其余为文件名；单选仅一段
     raw = buf[:]
     parts = raw.split("\0")
     while parts and parts[-1] == "":
@@ -100,7 +94,6 @@ def pick_files(
     if len(parts) == 1:
         return [parts[0]]
 
-    # 多选：第一部分是目录，其余是文件名
     directory = parts[0]
     return [os.path.join(directory, f) for f in parts[1:]]
 
@@ -139,7 +132,7 @@ def pick_folder(
     parent_hwnd=None,
 ) -> str:
     """打开文件夹选择对话框，返回选中路径（取消返回空字符串）。"""
-    # CoInitializeEx 明确指定 STA 模式；若线程已初始化 COM（RPC_E_CHANGED_MODE）则忽略
+    # STA 模式初始化 COM，线程已初始化时忽略
     hr = _ole32.CoInitializeEx(None, 0x2)  # COINIT_APARTMENTTHREADED
     need_uninit = (hr == 0)  # S_OK 才需要 Uninit
     try:
@@ -158,7 +151,7 @@ def pick_folder(
         if not pidl:
             return ""
 
-        # 32768 支持长路径（本应用支持 \\?\ 前缀，260 MAX_PATH 不够）
+        # 32768 缓冲区支持长路径
         path_buf = ctypes.create_unicode_buffer(32768)
         result = _shell32.SHGetPathFromIDListW(pidl, path_buf)
         _ole32.CoTaskMemFree(pidl)

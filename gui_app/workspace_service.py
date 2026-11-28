@@ -1,4 +1,4 @@
-"""workspace_service.py — 业务逻辑：缓存路径解析、还原、对账、清理、统计。"""
+"""业务逻辑：缓存路径解析、还原、对账、清理与统计。"""
 from __future__ import annotations
 
 import json
@@ -17,7 +17,7 @@ from .workspace_store import (
     get_history_by_id,
     update_adhoc_path,
 )
-from batch_rename.utils import path_exists, to_long_path
+from batch_rename.utils import norm_path, path_exists, to_long_path
 
 
 # ── 缓存路径解析 ──
@@ -47,7 +47,7 @@ def restore_video(vid: str) -> Dict[str, Any]:
             return {"ok": False, "message": f"该视频状态为 {status}，无法还原"}
 
         if not original_path or not new_path or original_path == new_path:
-            # 文件名未变化，无需重命名，但删除 history 使其回到待处理
+            # 文件名未变只删 history，使其回到待处理
             remove_history_by_id(vid)
             return {"ok": True, "message": "文件名未变化，已从已处理中移除"}
 
@@ -127,14 +127,13 @@ def restore_videos(vids: List[str]) -> Dict[str, Any]:
 
 
 def remove_history_for_path(path: str) -> bool:
-    """按现路径（new_path）删除匹配的 history 条目（供去重移动已处理视频后调用），
-    同时清理其缩略图与缓存 NFO。未匹配返回 False。"""
-    target = os.path.normcase(os.path.normpath(path))
+    """按现路径（new_path）删 history 条目并清理缩略图与缓存 NFO；未匹配返回 False。"""
+    target = norm_path(path)
     vid = ""
     with _lock:
         for e in load_history().get("entries", []):
             p = e.get("new_path")
-            if p and os.path.normcase(os.path.normpath(p)) == target:
+            if p and norm_path(p) == target:
                 vid = e.get("id") or ""
                 break
         if vid:

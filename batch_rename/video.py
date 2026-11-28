@@ -1,7 +1,7 @@
 """视频探测、关键帧抽取。"""
+import base64
 import bisect
 import json
-import base64
 import os
 import subprocess
 import tempfile
@@ -21,7 +21,7 @@ from .types import Frame
 
 
 # ── 抽帧策略常量 ──
-_KF_PAIR_FRAMES = 8            # 目标后此帧数内还有关键帧时 concat 段会多吐帧（B 帧 dts 滞后），跳过 concat
+_KF_PAIR_FRAMES = 8            # 目标后极近邻关键帧数阈值（命中则 concat 配帧不齐）
 _PER_FRAME_WORKERS = 4         # 逐帧抽取的并发进程数
 
 # ── 子进程超时（秒）──
@@ -35,15 +35,21 @@ _PROBE_WINDOW_HALF_MIN = 5.0    # 基础半径
 _PROBE_WINDOW_HALF_MAX = 60.0    # 半径上限
 
 
-def run_subprocess_with_cancel(cmd: list, timeout: float, stop_event: threading.Event) -> Tuple[Optional[bytes], Optional[bytes]]:
-    """运行子进程，支持通过 stop_event 提前取消。取消或超时时返回 (None, None)"""
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **SUBPROCESS_KWARGS)
+def run_subprocess_with_cancel(cmd: list, timeout: float, stop_event: threading.Event,
+                               text: bool = False) -> Tuple[Optional[int], Any, Any]:
+    """运行子进程，支持 stop_event 取消；取消/超时返回 (None, None, None)。
+
+    text=True 时输出为 str，否则为 bytes。"""
+    p = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        encoding="utf-8" if text else None, errors="replace" if text else None,
+        **SUBPROCESS_KWARGS)
     register_subprocess(p)
     try:
         deadline = time.time() + timeout
         while True:
             if stop_event.is_set() or time.time() > deadline:
-                # 取消或超时：终止进程并丢弃部分输出
+                # 取消或超时：终止并丢弃输出
                 p.terminate()
                 try:
                     p.communicate(timeout=2)
@@ -53,12 +59,13 @@ def run_subprocess_with_cancel(cmd: list, timeout: float, stop_event: threading.
                         p.communicate(timeout=2)
                     except subprocess.TimeoutExpired:
                         pass
-                return None, None
-            # 短轮询：每 0.1 秒检查一次 stop_event
+                return None, None, None
+            # 短轮询，及时响应取消
             try:
-                return p.communicate(timeout=0.1)
+                out, err = p.communicate(timeout=0.1)
             except subprocess.TimeoutExpired:
                 continue
+            return p.returncode, out, err
     finally:
         unregister_subprocess(p)
 
@@ -189,14 +196,13 @@ def _probe_csv(video_path: str, spec: str,
         "-read_intervals", spec,
         video_path,
     ]
-    stdout, _ = run_subprocess_with_cancel(cmd, _PROBE_KEYFRAMES_TIMEOUT_SEC, stop_event)
+    _, stdout, _ = run_subprocess_with_cancel(cmd, _PROBE_KEYFRAMES_TIMEOUT_SEC, stop_event)
     return stdout
 
 
 def _probe_interval_anchors(video_path: str, merged: List[List[float]],
                             stop_event: threading.Event) -> Optional[List[float]]:
-    """极短读取定位各区间实际起读的关键帧锚点（read_intervals 时长以回退
-    关键帧为锚）；行无法按区间对齐返回 None。"""
+    """定位各区间起读关键帧锚点；无法按区间对齐返回 None。"""
     spec = ",".join(f"{lo:.3f}%+0.001" for lo, _ in merged)
     stdout = _probe_csv(video_path, spec, stop_event)
     pts: List[float] = []
@@ -258,9 +264,7 @@ def _probe_keyframes_intervals(video_path: str, duration: float, points: int,
 
 def probe_video(video_path: str, stop_event: threading.Event,
                 points: int) -> Tuple[Dict[str, Any], List[float]]:
-    """分两次 ffprobe 调用：
-    1. JSON 获取格式/流元数据（全量条目，NFO 依赖流信息）
-    2. 按点位分区采样关键帧时间戳（内容基准）"""
+    """ffprobe 元数据 JSON + 点位分区关键帧时间戳（内容基准）。"""
     meta: Dict[str, Any] = {}
     key_ts: List[float] = []
 
@@ -278,7 +282,7 @@ def probe_video(video_path: str, stop_event: threading.Event,
             ffmpeg_tools.ffprobe, "-v", "quiet", "-print_format", "json",
             "-show_entries", entries, video_path,
         ]
-        stdout, _ = run_subprocess_with_cancel(meta_cmd, _PROBE_META_TIMEOUT_SEC, stop_event)
+        _, stdout, _ = run_subprocess_with_cancel(meta_cmd, _PROBE_META_TIMEOUT_SEC, stop_event)
         if stdout:
             data = json.loads(stdout)
             meta = _parse_metadata(data)
@@ -309,7 +313,7 @@ def _extract_single_frame(video_path: str, ts: float, vf: str,
         "-q:v", "2",
         "-f", "image2", "pipe:1",
     ]
-    stdout, stderr = run_subprocess_with_cancel(cmd, _EXTRACT_FRAME_TIMEOUT_SEC, stop_event)
+    _, stdout, stderr = run_subprocess_with_cancel(cmd, _EXTRACT_FRAME_TIMEOUT_SEC, stop_event)
     if stdout and stdout[:2] == b"\xff\xd8":
         return stdout
     if stdout is not None:
@@ -357,8 +361,7 @@ def _frame_tau(frame_rate: float) -> float:
 
 def _concat_vulnerable(key_ts: List[float], timestamps: List[float],
                         frame_rate: float) -> bool:
-    """目标关键帧后极近处还有关键帧（编码器成对插入）时，concat 的 outpoint 按 dts
-    截断会漏进相邻关键帧导致配帧不齐，此类目标直接走逐帧。"""
+    """目标关键帧后极近处还有关键帧（成对插入）时 concat 会配帧不齐。"""
     limit = _KF_PAIR_FRAMES * _frame_tau(frame_rate)
     for t in timestamps:
         i = bisect.bisect_right(key_ts, t)
@@ -421,21 +424,21 @@ def _extract_frames_concat(video_path: str, samples: List[Tuple[float, int]], co
     """关键帧点位单进程多段抽取：出帧数与样本一一配对成功才交付，否则 None 回退逐帧。"""
     if stop_event.is_set():
         return None
-    # ffconcat in/outpoint 按流 pts 解释，内容时间需换算
+    # ffconcat 按流 pts 解释，需换算内容时间
     epochs = [(t + start_time, t + start_time + 0.5 * _frame_tau(frame_rate))
               for t, _ in samples]
     script = _write_ffconcat_script(video_path, epochs)
     try:
         cmd = [
             ffmpeg_tools.ffmpeg, "-y",
-            "-threads", "1",  # 解码单线程：多线程与 concat 段丢弃有竞态，偶发中途崩溃
+            "-threads", "1",  # 解码单线程：多线程与 concat 段丢弃有竞态
             "-skip_frame", "nokey",
             "-f", "concat", "-safe", "0", "-i", script,
             "-fps_mode", "passthrough",
             "-vf", frame_vf or _default_frame_vf(config),
             "-q:v", "2", "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1",
         ]
-        stdout, _ = run_subprocess_with_cancel(cmd, _EXTRACT_CONCAT_TIMEOUT_SEC, stop_event)
+        _, stdout, _ = run_subprocess_with_cancel(cmd, _EXTRACT_CONCAT_TIMEOUT_SEC, stop_event)
         if not stdout:
             return None
         return _pair_samples(video_path, samples, _split_jpegs(stdout), "concat")
@@ -461,7 +464,7 @@ def _fill_positions(p: float, lo: float, hi: float, per_point: int,
     return [min(lo + step * (i + 1), end) for i in range(per_point)]
 
 
-_KF_MIN_GAP_SEC = 1.0  # 选中关键帧的最小间隔（防同秒帧与缩略图同秒混淆）
+_KF_MIN_GAP_SEC = 1.0  # 选中关键帧的最小间隔
 
 
 def _kf_gap_filter(cand: List[float], last: Optional[float]) -> List[float]:
@@ -477,12 +480,7 @@ def _kf_gap_filter(cand: List[float], last: Optional[float]) -> List[float]:
 def select_point_samples(duration: float, key_ts: List[float],
                          points: int, per_point: int,
                          frame_rate: float = 0.0) -> List[Tuple[float, int]]:
-    """按点位分区选帧：分区内优先关键帧，无关键帧补普通帧位置。
-
-    返回 (时间戳, 点位索引)，时间升序、点位索引单调不减；key_ts 需升序传入。
-    duration 缺失时：有关键帧均匀采样，否则取首帧。
-    选中关键帧全局成对间隔 > 1s；区域内关键帧被过滤光时回退普通帧位置。
-    """
+    """按点位分区选帧（优先关键帧，缺失补普通帧位置）；返回 (时间戳, 点位索引)，key_ts 需升序。"""
     if duration <= 0:
         if not key_ts:
             return [(0.0, 0)]
@@ -491,14 +489,14 @@ def select_point_samples(duration: float, key_ts: List[float],
             return [(t, i) for i, t in enumerate(key_ts)]
         return [(key_ts[i], r)
                 for r, i in enumerate(_anchor_keyframe_indices(len(key_ts), points))]
-    # 片尾内收一个帧间隔，防越过末帧
+    # 片尾内收一个帧间隔
     end = max(0.0, duration - _frame_tau(frame_rate))
     regions = _point_regions(duration, points)
     out: List[Tuple[float, int]] = []
     seen: set = set()
     last_kf: Optional[float] = None
     for pi, p, lo, hi in regions:
-        # 分区只在边界可能重合；已被前一点位取走的边界帧不重复使用
+        # 边界帧不重复使用
         near = [t for t in key_ts if lo <= t <= hi and t not in seen]
         if near:
             near = _kf_gap_filter(near, last_kf)
@@ -519,15 +517,11 @@ def select_point_samples(duration: float, key_ts: List[float],
 
 def probe_and_extract_keyframes(video_path: str, config: Config, stop_event: threading.Event,
                                 frame_vf: Optional[str] = None) -> Tuple[Dict[str, Any], List[Frame]]:
-    """探测视频元数据 + 关键帧 → 选点 → 抽取为 Frame（时间戳+base64+点位索引）。
-
-    Frame.ts 与 key_ts 均为内容相对时间；frame_vf 传入时替换默认缩放滤镜；
-    抽帧后执行公用预处理。
-    """
+    """探测元数据 + 关键帧选点 + 抽帧；frame_vf 可替换默认缩放滤镜。"""
     if stop_event.is_set():
         return {}, []
     if not ffmpeg_tools.ffprobe or not ffmpeg_tools.ffmpeg:
-        # 依赖未加载/缺失时明确报错，而不是让每个文件都静默"抽帧失败"
+        # 依赖缺失时明确报错
         logger.error("ffmpeg/ffprobe 不可用（依赖未加载或未安装），无法处理视频。"
                      "请先调用 ensure_dependencies() 或安装 ffmpeg。")
         return {}, []
@@ -549,8 +543,7 @@ def probe_and_extract_keyframes(video_path: str, config: Config, stop_event: thr
     # ── 抽帧路由 ──
     if mode == "auto" and kf_samples \
             and not _concat_vulnerable(key_ts, [t for t, _ in kf_samples], frame_rate):
-        # auto：关键帧样本走 concat 快路径（普通帧位置不出帧，concat 失败才整段
-        # 逐帧兜底——此时全部样本含普通帧位置一起逐帧）
+        # auto：关键帧样本走 concat，失败则全部样本逐帧兜底
         frames = _extract_frames_concat(video_path, kf_samples, config, stop_event,
                                         frame_rate, frame_vf=frame_vf,
                                         start_time=start_time) or []

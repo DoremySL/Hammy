@@ -14,7 +14,7 @@ _subprocess_lock = threading.Lock()
 def register_subprocess(p: subprocess.Popen) -> None:
     with _subprocess_lock:
         _active_subprocesses.add(p)
-    # 挂入作业对象：程序以任意方式退出时由内核自动终止该进程；失败静默降级
+    # 挂入作业对象，退出时内核统一终止；失败静默降级
     try:
         if init_job_object():
             assign_process(p.pid)
@@ -35,7 +35,7 @@ def _safe_call(func, *args) -> None:
 
 
 def terminate_all_subprocesses(timeout: float = 2.0) -> None:
-    """终止所有活跃子进程。只清除已终止的条目，避免抹掉并发新注册的进程。"""
+    """终止所有活跃子进程。"""
     with _subprocess_lock:
         procs = list(_active_subprocesses)
 
@@ -50,10 +50,8 @@ def terminate_all_subprocesses(timeout: float = 2.0) -> None:
                 p.wait(timeout=max(0, deadline - time.time()))
             except subprocess.TimeoutExpired:
                 _safe_call(p.kill)
-            except Exception:
-                pass
 
-    # 只移除已处理的进程，不清空整个集合
+    # 只移除已处理项，不清空集合
     with _subprocess_lock:
         for p in procs:
             _active_subprocesses.discard(p)

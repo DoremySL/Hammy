@@ -1,16 +1,15 @@
 """文件名处理：清洗、日期提取、重命名、stem 构建。"""
-import os
-import re
 import datetime
+import os
 import platform
+import re
 import threading
 from pathlib import Path
-from typing import Optional, Tuple, Dict, Any, List
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from .env import logger
 from .utils import to_long_path, path_exists, path_stat, rename_file
 
-from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .config import Config
 

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Optional
+from typing import Optional
 
 from . import runner
 from .api_mixins import (
@@ -14,7 +14,6 @@ from .api_mixins import (
     SourcesMixin,
     SystemMixin,
 )
-from .env import check_all_startup_deps
 from .js_push import js_pusher
 
 
@@ -38,9 +37,3 @@ class Api(
     def set_window(self, window) -> None:
         self._window = window
         js_pusher.set_window(window)
-
-    # ── 启动期检测 ──
-
-    def check_startup(self) -> Dict[str, Any]:
-        """启动期依赖检测：返回所有依赖状态（与 app.py 启动期同口径）。"""
-        return check_all_startup_deps()

@@ -1,4 +1,4 @@
-"""ProcessingMixin — 启动/停止批处理管线 + AI 连接检测。"""
+"""批处理管线启动/停止与 AI 连接检测。"""
 from __future__ import annotations
 
 import threading
@@ -18,8 +18,7 @@ def _check_ai_connection_impl() -> Dict[str, Any]:
         cfg = config_store.load_config()
         ai = cfg.get("ai", {})
 
-        # 本地推理集成（可插拔）：开启后连接检测指向本地 llama-server，
-        # 磁盘上用户填写的远程 API 参数保持不动
+        # 本地推理集成：激活时检测指向本地服务
         from ..llama_integration import ai_override
         ov = ai_override()
         if ov:
@@ -84,10 +83,9 @@ def _classify_conn_err(e: Exception, base_url: str) -> Dict[str, Any]:
 class ProcessingMixin:
     """批处理管线控制 + AI 连接检测。"""
 
-    # 防重入锁：pywebview 桥接每次调用新开线程，
-    # 「检查是否有任务 + 创建 runner」必须整体在临界区内，否则双击可起两条管线
+    # pywebview 桥接每次调用新开线程，检查+创建须整体临界，防双击起双管线
     _process_lock = threading.Lock()
-    # 连接检测串行化：单次检测最长 ~23s，避免重复点击在桥接线程上堆积
+    # 连接检测串行化，防重复点击堆积
     _check_conn_lock = threading.Lock()
 
     # ── 处理 ──
@@ -120,7 +118,7 @@ class ProcessingMixin:
                 except Exception as e:
                     js_pusher.push("onProcessDone", summary, {"error": str(e)})
 
-            # llama 集成：启动计划一次解析（配置与启动共用）；就绪门在 AI 阶段前等待
+            # llama 集成：启动计划一次解析，就绪门在 AI 阶段前
             from ..llama_integration import is_active as llama_integration_active
             plan = self.llama_launch_plan() if llama_integration_active() else None
 
@@ -146,7 +144,7 @@ class ProcessingMixin:
     def check_connection(self) -> Dict[str, Any]:
         with self._check_conn_lock:
             r = _check_ai_connection_impl()
-        # 附带当前生效的服务地址（本地推理集成开启时为本地服务），供前端 hover 显示
+        # 附带生效的服务地址供前端显示
         try:
             cfg = config_store.load_config()
             ai = cfg.get("ai", {})

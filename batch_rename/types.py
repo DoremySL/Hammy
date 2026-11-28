@@ -13,7 +13,7 @@ class RenameRecord(NamedTuple):
 
 
 class Frame(NamedTuple):
-    """单帧抽帧结果：时间戳（内容相对秒）+ JPEG base64 + 采样点位索引（0 起）。"""
+    """单帧：相对秒时间戳 + JPEG base64 + 点位索引。"""
     ts: float
     b64: str
     point_index: int

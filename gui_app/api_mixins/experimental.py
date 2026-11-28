@@ -1,9 +1,10 @@
-"""ExperimentalMixin — 扩展功能 API（llama.cpp / 语音转写 / Hammy-tagger）。"""
+"""扩展功能 API：llama.cpp / 语音转写 / Hammy-tagger / 向量检索。"""
 from __future__ import annotations
 
 import shutil
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -25,6 +26,22 @@ _install_lock = threading.Lock()
 _gpu_stop_event = threading.Event()
 # 安装取消事件（开始前 clear，stop_install 置位）
 _install_stop_event = threading.Event()
+
+
+@contextmanager
+def _install_slot(clear_stop: bool = True):
+    """安装互斥槽：yield False 表示已有任务占用；clear_stop 同时清安装取消事件。"""
+    if not _install_lock.acquire(blocking=False):
+        yield False
+        return
+    if clear_stop:
+        _install_stop_event.clear()
+    try:
+        yield True
+    finally:
+        if clear_stop:
+            _install_stop_event.clear()
+        _install_lock.release()
 
 
 def _push_log(msg: str, level: str = "info") -> None:
@@ -108,22 +125,18 @@ class ExperimentalMixin:
     def clean_uv_cache(self) -> Dict[str, Any]:
         """清理 UV 包缓存，释放磁盘空间。"""
         from ..installer import clean_uv_cache as _clean
-        if not _install_lock.acquire(blocking=False):
-            return {"ok": False, "error": "已有模块正在安装，请等待完成后再清理缓存"}
-        try:
+        with _install_slot(clear_stop=False) as ok:
+            if not ok:
+                return {"ok": False, "error": "已有模块正在安装，请等待完成后再清理缓存"}
             return _clean(log_fn=_push_log)
-        finally:
-            _install_lock.release()
 
     def uninstall_uv(self) -> Dict[str, Any]:
         """卸载 UV（删除 UV-Tool 含缓存）。已装模块 venv 仍可运行。"""
         from ..installer import uninstall_uv as _uninstall
-        if not _install_lock.acquire(blocking=False):
-            return {"ok": False, "error": "已有模块正在安装，请等待完成后再卸载 UV"}
-        try:
+        with _install_slot(clear_stop=False) as ok:
+            if not ok:
+                return {"ok": False, "error": "已有模块正在安装，请等待完成后再卸载 UV"}
             return _uninstall(log_fn=_push_log)
-        finally:
-            _install_lock.release()
 
     def _auto_clean_uv_cache(self) -> None:
         """安装成功后自动清空 UV 包缓存（与清理按钮同一逻辑，保留 UV 本体）。"""
@@ -192,29 +205,23 @@ class ExperimentalMixin:
                         site: str = DEFAULT_PYPI_MIRROR) -> Dict[str, Any]:
         """安装向量检索依赖（uv + venv + onnxruntime + 所选设备的模型文件）。"""
         from ..ort_embedding import install_dependencies
-        if not _install_lock.acquire(blocking=False):
-            return {"ok": False, "error": "已有模块正在安装，请等待完成后再试"}
-        _install_stop_event.clear()
-        try:
+        with _install_slot() as ok:
+            if not ok:
+                return {"ok": False, "error": "已有模块正在安装，请等待完成后再试"}
             r = install_dependencies(device=device, site=site,
                                      log_fn=_push_log,
                                      stop_event=_install_stop_event)
             if r.get("ok"):
                 self._auto_clean_uv_cache()
             return r
-        finally:
-            _install_stop_event.clear()
-            _install_lock.release()
 
     def remove_rag_vec(self) -> Dict[str, Any]:
         """删除 ort-embedding 模块（venv + 模型 + 索引缓存）。"""
         from ..ort_embedding import remove_ort_embedding as _remove
-        if not _install_lock.acquire(blocking=False):
-            return {"ok": False, "error": "已有模块正在安装，请等待完成后再卸载"}
-        try:
+        with _install_slot(clear_stop=False) as ok:
+            if not ok:
+                return {"ok": False, "error": "已有模块正在安装，请等待完成后再卸载"}
             return _remove()
-        finally:
-            _install_lock.release()
 
     def stop_rag_vec(self) -> Dict[str, Any]:
         """停止嵌入后台进程，释放显存/内存；下次向量检索自动重启。"""
@@ -251,15 +258,13 @@ class ExperimentalMixin:
         from ..tagger import get_mirrors_info
         return get_mirrors_info()
 
-    def install_tagger(self,
-                             site: str = DEFAULT_TRT_SITE) -> Dict[str, Any]:
+    def install_tagger(self, site: str = DEFAULT_TRT_SITE) -> Dict[str, Any]:
         """安装 Hammy-tagger 依赖（uv + venv + tensorrt + 模型下载 + TRT 引擎构建）。"""
         from ..tagger import install_dependencies
 
-        if not _install_lock.acquire(blocking=False):
-            return {"ok": False, "error": "已有模块正在安装，请等待完成后再试"}
-        _install_stop_event.clear()
-        try:
+        with _install_slot() as ok:
+            if not ok:
+                return {"ok": False, "error": "已有模块正在安装，请等待完成后再试"}
             r = install_dependencies(site=site, log_fn=_push_log,
                                      stop_event=_install_stop_event)
             if r.get("ok"):
@@ -273,19 +278,14 @@ class ExperimentalMixin:
                     _push_log(msg, "err")
                     r["import"] = {"imported": 0, "skipped": 0, "error": str(e)}
             return r
-        finally:
-            _install_stop_event.clear()
-            _install_lock.release()
 
     def remove_tagger(self) -> Dict[str, Any]:
         """删除 Tagger 文件夹与模块数据。"""
         from ..tagger import remove_tagger as _remove
-        if not _install_lock.acquire(blocking=False):
-            return {"ok": False, "error": "已有模块正在安装，请等待完成后再卸载"}
-        try:
+        with _install_slot(clear_stop=False) as ok:
+            if not ok:
+                return {"ok": False, "error": "已有模块正在安装，请等待完成后再卸载"}
             return _remove()
-        finally:
-            _install_lock.release()
 
     def detect_ip_tags(self, items: List) -> Dict[str, Any]:
         """对选中视频执行辅助分类标签识别（items: [[video_id, video_path], ...]）。"""
@@ -528,7 +528,7 @@ class ExperimentalMixin:
         for _, key in _SEC_KEYS:
             tags = list(entry.get(key) or [])
             if lib is not None:
-                # 拷贝 tag 再附 zh/desc（词条描述）：cached 读取的嵌套对象与缓存共享
+                # 附词条中文与描述（嵌套对象与缓存共享，需拷贝）
                 tags = [{**t, "zh": lib[name]["zh"], "desc": lib[name]["desc"]}
                         for t in tags
                         if (name := str(t.get("name") or "")) in lib]
@@ -636,19 +636,15 @@ class ExperimentalMixin:
         """安装语音转写依赖并下载所选模型。"""
         from ..transcribe_cpp import install_dependencies
 
-        if not _install_lock.acquire(blocking=False):
-            return {"ok": False, "error": "已有模块正在安装，请等待完成后再试"}
-        _install_stop_event.clear()
-        try:
+        with _install_slot() as ok:
+            if not ok:
+                return {"ok": False, "error": "已有模块正在安装，请等待完成后再试"}
             r = install_dependencies(pypi_mirror=pypi_mirror, model=model,
                                      log_fn=_push_log,
                                      stop_event=_install_stop_event)
             if r.get("ok"):
                 self._auto_clean_uv_cache()
             return r
-        finally:
-            _install_stop_event.clear()
-            _install_lock.release()
 
     def download_transcribe_model(self, model_key: str = "") -> Dict[str, Any]:
         """下载未安装的转写模型。"""
@@ -656,31 +652,28 @@ class ExperimentalMixin:
 
         if not model_key:
             return {"ok": False, "error": "未指定模型"}
-        if not _install_lock.acquire(blocking=False):
-            return {"ok": False, "busy": True, "error": "已有模块正在安装，请等待完成后再试"}
+        with _install_slot(clear_stop=False) as ok:
+            if not ok:
+                return {"ok": False, "busy": True, "error": "已有模块正在安装，请等待完成后再试"}
 
-        def _progress(ev: Dict[str, Any]):
-            js_pusher.push("transcribeModelProgress", ev)
+            def _progress(ev: Dict[str, Any]):
+                js_pusher.push("transcribeModelProgress", ev)
 
-        try:
-            result = _download_model(model_key, log_fn=_push_log,
-                                     progress_cb=_progress)
-        except Exception as e:
-            result = {"ok": False, "error": f"下载过程异常: {e}"}
-        finally:
+            try:
+                result = _download_model(model_key, log_fn=_push_log,
+                                         progress_cb=_progress)
+            except Exception as e:
+                result = {"ok": False, "error": f"下载过程异常: {e}"}
             js_pusher.push("transcribeModelDone", result)
-            _install_lock.release()
         return result
 
     def remove_transcribe(self) -> Dict[str, Any]:
         """删除语音转写文件夹与模块数据。"""
         from ..transcribe_cpp import remove_transcribe as _remove
-        if not _install_lock.acquire(blocking=False):
-            return {"ok": False, "error": "已有模块正在安装，请等待完成后再卸载"}
-        try:
+        with _install_slot(clear_stop=False) as ok:
+            if not ok:
+                return {"ok": False, "error": "已有模块正在安装，请等待完成后再卸载"}
             return _remove()
-        finally:
-            _install_lock.release()
 
     def detect_speech(self, items: List) -> Dict[str, Any]:
         """对选中视频执行语音转写（items: [[video_id, video_path], ...]）。"""
@@ -1051,31 +1044,27 @@ class ExperimentalMixin:
 
         if not build_sel:
             return {"ok": False, "error": "未指定构建"}
-        if not _install_lock.acquire(blocking=False):
-            return {"ok": False, "error": "已有模块正在安装，请等待完成后再试"}
-        _install_stop_event.clear()
-        try:
-            return _install(build_sel, log_fn=_push_log, proxy=proxy,
-                            stop_event=_install_stop_event, channel=channel)
-        except Exception as e:
-            return {"ok": False, "error": f"安装过程异常: {e}"}
-        finally:
-            _install_stop_event.clear()
-            _install_lock.release()
+        with _install_slot() as ok:
+            if not ok:
+                return {"ok": False, "error": "已有模块正在安装，请等待完成后再试"}
+            try:
+                return _install(build_sel, log_fn=_push_log, proxy=proxy,
+                                stop_event=_install_stop_event, channel=channel)
+            except Exception as e:
+                return {"ok": False, "error": f"安装过程异常: {e}"}
+        
 
     def remove_llama(self) -> Dict[str, Any]:
         """卸载 llama.cpp（先停止服务再删目录）。"""
         from ..llama_cpp import remove as _remove
 
-        if not _install_lock.acquire(blocking=False):
-            return {"ok": False, "error": "已有模块正在安装，请等待完成后再卸载"}
-        try:
+        with _install_slot(clear_stop=False) as ok:
+            if not ok:
+                return {"ok": False, "error": "已有模块正在安装，请等待完成后再卸载"}
             r = _remove(log_fn=_push_log)
             if r.get("ok"):
                 shutil.rmtree(LLAMA_CONFIG_FILE.parent, ignore_errors=True)
             return r
-        finally:
-            _install_lock.release()
 
     def scan_llama_models(self) -> Dict[str, Any]:
         """扫描模型文件夹下的 .gguf 模型；新模型同时初始化 per-model 配置。"""
@@ -1161,7 +1150,6 @@ class ExperimentalMixin:
         r = _launch(target, self._llama_autostart_params(target), log_fn=_push_log,
                     server_log_fn=_push_llama_log)
         if r.get("ok"):
-            _push_log("本地推理服务已自动启动。")
             _record_last_model(r.get("model") or target or "")
         else:
             _push_log(f"本地推理服务自动启动失败：{r.get('error', '未知错误')}")
@@ -1179,7 +1167,7 @@ class ExperimentalMixin:
         target = self._llama_autostart_target()
         params = self._llama_autostart_params(target)
         if st.get("running") and st.get("port"):
-            # 已运行/启动中：以实际端口为准（可能与预解析目标不同）
+            # 已运行时以实际端口为准
             params["port"] = st["port"]
         try:
             port = int(params.get("port") or 8080)
@@ -1205,7 +1193,6 @@ class ExperimentalMixin:
             r = _launch(target, plan.get("params") or {}, log_fn=_push_log,
                         server_log_fn=_push_llama_log)
             if r.get("ok"):
-                _push_log("本地推理服务已自动启动。")
                 _record_last_model(r.get("model") or target or "")
             else:
                 _push_log(f"本地推理服务自动启动失败：{r.get('error', '未知错误')}")

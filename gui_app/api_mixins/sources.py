@@ -1,4 +1,4 @@
-"""SourcesMixin — 多源管理（添加/移除文件夹和零散文件）+ 触发扫描。"""
+"""多源管理、去重/相似版本检测、格式修复与扫描。"""
 from __future__ import annotations
 
 import os
@@ -24,20 +24,10 @@ from ..workspace_store import (
     update_json,
 )
 from batch_rename import dedup, format_fix
+from batch_rename.utils import fmt_size, norm_path
 
 _similar_lock = threading.Lock()
 _similar_stop: Optional[threading.Event] = None   # 当前相似扫描的取消事件；None = 无扫描
-
-
-def _fmt_size(size: int) -> str:
-    """字节 → 人类可读大小。"""
-    if size >= 1024 * 1024 * 1024:
-        return f"{size / 1024 / 1024 / 1024:.2f} GB"
-    if size >= 1024 * 1024:
-        return f"{size / 1024 / 1024:.1f} MB"
-    if size >= 1024:
-        return f"{size / 1024:.0f} KB"
-    return f"{size} B"
 
 
 class SourcesMixin:
@@ -46,8 +36,8 @@ class SourcesMixin:
     # ── 多源管理 ──
 
     def add_sources(self, paths: List[str]) -> Dict[str, Any]:
-        """追加源（文件夹或文件）。返回更新后的 manifest + 扫描结果（含 NFO 导入计数）。"""
-        # 防御性：前端可能传非 list
+        """追加源（文件夹/文件），返回 manifest + 扫描结果。"""
+        # 前端入参不做类型保证
         if not isinstance(paths, (list, tuple)):
             return {"error": "paths 必须是列表"}
         try:
@@ -88,10 +78,7 @@ class SourcesMixin:
     # ── 去重 ──
 
     def find_duplicates(self) -> Dict[str, Any]:
-        """扫描源内全部视频（含已处理）查找内容重复分组（仅检测，不移动）：
-        {"groups": [{"keeps", "remove", "size", "size_str"}], "total_remove": int}
-        已处理视频优先全量保留，组内待处理重复项被推荐移除。
-        """
+        """检测同内容重复分组（不移动）；已处理视频优先保留。"""
         done = discovery.processed_paths()
         groups = dedup.find_duplicates(discovery.processable_videos(), done)
         out: List[Dict[str, Any]] = []
@@ -114,14 +101,13 @@ class SourcesMixin:
                 "keeps": keep_items,
                 "remove": remove_items,
                 "size": g["size"],
-                "size_str": _fmt_size(g["size"]),
+                "size_str": fmt_size(g["size"]),
             })
             total_remove += len(remove_items)
         return {"groups": out, "total_remove": total_remove}
 
     def find_similar_versions(self, mode: str = "fast") -> Dict[str, Any]:
-        """第二阶段去重：检测同内容不同版本（不同编码/分辨率/带短头尾）。
-        时长预筛 → 分阶段指纹（window0 粗判 → 存活对补全窗）→ 对齐聚组。"""
+        """二阶段去重：同内容不同版本检测（时长预筛 → 分段指纹 → 对齐聚组）。"""
         global _similar_stop
         from batch_rename import similarity as sim
         from batch_rename.utils import path_stat
@@ -148,7 +134,7 @@ class SourcesMixin:
             session: Dict[str, Dict[int, List]] = {}
 
             def get_fp(p: str, idxs) -> Dict[int, List]:
-                key = os.path.normcase(os.path.normpath(p))
+                key = norm_path(p)
                 try:
                     st = path_stat(p)
                     mtime, size = int(st.st_mtime), st.st_size
@@ -168,8 +154,7 @@ class SourcesMixin:
                         p, metas[p]["duration"], miss, stop, mode=mode_cfg)
                     session.setdefault(key, {}).update(frames)
                     have.update(frames)
-                    # 从 have（会话已抽 + 磁盘已有 + 本次新抽）全量合并，
-                    # 避免阶段 2 补抽时把阶段 1 已抽的中间窗覆盖丢弃
+                    # 全量合并，防补抽覆盖阶段 1 中间窗
                     base = {"mode": mode, "mtime": mtime, "size": size,
                             "windows": {str(i): [list(f) for f in fl]
                                         for i, fl in have.items()}}
@@ -184,9 +169,8 @@ class SourcesMixin:
             fpsf, accepted2, full_edges = self._similar_phase2(
                 surv, pairs, get_fp, metas, mode_cfg)
             accepted += accepted2
-            # 写入时同步裁剪：只保留当前库内文件的条目（去重移走/删除的条目清掉，
-            # 否则缓存只增不删，库越大每次扫描读 JSON 越慢）；无变化时返回 NO_WRITE 不落盘
-            cache_keys = {os.path.normcase(os.path.normpath(p)) for p in paths}
+            # 裁剪已失效条目防缓存只增不删；无变化返回 NO_WRITE 不落盘
+            cache_keys = {norm_path(p) for p in paths}
 
             def _sync_cache(d: Dict) -> Any:
                 changed = bool(new_fps)
@@ -222,7 +206,7 @@ class SourcesMixin:
         from batch_rename import similarity as sim
         pairs = []
         for i in range(len(order)):
-            # 容差按对中较短时长取（快速模式分段）；order 升序、i 固定则容差固定，break 剪枝仍成立
+            # 容差按对内较短时长取，break 剪枝成立
             tol = mode_cfg.dur_tol_for(metas[order[i]]["duration"])
             for j in range(i + 1, len(order)):
                 if metas[order[j]]["duration"] - metas[order[i]]["duration"] > tol:
@@ -234,8 +218,7 @@ class SourcesMixin:
 
     @staticmethod
     def _similar_phase1(cand: List[str], pairs, single, get_fp, metas, mode_cfg):
-        """阶段 1：并行抽中间窗粗判；短视频整段一次抽取、直接定案。
-        返回 (fps1, accepted, surv)。"""
+        """阶段 1：并行抽中间窗粗判，返回 (fps1, accepted, surv)。"""
         from batch_rename import similarity as sim
 
         def seg1(fd):
@@ -251,7 +234,7 @@ class SourcesMixin:
             fa, fb = seg1(fps1[a]), seg1(fps1[b])
             if not fa or not fb:
                 continue
-            # 帧级预筛：窗中间帧最小汉明超阈值直接剔除，省掉 δ 探针
+            # 帧级预筛：最小汉明距离超阈值直接剔除
             if sim.pre_dist(fa, fb) > sim.PRE_FILTER_DIST:
                 continue
             r = sim.align([fa], [fb], db - da, da, db, quick=True, mode=mode_cfg)
@@ -266,8 +249,7 @@ class SourcesMixin:
 
     @staticmethod
     def _similar_phase2(surv, pairs, get_fp, metas, mode_cfg):
-        """阶段 2：存活者并行补全窗细对齐。返回 (fpsf, accepted, full_edges)，
-        full_edges 按文件对索引，供终验复用已算对齐结果。"""
+        """阶段 2：存活者并行补全窗细对齐；full_edges 供终验复用对齐结果。"""
         from batch_rename import similarity as sim
         fpsf: Dict[str, Dict[int, List]] = {}
         accepted: List[Tuple[str, str, Any]] = []
@@ -318,9 +300,7 @@ class SourcesMixin:
     @staticmethod
     def _similar_finalize(metas, cand, accepted, fps1, fpsf, mode_cfg,
                           full_edges, preferred=None) -> List[Dict[str, Any]]:
-        """聚组后终验：每个成员与任一保留项实际对齐（accepted 边直接复用结果），
-        防止 A≈B≈C 桥接链误并；有成员被踢时用保留边重聚，重聚产生的全部子组
-        均输出，未连入任何子组的保留项单独成组。"""
+        """聚组后逐成员终验（防桥接链误并）；被剔除成员用保留边重聚后输出子组。"""
         from batch_rename import similarity as sim
         pref = preferred or set()
         all_fp = {p: fpsf.get(p) or fps1.get(p) for p in cand
@@ -333,7 +313,7 @@ class SourcesMixin:
                 pp = Path(p)
                 items.append({
                     "id": stable_id(p), "path": p, "name": pp.name, "dir": str(pp.parent),
-                    "size": m.get("size", 0), "size_str": _fmt_size(m.get("size", 0)),
+                    "size": m.get("size", 0), "size_str": fmt_size(m.get("size", 0)),
                     "resolution": m.get("resolution", ""), "codec": m.get("codec", ""),
                     "duration": m.get("duration", 0),
                     "audio_codec": m.get("audio_codec", ""), "has_audio": m.get("has_audio", False),
@@ -368,8 +348,7 @@ class SourcesMixin:
         return groups
 
     def confirm_dedup(self, remove_paths: List[str]) -> Dict[str, Any]:
-        """执行去重：将指定文件移入 _duplicates/ 子目录，然后重新扫描。
-        被移除的已处理视频同步删除其 history 条目与缩略图/缓存 NFO。"""
+        """移入 _duplicates/ 并同步清理已处理视频的 history/缩略图/缓存 NFO。"""
         if not isinstance(remove_paths, (list, tuple)) or not remove_paths:
             return {"error": "没有需要移除的文件"}
         moved, errors = dedup.move_to_duplicates(list(remove_paths))
@@ -399,12 +378,12 @@ class SourcesMixin:
         items: List[Dict[str, Any]] = []
         for e in extensionless:
             # 检出流式封装 → 直接转换
-            items.append({**e, "size_str": _fmt_size(e.get("size", 0)),
+            items.append({**e, "size_str": fmt_size(e.get("size", 0)),
                           "convert": bool(e.get("ok")) and e.get("ext") in format_fix.STREAM_EXTS})
         for e in discovery.scan_all().get("stream", []):
             items.append({"path": e["path"], "name": e["name"], "dir": e["dir"],
                           "size": e.get("size", 0),
-                          "size_str": _fmt_size(e.get("size", 0)),
+                          "size_str": fmt_size(e.get("size", 0)),
                           "ok": True, "convert": True})
         return {"roots": len(roots), "items": items}
 
@@ -427,7 +406,7 @@ class SourcesMixin:
                 skipped.append({"path": p, "name": name, "reason": err})
                 continue
             renamed.append({"from": p, "to": dest, "ext": r["ext"],
-                            "size_str": _fmt_size(r.get("size", 0))})
+                            "size_str": fmt_size(r.get("size", 0))})
         result = self.scan()
         result["fix_renamed"] = renamed
         result["fix_skipped"] = skipped

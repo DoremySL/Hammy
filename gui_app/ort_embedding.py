@@ -1,4 +1,4 @@
-"""ort_embedding.py — 标签向量检索（ONNX Runtime 后端）：安装与嵌入 worker 客户端。"""
+"""标签向量检索（ONNX Runtime 后端）：安装与嵌入 worker 客户端。"""
 from __future__ import annotations
 
 import hashlib

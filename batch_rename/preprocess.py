@@ -1,8 +1,4 @@
-"""公用帧预处理：黑帧/纯色帧判定、四边黑边裁剪、感知签名、同点位近似去重、JPEG 重编码。
-
-抽帧后统一执行：LLM、Tagger 与缩略图刷新共用同一批存活帧。
-语义与 tagger 仓库 hammy_tagger.trim_bars 一致，对已裁剪帧幂等。
-"""
+"""公用帧预处理（LLM/Tagger/缩略图共用）：黑帧纯色剔除、黑边裁剪、同点位去重、重编码。"""
 import base64
 import io
 from typing import Dict, List, Optional, Tuple
@@ -21,7 +17,7 @@ BAR_RATIO = 0.99     # 行/列黑像素占比 ≥ 此值计为黑边
 BAR_MAX_TRIM = 0.45  # 每条边最多裁掉的比例
 JPEG_QUALITY = 88    # 重编码质量（无裁剪时原图直接复用，不经此路径）
 
-# ── 同点位相似去重阈值（bench 目检定标）──
+# ── 同点位去重阈值 ──
 _DEDUP_DHASH_MAX = 20   # dhash 粗筛阈值（/64）
 _DEDUP_NCC_MIN = 0.80   # 32x32 灰度相关性阈值
 
@@ -57,7 +53,7 @@ def preprocess_frame_signature(jpeg: bytes) -> Optional[Tuple[bytes, int, bytes]
     bw = g.point(_bin_lut())
     data = bw.tobytes()
     rows_dark = [data.count(255, y * w, (y + 1) * w) for y in range(h)]
-    # ROTATE_270(CW)：转置后第 r 行 = 原图第 r 列
+    # 转置后按行统计即原图按列统计
     data_t = bw.transpose(Image.ROTATE_270).tobytes()
     cols_dark = [data_t.count(255, x * h, (x + 1) * h) for x in range(w)]
     top = 0
@@ -73,7 +69,7 @@ def preprocess_frame_signature(jpeg: bytes) -> Optional[Tuple[bytes, int, bytes]
     while w - right < w * BAR_MAX_TRIM and cols_dark[right - 1] >= h * BAR_RATIO:
         right -= 1
     if (left, top, right, bottom) == (0, 0, w, h):
-        content, out = g, jpeg  # 无裁剪：原图直接复用，省一次重编码
+        content, out = g, jpeg  # 无裁剪直接复用原图
     else:
         content = g.crop((left, top, right, bottom))
         buf = io.BytesIO()
@@ -88,9 +84,7 @@ def preprocess_frame_signature(jpeg: bytes) -> Optional[Tuple[bytes, int, bytes]
 
 
 def _dedup_point_frames(items: List[Tuple[Frame, int, bytes]]) -> List[Frame]:
-    """同点位近似帧去重：dhash 粗筛 + 灰度相关性确认，保留先出现的帧。
-
-    仅限同点位：不同点位画面相同是有效信息（场景未变化/重演），不做合并。"""
+    """同点位近似帧去重（dhash 粗筛 + NCC 确认），保留先出现帧；不同点位不合并。"""
     kept: List[Tuple[Frame, int, bytes]] = []
     by_point: Dict[int, List[Tuple[int, bytes]]] = {}
     for frame, dh, sig in items:

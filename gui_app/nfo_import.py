@@ -1,4 +1,4 @@
-"""nfo_import.py — 添加源时扫描带 hammy 标记的 NFO，重建 history 与 NFO 缓存。"""
+"""添加源时扫描带 hammy 标记的 NFO，重建 history 与 NFO 缓存。"""
 from __future__ import annotations
 
 import os
@@ -12,16 +12,12 @@ from xml.etree import ElementTree as ET
 from .workspace_paths import NFO_DIR, stable_id
 from .workspace_store import append_history_entry, load_history
 from batch_rename.collector import is_video_file
-from batch_rename.utils import to_long_path
+from batch_rename.utils import norm_path, to_long_path
 
 MARKER_TAG = "hammy"
 MARKER_VERSION = "1"
 _SKIP_DIRS = frozenset({"_failed", "_duplicates"})
 _THUMB_TIME_RE = re.compile(r"\d{1,3}:\d{2}:\d{2}")
-
-
-def _norm(p: str) -> str:
-    return os.path.normcase(os.path.normpath(p))
 
 
 def _collect_nfo_files(path: str) -> List[str]:
@@ -144,7 +140,7 @@ def import_from_sources(paths: List[str]) -> Dict[str, int]:
         if e.get("id"):
             known_ids.add(e["id"])
         if e.get("new_path"):
-            known_new_paths.add(_norm(e["new_path"]))
+            known_new_paths.add(norm_path(e["new_path"]))
 
     stem_maps: Dict[str, Dict[str, List[str]]] = {}
     for path in paths:
@@ -163,12 +159,12 @@ def import_from_sources(paths: List[str]) -> Dict[str, int]:
                 continue
             video_path = candidates[0]
             vid = stable_id(video_path)
-            if vid in known_ids or _norm(video_path) in known_new_paths:
+            if vid in known_ids or norm_path(video_path) in known_new_paths:
                 counts["skipped_dup"] += 1
                 continue
             append_history_entry(_build_entry(video_path, marker, root))
             _cache_nfo(nfo_path, vid)
             known_ids.add(vid)
-            known_new_paths.add(_norm(video_path))
+            known_new_paths.add(norm_path(video_path))
             counts["imported"] += 1
     return counts

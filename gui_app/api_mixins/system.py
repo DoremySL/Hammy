@@ -1,4 +1,4 @@
-"""SystemMixin — 文件/文件夹选择对话框、资源管理器联动、workspace 维护。"""
+"""文件/文件夹选择对话框、资源管理器联动与 workspace 维护。"""
 from __future__ import annotations
 
 import sys
@@ -7,6 +7,16 @@ from typing import Any, Dict, List
 
 from ..workspace_service import clear_workspace_cache, prune_missing_history, workspace_stats
 from ..env import APP_ROOT, VIDEO_FILTER_WINFORMS
+
+
+def _dialog_type(kind: str):
+    """pywebview 文件对话框枚举（6.x FileDialog，旧版本回退旧常量）；kind ∈ open/folder/save。"""
+    import webview
+    dlg = getattr(webview, "FileDialog", None)
+    if dlg:
+        return {"open": dlg.OPEN, "folder": dlg.FOLDER, "save": dlg.SAVE}[kind]
+    return {"open": webview.OPEN_DIALOG, "folder": webview.FOLDER_DIALOG,
+            "save": webview.SAVE_DIALOG}[kind]
 
 
 class SystemMixin:
@@ -23,7 +33,7 @@ class SystemMixin:
                     return last
             except Exception:
                 pass
-        # 兜底用程序所在目录（避免打开用户主目录/盘符根，误选会导致全盘扫描）
+        # 兜底用程序所在目录
         return str(APP_ROOT)
 
     def _remember_dir(self, paths: List[str], is_folder: bool = False) -> None:
@@ -40,39 +50,36 @@ class SystemMixin:
 
     # ── 文件选择对话框 ──
 
-    def _pick_dialog(self, dialog_type, native_fallback_fn, is_folder: bool = False, **dialog_kwargs) -> list:
-        """通用文件/文件夹选择对话框。WinForms 优先，异常时 fallback 到原生对话框。"""
+    def _invoke_dialog(self, dialog_type, **dialog_kwargs) -> list:
+        """在 UI 线程调用 pywebview 文件对话框，返回归一化路径列表；取消返回 []，异常向上抛。"""
         from ..mainthread import run_on_ui_thread
-        init_dir = self._initial_dir()
 
         def _do():
             return self._window.create_file_dialog(
-                dialog_type, directory=init_dir, allow_multiple=True, **dialog_kwargs)
+                dialog_type, directory=self._initial_dir(), **dialog_kwargs)
 
-        try:
-            result = run_on_ui_thread(_do)
-        except Exception as e:
-            import sys
-            sys.stderr.write(f"[api] dialog WinForms failed: {e}\n")
-            return native_fallback_fn()
+        result = run_on_ui_thread(_do)
         if not result:
             return []
         if isinstance(result, str):
-            result = [result]
-        else:
-            result = list(result)
-        self._remember_dir(result, is_folder=is_folder)
+            return [result]
+        return list(result)
+
+    def _pick_dialog(self, dialog_type, native_fallback_fn, is_folder: bool = False, **dialog_kwargs) -> list:
+        """通用文件/文件夹选择对话框。WinForms 优先，异常时 fallback 到原生对话框。"""
+        try:
+            result = self._invoke_dialog(dialog_type, allow_multiple=True, **dialog_kwargs)
+        except Exception as e:
+            sys.stderr.write(f"[api] dialog WinForms failed: {e}\n")
+            return native_fallback_fn()
+        if result:
+            self._remember_dir(result, is_folder=is_folder)
         return result
 
     def pick_files(self) -> List[str]:
         """打开文件选择对话框。优先 WinForms 封送；仅异常时才用原生对话框兜底。"""
-        import webview
-
-        # pywebview 6.x 新枚举，旧常量已弃用
-        dlg = getattr(webview, "FileDialog", None)
-        open_type = dlg.OPEN if dlg else webview.OPEN_DIALOG
         return self._pick_dialog(
-            open_type,
+            _dialog_type("open"),
             self._pick_files_native,
             file_types=(VIDEO_FILTER_WINFORMS,),
         )
@@ -88,12 +95,7 @@ class SystemMixin:
 
     def pick_folders(self) -> List[str]:
         """打开文件夹选择对话框。优先 WinForms 封送；仅异常时才用原生对话框兜底。"""
-        import webview
-
-        # pywebview 6.x 新枚举（FOLDER_DIALOG 已弃用）
-        dlg = getattr(webview, "FileDialog", None)
-        folder_type = dlg.FOLDER if dlg else webview.FOLDER_DIALOG
-        return self._pick_dialog(folder_type, self._pick_folders_native, is_folder=True)
+        return self._pick_dialog(_dialog_type("folder"), self._pick_folders_native, is_folder=True)
 
     def _pick_folders_native(self) -> List[str]:
         """Win32 原生文件夹选择后备方案（ctypes，零依赖）。"""
@@ -114,14 +116,14 @@ class SystemMixin:
         if sys.platform == "win32":
             kw["creationflags"] = subprocess.CREATE_NO_WINDOW
         try:
-            # 引号只包路径：整参数引号（路径含空格时）会让 explorer 解析不出 /select
+            # 引号只包路径，整串引号会使 explorer 解析不出 /select
             subprocess.Popen(f'explorer /select,"{path}"', **kw)
             return {"ok": True}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
     def open_bing_search(self, query: str) -> Dict[str, Any]:
-        """用系统默认浏览器打开 Bing 搜索页（待处理详情页角色/IP 标签右键菜单搜索用）。"""
+        """系统浏览器打开 Bing 搜索（详情页标签右键菜单用）。"""
         import webbrowser
         from urllib.parse import quote
         try:
@@ -153,13 +155,13 @@ class SystemMixin:
             DwmSetWindowAttribute.restype = ctypes.c_long  # HRESULT
             hr = DwmSetWindowAttribute(
                 hwnd, 20, ctypes.byref(ctypes.c_int(value)), 4)
-            # 属性 20 在 Win10 < 1809 不存在（返回失败码），回退到旧的 19
+            # 属性 20 旧版 Win10 不支持，失败回退 19
             if hr != 0:  # S_OK == 0
                 DwmSetWindowAttribute(
                     hwnd, 19, ctypes.byref(ctypes.c_int(value)), 4)
             return {"ok": True}
         except Exception as e:
-            # 标题栏配色是锦上添花，任何异常都不应阻断主题切换
+            # 配色失败不阻断主题切换
             return {"ok": False, "error": str(e)}
 
     # ── workspace 维护 ──

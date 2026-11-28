@@ -1,7 +1,6 @@
 """同内容不同版本视频比对核心：抽帧指纹 + 平移对齐 + 头尾多余量推断。"""
 from __future__ import annotations
 
-import os
 import threading
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
@@ -9,6 +8,7 @@ from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from .dependencies import ffmpeg_tools
 from .phash import dhash_gray
+from .utils import norm_path
 from .video import run_subprocess_with_cancel
 
 # ── 指纹 ──
@@ -83,7 +83,7 @@ def fingerprint_windows(path: str, duration: float,
     raw_out = ["-f", "rawvideo", "-pix_fmt", "gray", "pipe:1"]
 
     def run(cmd: List[str], t0: float, timeout: float) -> List[Tuple[float, int]]:
-        stdout, _ = run_subprocess_with_cancel(cmd, timeout, stop_event)
+        _, stdout, _ = run_subprocess_with_cancel(cmd, timeout, stop_event)
         return _frames_from_raw(stdout or b"", t0)
 
     # 短视频：整段单次解码
@@ -94,7 +94,7 @@ def fingerprint_windows(path: str, duration: float,
     for i in idxs:
         if stop_event.is_set():
             break
-        # pos 取整秒，对齐 fps=1 采样栅格
+        # 取整秒对齐 fps=1 采样栅格
         pos = round(WINDOW_POS[i] * duration)
         cmd = ["-ss", f"{pos:.3f}", "-i", path, "-t", f"{mode.window_sec:.3f}",
                "-vf", vf, *raw_out]
@@ -147,8 +147,7 @@ def _bin_by_windows(frames: List[Tuple[float, int]], duration: float,
 
 
 def pre_dist(fa: List[Tuple[float, int]], fb: List[Tuple[float, int]]) -> int:
-    """阶段 1 帧级粗筛距离。
-    """
+    """阶段 1 帧级粗筛距离。"""
     if not fa or not fb:
         return PRE_FILTER_DIST + 1
     src, other = (fa, fb) if len(fa) <= len(fb) else (fb, fa)
@@ -277,11 +276,7 @@ _CODEC_PRIORITY = {"hevc": 4, "av1": 3, "vp9": 2, "h264": 1}
 
 def cluster_groups(metas: Dict[str, Dict], accepted: List[Tuple[str, str, AlignResult]],
                    preferred: Optional[Set[str]] = None):
-    """union-find 聚组，返回 [{paths, keeps, extras, edges}]。
-
-    preferred（normcase 路径集合）中的成员优先保留：组内全部已处理成员进 keeps，
-    无已处理成员时按质量打分保留最优一个。
-    """
+    """union-find 聚组，返回 [{paths, keeps, extras, edges}]；preferred 优先保留已处理成员。"""
     parent: Dict[str, str] = {}
 
     def find(x: str) -> str:
@@ -313,7 +308,7 @@ def cluster_groups(metas: Dict[str, Dict], accepted: List[Tuple[str, str, AlignR
     for root, members in groups.items():
         edges = [(a, b, r.head_diff, r.tail_diff) for a, b, r in edges_by[root]]
         extras = infer_extras(members, edges)
-        keeps = [m for m in members if os.path.normcase(os.path.normpath(m)) in pref]
+        keeps = [m for m in members if norm_path(m) in pref]
         if not keeps:
             best = max(members, key=lambda m: (_res_height(metas[m].get("resolution", "")),
                                                -extras[m],
